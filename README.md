@@ -185,8 +185,10 @@ such way: they read `since_last_call`.
 - **Claude Code**: [.mcp.json](.mcp.json) declares the server. Claude Code asks you before each
   call; that question is the human in the loop.
 - **Hermes Agent v0.22.5**: add [agents/hermes-robot.yaml](agents/hermes-robot.yaml) to its
-  configuration (not tested). With `trust: untrusted`, Hermes asks a person before each move, and
-  refuses every move where nobody can answer.
+  configuration. With `trust: untrusted`, Hermes asks a person before each move, and refuses every
+  move where nobody can answer. Tried with a fake model only: the tools are found through Hermes's
+  `tool_search`, events arrive through `since_last_call` and `wait_for_event`. Hermes keeps the
+  gateway running between two commands; the gateway follows the simulator if it restarts.
 - **Any agent**: the result of each call is written to `.robot-sim/context.jsonl`, and the page
   shows it. This is exactly what entered the agent's context.
 
@@ -203,7 +205,7 @@ such way: they read `since_last_call`.
 ```
 
 About two minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
-would, and reads in the simulator what really happened: 58 checks, all passed in the image
+would, and reads in the simulator what really happened: 59 checks, all passed in the image
 2026.10.45 on 3 November 2026 (container with 2 processors, no network).
 
 ---

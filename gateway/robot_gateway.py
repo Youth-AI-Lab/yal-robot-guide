@@ -92,6 +92,7 @@ class Gateway:
         self.mat = mat
         self.cards = mat["cards"]
         self.fd = None
+        self.path = None
         self.buffer = b""
         self.lock = threading.Lock()
         self.load_state()
@@ -134,9 +135,12 @@ class Gateway:
         return path
 
     def connect(self):
-        if self.fd is not None:
-            return
         path = self.port()
+        # An agent may keep this gateway running for hours (Hermes does, from one command to the next):
+        # when the robot's port changes (the simulator restarted), connect to the new one.
+        if self.fd is not None and path == self.path:
+            return
+        self.close()
         try:
             fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
         except OSError as e:
@@ -147,7 +151,7 @@ class Gateway:
         attrs = termios.tcgetattr(fd)
         attrs[4] = attrs[5] = termios.B115200  # the real robot; no effect on the simulator
         termios.tcsetattr(fd, termios.TCSANOW, attrs)
-        self.fd, self.buffer = fd, b""
+        self.fd, self.buffer, self.path = fd, b"", path
         self.drain()
         reply = self.request("HELLO")
         if not reply.startswith("OK HELLO robot"):

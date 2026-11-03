@@ -1,6 +1,8 @@
 # Lines to add to ~/.hermes/config.yaml to let Hermes Agent v0.22.5 drive the robot through the
-# gateway. NOT TESTED with Hermes: the keys come from Hermes's own reference at v0.22.5
-# (website/docs/reference/mcp-config-reference.md, hermes_cli/config_defaults.py).
+# gateway. The keys come from Hermes's own reference at v0.22.5 (website/docs/reference/
+# mcp-config-reference.md, hermes_cli/config_defaults.py). Tried on 3 November 2026 with a fake model,
+# not with a real one: Hermes accepts them, shows the model only these tools (found through its
+# tool_search), and refuses step_forward in `hermes chat -q`, where nobody can approve it.
 # Replace @GUIDE@ with the folder of this guide (in a Codespace: /workspaces/<name of the repository>).
 
 mcp_servers:
@@ -12,7 +14,7 @@ mcp_servers:
     # Hermes 0.22.6 adds "Always" to this question, and --yolo skips it: stay on 0.22.5.
     trust: untrusted
     tools:
-      include: [robot_state, step_forward, turn, set_light]
+      include: [robot_state, step_forward, turn, set_light, wait_for_event]
       resources: false
       prompts: false
     # The gateway never asks the model to write for it, nor the user a question.

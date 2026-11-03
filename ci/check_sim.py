@@ -510,6 +510,16 @@ async def scenarios(sim, env):
     check("channel: a bump is pushed without any call", any("bumper" in p["params"]["content"] for p in pushed),
           pushed)
 
+    # The simulator restarts on another port while an agent keeps the gateway: it follows the new port.
+    sim.fresh()
+    async with agent(env) as a:
+        await a.call("robot_state")
+        sim.stop()
+        sim.__init__(Path(env["ROBOT_STATE_DIR"]), Path(env["ROBOT_MAT"]))
+        sim.fresh()
+        reply = await a.call("robot_state")
+        check("the simulator restarts: the same gateway follows its new port", reply.get("cell") == "C5", reply)
+
     # Real time and frozen time.
     sim.fresh(balls=[{"from": [15, 15], "to": [135, 15], "radius": 5, "speed_cm_s": 10}])
     sim.act(do="mode", mode="realtime")
