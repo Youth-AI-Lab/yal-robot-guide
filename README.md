@@ -170,13 +170,14 @@ emergency button, Resume), with how many seconds ago. The robot itself remembers
 each have their own count. `wait_for_event` lets an agent watch; it never makes it fast enough to
 protect the robot: the reflexes do that.
 
-**Events pushed to Claude Code (not tested end to end).** With `ROBOT_CHANNEL=1` in the `env` of the
+**Events pushed to Claude Code.** With `ROBOT_CHANNEL=1` in the `env` of the
 server in `.mcp.json`, the gateway also pushes each event as it happens, as a Claude Code *channel*:
 Claude Code's own research preview, in interactive sessions only, started with
 `MCP_PROTOCOL_NEGOTIATION=legacy claude --dangerously-load-development-channels server:robot`
-([channels](https://code.claude.com/docs/en/channels)). The checks show the gateway sends it; in a
-container without network, Claude Code 2.1.303 answered "Channels are not currently available", so
-whether the event reaches the model is not measured yet. OpenCode 2.1.4 and Hermes v0.22.5 have no
+([channels](https://code.claude.com/docs/en/channels)). Tried once on 3 November 2026 with Claude Code 2.1.291, signed in with claude.ai, and Haiku 5.5:
+two events (emergency button, Resume) each started a turn with nobody typing, the line
+`← robot: Robot event, … s ago: …` on screen and an answer from the model. Without network, Claude Code
+only says "Channels are not currently available". Not tried with 2.1.303 nor with an API key. OpenCode 2.1.4 and Hermes v0.22.5 have no
 such way: they read `since_last_call`.
 
 - **Claude Code**: [.mcp.json](.mcp.json) declares the server. Claude Code asks you before each
