@@ -11,19 +11,25 @@ asking the computer. Nothing else is understood.
     HELLO          ->  OK HELLO robot <protocol>
     PING           ->  OK PONG              (the computer says it is still there)
     STATE          ->  OK STATE dist=<cm|none> card=<label|none> battery=<percent>
-                       estop=<0|1> wait_adult=<0|1> moving=<0|1> last_stop=<reason>
+                       estop=<0|1> wait_adult=<0|1> moving=<0|1> last_stop=<reason> bumper=<0|1>
+                       warning=<0|1> resumes=<number of presses on Resume since the robot started>
     MOVE F         ->  OK MOVE F, then EVT DONE F, or EVT STOP <reason>
     TURN L, TURN R ->  OK TURN L, then EVT DONE L, or EVT STOP <reason>
     LED <color>    ->  OK LED <color>
     STOP           ->  OK STOP
     anything else  ->  ERR <reason>
+and, without being asked:
+    EVT BUMP       something touched the bumper (a ball, a foot), moving or not
+    EVT NEAR       standing still, something came close in front: the light warns (reflex.warn)
+    EVT RESUMED    an adult pressed Resume on the robot
 
-The robot never moves backwards: its distance sensor only looks forwards.
+The robot never moves backwards: its distance sensor only looks forwards. Its bumper goes all
+around it: when something touches it, a move stops at once, whatever reflex.py says.
 
 After a move is interrupted (obstacle, watchdog, emergency button, STOP), the robot is somewhere
 between two cells. It refuses to move until an adult puts it back on the cell where the move
-started and presses the Resume button on the robot (EVT RESUMED). Nothing from the computer can
-do that.
+started and presses the Resume button on the robot (EVT RESUMED, and "resumes" in STATE goes up
+by one). Nothing from the computer can do that.
 
 What the program needs from the board (hal):
     ticks_ms(), ticks_diff(new, old)   a clock in milliseconds
@@ -33,6 +39,7 @@ What the program needs from the board (hal):
     distance_cm()                      the distance sensor in front: a number, or None
     battery()                          percent
     button(name)                       "stop" or "resume": True while pressed
+    bumper()                           True while something touches the bumper
     camera_label()                     the last card the camera recognised, or None
     led(color)                         one of COLORS
 """
@@ -58,6 +65,11 @@ class Firmware:
         self.estop = False
         self.wait_adult = False
         self.last_stop = "none"
+        self.bumped = False
+        self.resumes = 0
+        self.resume_held = False
+        self.light = "off"  # the colour asked by the computer
+        self.warning = False
         self.last_heard = hal.ticks_ms()
 
     def say(self, text):
@@ -74,12 +86,23 @@ class Firmware:
         if hal.button("stop") and not self.estop:
             self.estop = True
             self.halt("estop")
-        if hal.button("resume") and not hal.button("stop") and (self.estop or self.wait_adult):
+        touched = hal.bumper()
+        if touched and not self.bumped:
+            self.say("EVT BUMP")
+            self.halt("bump")
+        self.bumped = touched
+        resume = hal.button("resume") and not hal.button("stop")
+        if resume and not self.resume_held:
+            # Counted at each press, even when the robot was not waiting: the computer compares the
+            # number, it does not need to catch the message.
             self.estop = False
             self.wait_adult = False
+            self.resumes += 1
             self.say("EVT RESUMED")
+        self.resume_held = resume
 
         if self.motion is None:
+            self.warn()
             return
         kind = self.motion[0]
         if hal.ticks_diff(now, self.last_heard) > self.reflex.WATCHDOG_MS:
@@ -90,6 +113,20 @@ class Firmware:
             self.halt(why)
             return
         self.steer()
+
+    def warn(self):
+        """Standing still: the light warns when something is close. Only the light."""
+        color = None
+        if hasattr(self.reflex, "warn"):
+            color = self.reflex.warn(self.hal.distance_cm())
+        if color in COLORS:
+            if not self.warning:
+                self.warning = True
+                self.say("EVT NEAR")
+            self.hal.led(color)
+        elif self.warning:
+            self.warning = False
+            self.hal.led(self.light)
 
     def stop_reason(self, kind):
         distance = None
@@ -141,6 +178,8 @@ class Firmware:
             return "wait_adult"
         if self.motion is not None:
             return "busy"
+        if self.hal.bumper():
+            return "bump"
         why = self.stop_reason(kind)
         if why:
             return why
@@ -166,7 +205,9 @@ class Firmware:
             self.halt("command")
             self.say("OK STOP")
         elif word == "LED" and len(parts) == 2 and parts[1] in COLORS:
-            self.hal.led(parts[1])
+            self.light = parts[1]
+            if not self.warning:
+                self.hal.led(parts[1])
             self.say("OK LED " + parts[1])
         elif (word == "MOVE" and parts[1:] == ["F"]) or (word == "TURN" and parts[1:] in (["L"], ["R"])):
             kind = parts[1]
@@ -184,7 +225,7 @@ class Firmware:
     def state_line(self):
         distance = self.hal.distance_cm()
         card = self.hal.camera_label()
-        return "OK STATE dist=%s card=%s battery=%d estop=%d wait_adult=%d moving=%d last_stop=%s" % (
+        return "OK STATE dist=%s card=%s battery=%d estop=%d wait_adult=%d moving=%d last_stop=%s bumper=%d warning=%d resumes=%d" % (
             "none" if distance is None else str(int(distance)),
             card or "none",
             int(self.hal.battery()),
@@ -192,4 +233,7 @@ class Firmware:
             1 if self.wait_adult else 0,
             0 if self.motion is None else 1,
             self.last_stop,
+            1 if self.bumped else 0,
+            1 if self.warning else 0,
+            self.resumes,
         )

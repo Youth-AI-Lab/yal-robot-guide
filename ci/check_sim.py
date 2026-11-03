@@ -11,12 +11,15 @@ It takes about two minutes. It needs the `mcp` package, which is in /opt/worksho
 import ast
 import asyncio
 import contextlib
+import http.client
 import json
+import math
 import os
 import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -59,6 +62,16 @@ class Sim:
                                          headers={"Content-Type": "application/json"})
         with urllib.request.urlopen(request, timeout=5) as r:
             return json.loads(r.read())
+
+    def drive(self, **data):
+        """A Drive button of the page: (HTTP status, answer)."""
+        request = urllib.request.Request(self.url + "/api/drive", data=json.dumps(data).encode(),
+                                         headers={"Content-Type": "application/json"})
+        try:
+            with urllib.request.urlopen(request, timeout=20) as r:
+                return r.status, json.loads(r.read())
+        except urllib.error.HTTPError as e:
+            return e.code, json.loads(e.read())
 
     def state(self):
         with urllib.request.urlopen(self.url + "/api/state", timeout=5) as r:
@@ -288,6 +301,126 @@ async def scenarios(sim, env):
         lines = (Path(env["ROBOT_STATE_DIR"]) / "context.jsonl").read_text(encoding="utf-8").splitlines()
         check("context.jsonl: what the agent received is written down", json.loads(lines[-1])["tool"] == "robot_state",
               lines[-1:])
+
+    # The Drive buttons of the page: the same gateway, its log says who drove.
+    sim.fresh()
+    status, reply = sim.drive(command="forward")
+    r = sim.state()["robot"]
+    check("Drive button: one cell forwards, through the gateway",
+          status == 200 and reply["result"].get("result") == "done" and r["cell"] == "C4", (status, reply, r))
+    last = json.loads((Path(env["ROBOT_STATE_DIR"]) / "context.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+    check("Drive button: the log says the page drove", last["caller"] == "page" and last["tool"] == "step_forward",
+          last)
+    first = asyncio.create_task(asyncio.to_thread(sim.drive, command="forward"))
+    await asyncio.sleep(0.5)
+    status, reply = await asyncio.to_thread(sim.drive, command="left")
+    await first
+    check("Drive button: one command at a time", status == 409, (status, reply))
+    async with agent(env) as a:
+        moving = asyncio.create_task(a.call("step_forward"))
+        await asyncio.sleep(0.5)
+        status, reply = await asyncio.to_thread(sim.drive, command="state")
+        await moving
+        check("an agent moves, the page asks: refused, the cable is not shared",
+              status == 200 and "another command" in reply["result"].get("why", ""), (status, reply))
+    status, _ = sim.drive(command="backward")
+    check("Drive button: an unknown command is refused", status == 400, status)
+    status, _ = sim.drive(command="light", color="purple")
+    check("Drive button: an unknown colour is refused", status == 400, status)
+
+    # What a person can move on the mat: cards (on a cell) and the ball (with its path).
+    sim.fresh(cards=[{"cell": "B2", "label": "water-point"}],
+              balls=[{"from": [15, 15], "to": [15, 45], "radius": 5, "speed_cm_s": 0}])
+    sim.act(do="move_card", **{"from": "B2", "to": "C4"})
+    async with agent(env) as a:
+        reply = await a.call("robot_state")
+        check("a card moved by hand: the camera sees it on its new cell",
+              (reply.get("card_ahead") or {}).get("card") == "water-point", reply)
+    refused = sim.act(do="move_card", **{"from": "C4", "to": "Z9"})
+    check("a card cannot leave the mat", "error" in refused, refused)
+    before = sim.state()["balls"][0]
+    sim.act(do="move_ball", index=0, dx=60, dy=0)
+    after = sim.state()["balls"][0]
+    check("the ball moves with its path", near(after["x"], before["x"] + 60, 0.2), (before, after))
+
+    # Resume, then a new gateway process (each Drive button and each terminal command is one).
+    sim.fresh()
+    first = asyncio.create_task(asyncio.to_thread(sim.drive, command="forward"))
+    await asyncio.sleep(1.0)
+    sim.act(do="button", name="stop")
+    status, reply = await first
+    stopped = reply["result"].get("result") == "stopped"
+    sim.act(do="adult_resume")
+    await asyncio.sleep(0.5)
+    status, reply = sim.drive(command="forward")
+    check("after Resume, a new gateway process moves the robot again",
+          stopped and reply["result"].get("result") == "done" and reply["result"]["state"]["cell"] == "C4", reply)
+
+    # "Start again" while a command runs: refused, the gateway would keep a wrong position.
+    sim.fresh()
+    first = asyncio.create_task(asyncio.to_thread(sim.drive, command="forward"))
+    await asyncio.sleep(0.7)
+    refused = sim.act(do="reset")
+    await first
+    check("Start again while a command runs: refused", "error" in refused, refused)
+
+    # Only this computer (or a Codespace's forwarded port) may use the page.
+    port = int(sim.url.rsplit(":", 1)[1])
+    conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+    conn.request("POST", "/api/drive", body=json.dumps({"command": "forward"}),
+                 headers={"Host": "evil.example:%d" % port, "Content-Type": "application/json"})
+    answer = conn.getresponse()
+    check("a request for another host name is refused (DNS rebinding)", answer.status == 403, answer.status)
+    conn.close()
+
+    # Arrow keys: a side of the mat.
+    sim.fresh()
+    status, reply = sim.drive(command="go", direction="west")
+    r = sim.state()["robot"]
+    check("go west: a turn, then one cell", reply.get("moves") == ["left", "forward"] and r["cell"] == "B5"
+          and near(r["heading"], 270), (reply, r))
+    status, reply = sim.drive(command="go", direction="south")
+    check("go south on the bottom row: it turns, then refuses to leave the mat",
+          reply.get("moves") == ["left", "forward"] and reply["result"].get("result") == "refused", reply)
+
+    # A ball rolls into the robot standing still: it bounces off the bumper, the robot stays.
+    sim.fresh(balls=[{"from": [15, 135], "to": [145, 135], "radius": 7, "speed_cm_s": 20}])
+    closest, bumped = 999, False
+    for _ in range(60):
+        s = sim.state()
+        b, r = s["balls"][0], s["robot"]
+        closest = min(closest, math.hypot(b["x"] - r["x"], b["y"] - r["y"]))
+        await asyncio.sleep(0.05)
+    s = sim.state()
+    check("a ball hits the robot standing still: it bounces, the robot does not move",
+          s["robot"]["bumps"] >= 1 and closest >= 10 + 7 - 1 and s["robot"]["cell"] == "C5"
+          and any(w["line"] == "EVT BUMP" for w in s["wire"]), (s["robot"], closest))
+
+    # Something comes close in front of the robot standing still: its light warns (reflex.warn).
+    sim.fresh(balls=[{"from": [75, 30], "to": [75, 110], "radius": 7, "speed_cm_s": 20}])
+    warned = False
+    for _ in range(80):
+        s = sim.state()
+        warned = warned or (s["robot"]["warning"] and s["robot"]["led"] == "red")
+        await asyncio.sleep(0.05)
+    check("something close in front, robot still: the light warns, the robot stays",
+          warned and any(w["line"] == "EVT NEAR" for w in sim.state()["wire"]) and sim.state()["robot"]["cell"] == "C5",
+          sim.state()["robot"])
+
+    # A ball hits the robot from the side while it moves: the bumper stops it.
+    sim.fresh(balls=[{"from": [15, 120], "to": [145, 120], "radius": 7, "speed_cm_s": 30}])
+    async with agent(env) as a:
+        reply = await a.call("step_forward")
+        r = sim.state()["robot"]
+        check("a ball hits the moving robot: it stops", reply.get("result") == "stopped"
+              and ("bumper" in reply.get("why", "") or "in front" in reply.get("why", "")) and not r["moving"]
+              and r["collisions"] == 0, (reply, r))
+
+    sim.fresh(balls=[{"from": [15, 15], "to": [45, 15], "radius": 5, "speed_cm_s": 0}])
+    sim.act(do="move_ball", index=0, dx=1000, dy=-1000)
+    ball = sim.state()["balls"][0]
+    check("a ball dragged off the mat stays on it", ball["x"] <= MAT["cols"] * MAT["cell_cm"] - 5 + 0.1
+          and ball["y"] >= 5 - 0.1, ball)
 
     # Real time and frozen time.
     sim.fresh(balls=[{"from": [15, 15], "to": [135, 15], "radius": 5, "speed_cm_s": 10}])

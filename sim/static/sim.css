@@ -40,3 +40,9 @@ button.on { background: var(--danger); color: #fff; }
 .log .out { color: var(--wire-out); }
 .log .lost { color: var(--wire-lost); text-decoration: line-through; }
 .log .tool { font-weight: 600; }
+.result { margin: 0; padding: 6px 8px; background: var(--bg); border-radius: 5px; font: 0.8rem/1.35 ui-monospace, monospace; white-space: pre-wrap; overflow-wrap: anywhere; max-height: 180px; overflow-y: auto; }
+.result.refused, .result.stopped, .result.error { color: var(--danger); }
+.hint.notice { color: var(--danger); font-weight: 600; }
+button:disabled { opacity: 0.5; cursor: wait; }
+.log .caller { font-weight: 400; color: var(--muted); }
+.sub { margin: 4px 0 6px; color: var(--muted); font-size: 0.85rem; }

@@ -21,6 +21,10 @@ WATCHDOG_MS = 1000
 # Below this battery level (percent), the robot refuses to move.
 MIN_BATTERY = 20
 
+# While it stands still, the robot never moves away by itself (only a command moves it), but it can
+# warn: when something comes closer than this in front of it (centimetres), warn() chooses its light.
+WARN_DISTANCE_CM = 25
+
 
 def must_stop(distance_cm, battery):
     """Why the robot must stop now, or None to go on. Called many times per second while it moves.
@@ -32,4 +36,13 @@ def must_stop(distance_cm, battery):
         return "obstacle"
     if battery < MIN_BATTERY:
         return "battery"
+    return None
+
+
+def warn(distance_cm):
+    """The colour of the light while the robot stands still and something is close in front of it,
+    or None for no warning. Only a colour ("red", "orange", "green", "blue", "off"): the robot never
+    moves by itself, whatever this function returns."""
+    if distance_cm is not None and distance_cm < WARN_DISTANCE_CM:
+        return "red"
     return None

@@ -64,30 +64,50 @@ camera looks at; the red line is what the distance sensor measures.
 
 ---
 
-## Part 2 - Drive it by hand, through the gateway
+## Part 2 - Drive it, through the gateway
 
-Open a second terminal. These commands go through the gateway, with the same limits as an agent:
+The robot moves only through the gateway, the same door an agent uses, with the same limits. Two ways
+to drive it by hand:
 
-```bash
-python3 -I gateway/robot_gateway.py state
-python3 -I gateway/robot_gateway.py forward
-python3 -I gateway/robot_gateway.py right
-python3 -I gateway/robot_gateway.py light green
-```
+- **On the page**, the **Drive** panel. **North**, **West**, **South**, **East** and the arrow keys of
+  the keyboard go towards a side of the mat: the robot turns as needed, then moves one cell (as the
+  gateway believes it faces). **↑ Forward**, **↺ Left**, **↻ Right** are the moves an agent has, one at
+  a time. **State** and **Light** too. Each button runs the gateway, as the command below would.
+- **In a second terminal**:
+
+  ```bash
+  python3 -I gateway/robot_gateway.py state
+  python3 -I gateway/robot_gateway.py forward
+  python3 -I gateway/robot_gateway.py right
+  python3 -I gateway/robot_gateway.py light green
+  ```
 
 Each answer is what an agent would receive, word for word. On the page, **On the wire** shows the
-lines between the computer and the robot, and **What the agent received** shows these answers.
+lines between the computer and the robot, and **What the agent received** shows these answers, with
+who sent the order: an agent, a terminal or the Drive buttons. One order at a time: while one runs,
+any other is refused, wherever it comes from.
+
+You can drag with the mouse everything that lies on the mat: the boxes (obstacles, brown squares,
+**Add a box** adds one, a double-click removes one), the cards (they land on a cell) and the ball
+(with its whole path). Not the robot: the gateway counts its moves to know where it is, so a robot
+moved by hand would be lost. Press **Start again** to put it back on its start cell.
 
 Things to try:
 
-- Drag a box in front of the robot, then `forward`: refused, "something is in front of the robot".
-- `forward` and, while it moves, drag a box right in front of it: the robot stops by itself. The
+- Drag a box onto the cell in front of the robot (the dashed square), then **Forward**: refused,
+  "something is in front of the robot".
+- **Forward** and, while it moves, drag a box right in front of it: the robot stops by itself. The
   gateway then refuses everything: the position is unknown. Press **An adult puts it back and
-  presses Resume**, then `forward` again.
-- `forward` and, while it moves, **Unplug the cable**: the robot stops after one second (its
+  presses Resume**, then **Forward** again.
+- **Forward** and, while it moves, **Unplug the cable**: the robot stops after one second (its
   watchdog). The gateway waits, then says the move was stopped.
-- **Emergency stop**, then `forward`: refused.
-- Turn towards the edge and `forward`: refused, the next cell is outside the mat.
+- **Emergency stop**, then **Forward**: refused.
+- Turn towards the edge and **Forward**: refused, the next cell is outside the mat.
+- Drag a card onto the cell in front of the robot, then **State**: `card_ahead` names it.
+- Put the robot on the path of the ball (column E) and wait. When the ball comes close in front, the
+  light turns red (the warning reflex); when it touches the robot, it bounces off the bumper. The
+  robot does not move away: standing still is its safe state, and moving is a decision. While it
+  moves, the ball stops it (distance sensor in front, bumper on the sides).
 
 > [!NOTE]
 > The gateway counts the moves to know where the robot is: it never sees the real cell. Set
@@ -98,13 +118,15 @@ Things to try:
 
 ## Part 3 - Change a reflex
 
-Open [robot/reflex.py](robot/reflex.py), change `STOP_DISTANCE_CM` or `MAX_SPEED_CM_S`, save, and
-press **Reload reflex.py** on the page. If the file has a mistake, the page says so and the old
+[robot/reflex.py](robot/reflex.py) holds what the robot does by itself: `must_stop()` while it moves,
+and `warn()` while it stands still (the colour of its light when something comes close; only a
+colour, the robot never moves by itself). Change `STOP_DISTANCE_CM`, `MAX_SPEED_CM_S` or
+`WARN_DISTANCE_CM`, or the functions, save, and press **Reload reflex.py** on the page. If the file has a mistake, the page says so and the old
 reflexes keep running.
 
 The program of the robot keeps its own limits ([robot/firmware.py](robot/firmware.py),
-`HARD_MAX_SPEED_CM_S`, `HARD_MIN_DISTANCE_CM`): `reflex.py` can make the robot more careful, never
-less careful than those.
+`HARD_MAX_SPEED_CM_S`, `HARD_MIN_DISTANCE_CM`, and the bumper all around it, which stops every move):
+`reflex.py` can make the robot more careful, never less careful than those.
 
 Both files are written in the part of Python that MicroPython understands, so that the same files
 can run on the robot's board.
@@ -159,8 +181,8 @@ The gateway is an MCP server. Its four tools:
 ```
 
 About two minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
-would, and reads in the simulator what really happened: 31 checks, all passed in the image
-2026.10.45 on 2 November 2026 (container with 2 processors, no network).
+would, and reads in the simulator what really happened: 49 checks, all passed in the image
+2026.10.45 on 3 November 2026 (container with 2 processors, no network).
 
 ---
 

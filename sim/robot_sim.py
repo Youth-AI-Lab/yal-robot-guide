@@ -16,11 +16,14 @@ Only the standard library. The page listens on 127.0.0.1 only.
 """
 import argparse
 import collections
+import fcntl
 import importlib.util
 import json
 import math
 import os
 import random
+import subprocess
+import sys
 import threading
 import time
 import tty
@@ -153,6 +156,7 @@ class World:
             self.led_color = "off"
             self.buttons = {}
             self.collisions, self.touching = 0, False
+            self.bumps, self.ball_contact = 0, False
             self.move_start = None
             self.unplugged_at = None
             self.link.plugged = True
@@ -163,12 +167,14 @@ class World:
             self.firmware = self.firmware_module.Firmware(Hal(self), self.reflex)
             # The robot is back on its start cell: the gateway must count from there again.
             (self.state_dir / "gateway.json").unlink(missing_ok=True)
+            # The mat in use, for the gateway started by the Drive buttons of the page.
+            (self.state_dir / "mat.json").write_text(json.dumps(mat, indent=2) + "\n", encoding="utf-8")
 
     def reload_reflex(self):
         with self.lock:
             try:
                 reflex = load_module("reflex", GUIDE / "robot" / "reflex.py")
-                for name in ("STOP_DISTANCE_CM", "MAX_SPEED_CM_S", "WATCHDOG_MS", "MIN_BATTERY", "must_stop"):
+                for name in ("STOP_DISTANCE_CM", "MAX_SPEED_CM_S", "WATCHDOG_MS", "MIN_BATTERY", "must_stop", "warn"):
                     getattr(reflex, name)
             except Exception as e:  # a mistake in the file the participants edit: show it, keep the old one
                 self.reflex_error = f"{type(e).__name__}: {e}"
@@ -237,6 +243,22 @@ class World:
                 for ball in self.balls:
                     ball["t"] += dt
             self.move(dt)
+            self.ball_hits()
+
+    def ball_hits(self):
+        """A ball that touches the robot presses its bumper and bounces back."""
+        self.ball_contact = False
+        for ball in self.balls:
+            bx, by = self.ball_xy(ball)
+            contact = math.hypot(bx - self.x, by - self.y) < ROBOT_RADIUS_CM + ball["radius"]
+            if contact and not ball.get("touching") and ball["speed_cm_s"] > 0:
+                (x0, y0), (x1, y1) = ball["from"], ball["to"]
+                length = math.hypot(x1 - x0, y1 - y0) or 1
+                s = (ball["t"] * ball["speed_cm_s"]) % (2 * length)
+                ball["t"] = ((2 * length - s) % (2 * length)) / ball["speed_cm_s"]
+                self.bumps += 1
+            ball["touching"] = contact
+            self.ball_contact = self.ball_contact or contact
 
     def move(self, dt):
         if self.speed == 0 and self.turn == 0:
@@ -251,12 +273,15 @@ class World:
         x = self.x + math.sin(h) * self.speed * dt * real
         y = self.y - math.cos(h) * self.speed * dt * real
         r = ROBOT_RADIUS_CM
-        blocked = (x < r or y < r or x > self.width - r or y > self.height - r
-                   or any(circle_box(x, y, r, *box) for box in self.obstacles()))
-        if blocked:
-            if not self.touching:
+        # Driving into a box or the fence is a collision. A ball in the way only blocks: its touch
+        # is counted as a bump (ball_hits).
+        walls = (x < r or y < r or x > self.width - r or y > self.height - r
+                 or any(circle_box(x, y, r, b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"]) for b in self.boxes))
+        ball = any(math.hypot(x - bx, y - by) < r + b["radius"] for b in self.balls for bx, by in [self.ball_xy(b)])
+        if walls or ball:
+            if walls and not self.touching:
                 self.collisions += 1
-            self.touching = True
+            self.touching = walls
             self.heading = heading % 360
             return
         self.touching = False
@@ -273,7 +298,8 @@ class World:
                           "radius": ROBOT_RADIUS_CM, "led": self.led_color,
                           "moving": fw.motion is not None, "estop": fw.estop, "wait_adult": fw.wait_adult,
                           "last_stop": fw.last_stop, "battery": round(self.battery_level, 1),
-                          "collisions": self.collisions, "cell": self.cell_of(self.x, self.y)},
+                          "collisions": self.collisions, "cell": self.cell_of(self.x, self.y),
+                          "bumper": fw.bumped, "bumps": self.bumps, "warning": fw.warning},
                 "sensors": {"distance_cm": self.rounded(self.distance()), "card_ahead": self.card_ahead()},
                 "cards": [{"cell": cell_name(*k), "label": v} for k, v in self.cards.items()],
                 "boxes": self.boxes,
@@ -281,7 +307,8 @@ class World:
                           for b in self.balls for bx, by in [self.ball_xy(b)]],
                 "link": {"plugged": self.link.plugged, "serial": self.link.path},
                 "reflex": {k: getattr(self.reflex, k, None)
-                           for k in ("STOP_DISTANCE_CM", "MAX_SPEED_CM_S", "WATCHDOG_MS", "MIN_BATTERY")},
+                           for k in ("STOP_DISTANCE_CM", "MAX_SPEED_CM_S", "WATCHDOG_MS", "MIN_BATTERY",
+                                     "WARN_DISTANCE_CM")},
                 "reflex_error": self.reflex_error,
                 "stops": self.stops[-20:],
                 "unplugged_at": self.unplugged_at,
@@ -303,23 +330,51 @@ class World:
     def action(self, data):
         """What the page (or the checks) can do: everything a person could do around the mat."""
         do = data.get("do")
+        if do in ("reset", "load_world"):
+            # Not while a command runs: the gateway would save a position for a robot that is no
+            # longer there. The lock is the gateway's own (one command at a time, see robot_gateway.py).
+            with (self.state_dir / "gateway.lock").open("w") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return {"error": "a command is running (an agent, a terminal or the page): wait for it to end"}
+                with self.lock:
+                    self.load(data.get("mat", self.mat) if do == "load_world" else self.mat,
+                              data["world"] if do == "load_world" else self.world)
+            return {"ok": True}
         with self.lock:
-            if do == "reset":
-                self.load(self.mat, self.world)
-            elif do == "load_world":
-                self.load(data.get("mat", self.mat), data["world"])
-            elif do == "move_box":
+            if do == "move_box":
                 for b in self.boxes:
                     if b["id"] == data["id"]:
-                        b["x"], b["y"] = float(data["x"]), float(data["y"])
+                        b["x"], b["y"] = self.on_mat(float(data["x"]), float(data["y"]), b["w"], b["h"])
             elif do == "add_box":
-                box = {"id": self.next_box, "x": float(data["x"]), "y": float(data["y"]),
-                       "w": float(data.get("w", 20)), "h": float(data.get("h", 20)), "name": "box"}
+                w, h = float(data.get("w", 20)), float(data.get("h", 20))
+                x, y = self.on_mat(float(data["x"]), float(data["y"]), w, h)
+                box = {"id": self.next_box, "x": x, "y": y, "w": w, "h": h, "name": "box"}
                 self.next_box += 1
                 self.boxes.append(box)
                 return {"id": box["id"]}
             elif do == "remove_box":
                 self.boxes = [b for b in self.boxes if b["id"] != data["id"]]
+            elif do == "move_card":
+                # A card is put down on another cell; on a cell that has one, the two swap places.
+                old, new = tuple(cell_xy(data["from"])), tuple(cell_xy(data["to"]))
+                if old not in self.cards or not self.cell_of((new[0] + 0.5) * self.cell, (new[1] + 0.5) * self.cell):
+                    return {"error": "no card there, or outside the mat"}
+                label = self.cards.pop(old)
+                if new in self.cards:
+                    self.cards[old] = self.cards[new]
+                self.cards[new] = label
+            elif do == "move_ball":
+                # The whole path of the ball moves with it.
+                ball = self.balls[int(data["index"])]
+                dx, dy = float(data["dx"]), float(data["dy"])
+                # The whole path stays on the mat.
+                r, xs, ys = ball["radius"], (ball["from"][0], ball["to"][0]), (ball["from"][1], ball["to"][1])
+                dx = min(max(dx, r - min(xs)), self.width - r - max(xs))
+                dy = min(max(dy, r - min(ys)), self.height - r - max(ys))
+                ball["from"] = [ball["from"][0] + dx, ball["from"][1] + dy]
+                ball["to"] = [ball["to"][0] + dx, ball["to"][1] + dy]
             elif do == "button":
                 if data["name"] not in ("stop", "resume"):
                     return {"error": "unknown button"}
@@ -351,6 +406,9 @@ class World:
             else:
                 return {"error": "unknown action"}
         return {"ok": True}
+
+    def on_mat(self, x, y, w, h):
+        return min(max(0.0, x), self.width - w), min(max(0.0, y), self.height - h)
 
     def add_context(self, entry):
         with self.lock:
@@ -397,6 +455,9 @@ class Hal:
     def camera_label(self):
         return self.w.card_ahead()
 
+    def bumper(self):
+        return self.w.touching or self.w.ball_contact
+
     def led(self, color):
         self.w.led_color = color
 
@@ -433,6 +494,63 @@ def physics(world, stop):
             next_tick = time.monotonic()
 
 
+DRIVE = {"forward": ["forward"], "left": ["left"], "right": ["right"], "state": ["state"]}
+DRIVE_LOCK = threading.Lock()
+
+
+def drive(world, data):
+    """A Drive button of the page: it runs the gateway, as `robot_gateway.py forward` in a terminal
+    would. The page never talks to the robot itself: same door, same limits, same log as an agent."""
+    command = data.get("command")
+    args = DRIVE.get(command)
+    if command == "light" and data.get("color") in world.firmware_module.COLORS:
+        args = ["light", data["color"]]
+    if command == "go" and data.get("direction") in HEADINGS:
+        args = ["go"]
+    if args is None:
+        return 400, {"error": "unknown command"}
+    if not DRIVE_LOCK.acquire(blocking=False):
+        return 409, {"error": "the previous command is still running"}
+    try:
+        if args == ["go"]:
+            return 200, go(world, data["direction"])
+        return 200, {"ok": True, "result": gateway(world, args)}
+    except (subprocess.TimeoutExpired, ValueError, RuntimeError) as e:
+        return 500, {"error": f"{type(e).__name__}: {e}"}
+    finally:
+        DRIVE_LOCK.release()
+
+
+def gateway(world, args):
+    """One command of the gateway, in a process of its own, exactly as typed in a terminal."""
+    env = dict(os.environ, ROBOT_STATE_DIR=str(world.state_dir), ROBOT_SERIAL=world.link.path,
+               ROBOT_MAT=str(world.state_dir / "mat.json"), ROBOT_CALLER="page")
+    done = subprocess.run([sys.executable, "-I", str(GUIDE / "gateway" / "robot_gateway.py"), *args],
+                          env=env, capture_output=True, text=True, timeout=world.mat["move_timeout_s"] + 5)
+    if done.returncode != 0:
+        raise RuntimeError((done.stderr or done.stdout).strip()[-500:])
+    return json.loads(done.stdout)
+
+
+def go(world, direction):
+    """An arrow key: towards a side of the mat. The gateway's own moves: turn on the spot until the
+    robot faces that way (as the gateway believes), then one cell forwards. Stops at the first move
+    that is not done."""
+    order = ["north", "east", "south", "west"]
+    state = gateway(world, ["state"])
+    if state.get("result") in ("refused", "error") or state.get("facing") is None:
+        return {"ok": True, "result": state, "moves": ["state"]}
+    turns = {0: [], 1: ["right"], 2: ["right", "right"], 3: ["left"]}[
+        (order.index(direction) - order.index(state["facing"])) % 4]
+    moves = []
+    for move in turns + ["forward"]:
+        moves.append(move)
+        result = gateway(world, [move])
+        if result.get("result") != "done":
+            break
+    return {"ok": True, "result": result, "moves": moves}
+
+
 def make_handler(world):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):
@@ -447,7 +565,18 @@ def make_handler(world):
             self.end_headers()
             self.wfile.write(data)
 
+        def host_ok(self):
+            """Only this computer, or the forwarded port of a Codespace. A web page elsewhere that
+            points its own name at 127.0.0.1 (DNS rebinding) sends its own name here, and is refused."""
+            host = self.headers.get("Host", "").rsplit(":", 1)[0].lower()
+            if host in ("127.0.0.1", "localhost") or host.endswith((".app.github.dev", ".github.dev")):
+                return True
+            self.send(403, {"error": "wrong host"})
+            return False
+
         def do_GET(self):
+            if not self.host_ok():
+                return
             if self.path in STATIC_FILES:
                 name, kind = STATIC_FILES[self.path]
                 return self.send(200, (STATIC / name).read_bytes(), kind + "; charset=utf-8")
@@ -468,13 +597,18 @@ def make_handler(world):
             self.send(404, {"error": "not found"})
 
         def do_POST(self):
+            if not self.host_ok():
+                return
             # JSON only: a page of another site cannot send JSON here without asking first (CORS),
             # and this server never says yes.
-            if self.path != "/api/action" or not self.headers.get("Content-Type", "").startswith("application/json"):
-                return self.send(400, {"error": "POST /api/action with JSON"})
+            if self.path not in ("/api/action", "/api/drive") or \
+                    not self.headers.get("Content-Type", "").startswith("application/json"):
+                return self.send(400, {"error": "POST /api/action or /api/drive with JSON"})
             try:
                 length = min(int(self.headers.get("Content-Length", 0)), 1_000_000)
                 data = json.loads(self.rfile.read(length))
+                if self.path == "/api/drive":
+                    return self.send(*drive(world, data))
                 return self.send(200, world.action(data))
             except (ValueError, KeyError, TypeError) as e:
                 return self.send(400, {"error": f"{type(e).__name__}: {e}"})

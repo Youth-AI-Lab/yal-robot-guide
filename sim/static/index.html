@@ -10,15 +10,38 @@
 <body>
 <header>
   <h1>Robot simulator</h1>
-  <p>Youth AI Lab: the robot seen from above. Drag the boxes, press the buttons, watch what the agent receives.</p>
+  <p>Youth AI Lab: the robot seen from above. Drive it, move what is on the mat, watch what the agent receives.</p>
 </header>
 <main>
   <section class="mat">
     <canvas id="mat" aria-label="The mat seen from above"></canvas>
-    <p class="hint">Drag a box to move it. Double-click a box to remove it.</p>
+    <p class="hint" id="hint">Drag the boxes, the cards and the ball. Double-click a box to remove it. The robot moves only through the gateway: the Drive buttons, the terminal, or an agent.</p>
     <div class="status" id="status"></div>
   </section>
   <aside>
+    <section>
+      <h2>Drive <small>through the gateway, like an agent</small></h2>
+      <p class="sub">Go towards a side of the mat (keyboard arrows): the robot turns, then moves one cell.</p>
+      <div class="buttons">
+        <button id="g-north" title="Go north (↑)">↑ North</button>
+        <button id="g-west" title="Go west (←)">← West</button>
+        <button id="g-south" title="Go south (↓)">↓ South</button>
+        <button id="g-east" title="Go east (→)">→ East</button>
+      </div>
+      <p class="sub">Or one move at a time, as an agent does:</p>
+      <div class="buttons">
+        <button id="d-forward">↑ Forward</button>
+        <button id="d-left">↺ Left</button>
+        <button id="d-right">↻ Right</button>
+        <button id="d-state">State</button>
+        <select id="d-color" aria-label="Light">
+          <option value="green">green</option><option value="orange">orange</option><option value="red">red</option>
+          <option value="blue">blue</option><option value="off">off</option>
+        </select>
+        <button id="d-light">Light</button>
+      </div>
+      <pre id="d-result" class="result">Press a button: the answer is what an agent would receive.</pre>
+    </section>
     <section>
       <h2>Around the robot</h2>
       <div class="buttons">

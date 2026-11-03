@@ -8,7 +8,7 @@ const ctx = canvas.getContext("2d");
 const MARGIN = 26; // pixels, for the letters and the numbers of the cells
 const CARD_ICONS = { "fire-station": "🚒", "dry-grass": "🌾", "barbecue": "🔥", "water-point": "💧" };
 let state = null;
-let drag = null; // {id, dx, dy, x, y} while a box is dragged
+let drag = null; // while something is dragged: {kind: "box" | "ball" | "card", ...}
 
 function css(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
@@ -61,7 +61,13 @@ function draw() {
 
   // Cards on the floor.
   for (const card of state.cards) {
-    const col = card.cell.charCodeAt(0) - 65, row = Number(card.cell.slice(1)) - 1;
+    let col = card.cell.charCodeAt(0) - 65, row = Number(card.cell.slice(1)) - 1;
+    const dragged = drag && drag.kind === "card" && drag.cell === card.cell;
+    if (dragged) { // shown on the cell where it would land
+      col = Math.min(m.cols - 1, Math.max(0, Math.floor(drag.x / c)));
+      row = Math.min(m.rows - 1, Math.max(0, Math.floor(drag.y / c)));
+    }
+    ctx.globalAlpha = dragged ? 0.6 : 1;
     ctx.fillStyle = "rgba(255,255,255,0.55)";
     ctx.fillRect(px(s, col * c + 3), px(s, row * c + 3), (c - 6) * s, (c - 6) * s);
     ctx.font = Math.round(c * s * 0.4) + "px system-ui";
@@ -71,6 +77,7 @@ function draw() {
       ctx.fillStyle = "#333";
       ctx.fillText(card.label, px(s, (col + 0.5) * c), px(s, (row + 0.85) * c));
     }
+    ctx.globalAlpha = 1;
   }
 
   // The cell the camera looks at.
@@ -86,17 +93,20 @@ function draw() {
 
   // Boxes and balls.
   for (const b of state.boxes) {
-    const x = drag && drag.id === b.id ? drag.x : b.x, y = drag && drag.id === b.id ? drag.y : b.y;
+    const mine = drag && drag.kind === "box" && drag.id === b.id;
+    const x = mine ? drag.x : b.x, y = mine ? drag.y : b.y;
     ctx.fillStyle = css("--box");
     ctx.fillRect(px(s, x), px(s, y), b.w * s, b.h * s);
     ctx.fillStyle = "#fff";
     ctx.font = "10px system-ui";
     ctx.fillText(b.name, px(s, x + b.w / 2), px(s, y + b.h / 2));
   }
-  for (const b of state.balls) {
+  state.balls.forEach((b, i) => {
+    const mine = drag && drag.kind === "ball" && drag.index === i;
+    const x = mine ? b.x + drag.x - drag.x0 : b.x, y = mine ? b.y + drag.y - drag.y0 : b.y;
     ctx.fillStyle = css("--ball");
-    ctx.beginPath(); ctx.arc(px(s, b.x), px(s, b.y), b.radius * s, 0, 2 * Math.PI); ctx.fill();
-  }
+    ctx.beginPath(); ctx.arc(px(s, x), px(s, y), b.radius * s, 0, 2 * Math.PI); ctx.fill();
+  });
 
   // The distance sensor: a line as long as what it measures.
   const d = state.sensors.distance_cm;
@@ -144,6 +154,9 @@ function panels() {
     tile("Waits for an adult", r.wait_adult ? "YES" : "no", r.wait_adult),
     tile("Last stop", r.last_stop),
     tile("Collisions", r.collisions, r.collisions > 0),
+    tile("Bumper", r.bumper ? "TOUCHED" : "free", r.bumper),
+    tile("Bumps (the ball)", r.bumps, r.bumps > 0),
+    tile("Warning light (reflex.warn)", r.warning ? "ON" : "off", r.warning),
     tile("Simulated time", state.time + " s"),
   );
 
@@ -175,7 +188,10 @@ function panels() {
     const tool = document.createElement("span");
     tool.className = "tool";
     tool.textContent = c.at.slice(11) + "  " + c.tool + "(" + JSON.stringify(c.arguments).slice(1, -1) + ")";
-    li.append(tool, document.createElement("br"), c.result);
+    const caller = document.createElement("span");
+    caller.className = "caller";
+    caller.textContent = "  from " + ({ page: "the Drive buttons", terminal: "a terminal" }[c.caller] || "an agent");
+    li.append(tool, caller, document.createElement("br"), c.result);
     return li;
   });
   document.getElementById("thinking").textContent =
@@ -194,7 +210,8 @@ function fill(id, items, make) {
   if (atBottom) ol.scrollTop = ol.scrollHeight;
 }
 
-// Dragging the boxes.
+// Dragging what is on the mat. The robot is not dragged: an adult who moves it by hand makes the
+// gateway lose count of where it is (it counts the moves). It moves only through the gateway.
 function toCm(event) {
   const rect = canvas.getBoundingClientRect();
   const s = (canvas.clientWidth - MARGIN) / (state.mat.cols * state.mat.cell_cm);
@@ -203,29 +220,106 @@ function toCm(event) {
 function boxAt(p) {
   return state.boxes.find((b) => p.x >= b.x && p.x <= b.x + b.w && p.y >= b.y && p.y <= b.y + b.h);
 }
+function grab(p) {
+  const box = boxAt(p);
+  if (box) return { kind: "box", id: box.id, dx: p.x - box.x, dy: p.y - box.y, x: box.x, y: box.y };
+  const ball = state.balls.findIndex((b) => Math.hypot(p.x - b.x, p.y - b.y) <= b.radius + 3);
+  if (ball >= 0) return { kind: "ball", index: ball, x0: p.x, y0: p.y, x: p.x, y: p.y };
+  const r = state.robot;
+  if (Math.hypot(p.x - r.x, p.y - r.y) <= r.radius) return { kind: "robot" };
+  const c = state.mat.cell_cm;
+  const cell = String.fromCharCode(65 + Math.floor(p.x / c)) + (Math.floor(p.y / c) + 1);
+  if (state.cards.some((k) => k.cell === cell)) return { kind: "card", cell, x: p.x, y: p.y };
+  return null;
+}
+let noticeTimer = null;
+function notice(text) {
+  const hint = document.getElementById("hint");
+  if (!hint.dataset.text) hint.dataset.text = hint.textContent;
+  hint.textContent = text;
+  hint.classList.add("notice");
+  clearTimeout(noticeTimer);
+  noticeTimer = setTimeout(() => { hint.textContent = hint.dataset.text; hint.classList.remove("notice"); }, 5000);
+}
 canvas.addEventListener("pointerdown", (e) => {
   if (!state) return;
-  const p = toCm(e), b = boxAt(p);
-  if (!b) return;
-  drag = { id: b.id, dx: p.x - b.x, dy: p.y - b.y, x: b.x, y: b.y };
+  const g = grab(toCm(e));
+  if (!g) return;
+  if (g.kind === "robot") {
+    notice("The robot cannot be moved by hand here: the gateway counts its moves to know where it is. "
+           + "Drive it with the Drive buttons, or press \"Start again\".");
+    return;
+  }
+  drag = g;
   canvas.setPointerCapture(e.pointerId);
 });
 canvas.addEventListener("pointermove", (e) => {
   if (!drag) return;
   const p = toCm(e);
-  drag.x = p.x - drag.dx;
-  drag.y = p.y - drag.dy;
+  if (drag.kind === "box") { drag.x = p.x - drag.dx; drag.y = p.y - drag.dy; } else { drag.x = p.x; drag.y = p.y; }
   draw();
 });
 canvas.addEventListener("pointerup", async () => {
   if (!drag) return;
   const d = drag;
-  await act({ do: "move_box", id: d.id, x: d.x, y: d.y });
+  const c = state.mat.cell_cm;
+  if (d.kind === "box") await act({ do: "move_box", id: d.id, x: d.x, y: d.y });
+  if (d.kind === "ball") await act({ do: "move_ball", index: d.index, dx: d.x - d.x0, dy: d.y - d.y0 });
+  if (d.kind === "card") {
+    const col = Math.min(state.mat.cols - 1, Math.max(0, Math.floor(d.x / c)));
+    const row = Math.min(state.mat.rows - 1, Math.max(0, Math.floor(d.y / c)));
+    const to = String.fromCharCode(65 + col) + (row + 1);
+    if (to !== d.cell) await act({ do: "move_card", from: d.cell, to });
+  }
   drag = null;
 });
 canvas.addEventListener("dblclick", (e) => {
   const b = state && boxAt(toCm(e));
   if (b) act({ do: "remove_box", id: b.id });
+});
+
+// Driving: each button runs the gateway (POST /api/drive), as a terminal command would.
+const driveButtons = ["d-forward", "d-left", "d-right", "d-state", "d-light", "g-north", "g-west", "g-south", "g-east"]
+  .map((id) => document.getElementById(id));
+async function driveRobot(command, extra) {
+  if (driveButtons[0].disabled) return;
+  const out = document.getElementById("d-result");
+  driveButtons.forEach((b) => { b.disabled = true; });
+  out.className = "result";
+  out.textContent = command + "…";
+  try {
+    const r = await fetch("/api/drive", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ command, ...extra }),
+    });
+    const data = await r.json();
+    const result = data.result || data;
+    out.className = "result " + (result.result || (data.error ? "error" : ""));
+    out.textContent = (data.moves ? "moves: " + data.moves.join(", ") + "\n" : "") + JSON.stringify(result, null, 1);
+  } catch (err) {
+    out.className = "result error";
+    out.textContent = String(err);
+  } finally {
+    driveButtons.forEach((b) => { b.disabled = false; });
+  }
+}
+document.getElementById("d-forward").addEventListener("click", () => driveRobot("forward"));
+document.getElementById("d-left").addEventListener("click", () => driveRobot("left"));
+document.getElementById("d-right").addEventListener("click", () => driveRobot("right"));
+document.getElementById("d-state").addEventListener("click", () => driveRobot("state"));
+document.getElementById("d-light").addEventListener("click",
+  () => driveRobot("light", { color: document.getElementById("d-color").value }));
+for (const side of ["north", "west", "south", "east"]) {
+  document.getElementById("g-" + side).addEventListener("click", () => driveRobot("go", { direction: side }));
+}
+// Arrow keys: a side of the mat, as people point to where the robot should go.
+document.addEventListener("keydown", (e) => {
+  if (e.target.closest("input, select, textarea")) return;
+  if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return; // Alt+← is the browser's Back
+  const direction = { ArrowUp: "north", ArrowRight: "east", ArrowDown: "south", ArrowLeft: "west" }[e.key];
+  if (!direction) return;
+  e.preventDefault();
+  if (e.repeat) return; // a key held down sends one order, not one per repeat
+  driveRobot("go", { direction });
 });
 
 // The buttons.

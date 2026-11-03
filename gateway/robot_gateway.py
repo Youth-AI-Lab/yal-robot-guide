@@ -19,6 +19,7 @@ Usage:
     by hand, without an agent:               python3 -I gateway/robot_gateway.py state|forward|left|right|light <color>
 """
 import datetime
+import fcntl
 import json
 import os
 import select
@@ -34,6 +35,9 @@ GUIDE = Path(__file__).resolve().parent.parent
 MAT = Path(os.environ.get("ROBOT_MAT", GUIDE / "mat.json"))
 STATE_DIR = Path(os.environ.get("ROBOT_STATE_DIR", GUIDE / ".robot-sim"))
 HEARTBEAT_S = 0.2
+# Who sends the orders, written in the log: an agent (MCP), a person in a terminal, or the Drive
+# buttons of the simulator's page (which set ROBOT_CALLER=page).
+CALLER = os.environ.get("ROBOT_CALLER", "agent")
 FACING = ["north", "east", "south", "west"]
 COLORS = ("off", "red", "orange", "green", "blue")
 REASONS = {
@@ -43,6 +47,7 @@ REASONS = {
     "wait_adult": "the robot waits for an adult (a move was interrupted)",
     "busy": "the robot is still moving",
     "watchdog": "the robot stopped by itself: it heard nothing from the computer",
+    "bump": "something touched the robot's bumper",
     "command": "the gateway stopped the robot",
     "timeout": "the move took too long: the gateway stopped the robot",
     "unknown": "the robot did not understand the command",
@@ -52,7 +57,7 @@ REASONS = {
 def log(tool, arguments, result):
     """Write what the agent receives, as it receives it."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    entry = {"at": datetime.datetime.now().isoformat(timespec="seconds"), "tool": tool,
+    entry = {"at": datetime.datetime.now().isoformat(timespec="seconds"), "caller": CALLER, "tool": tool,
              "arguments": arguments, "result": result}
     with (STATE_DIR / "context.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -83,6 +88,7 @@ class Gateway:
             saved = json.loads((STATE_DIR / "gateway.json").read_text(encoding="utf-8"))
             self.col, self.row, self.facing = saved["col"], saved["row"], saved["facing"]
             self.sure, self.back, self.moves = saved["sure"], saved["back"], saved["moves"]
+            self.resumes_at_stop = saved.get("resumes_at_stop")
         except (OSError, ValueError, KeyError):
             start = self.mat["start"]
             self.col, self.row = ord(start["cell"][0].upper()) - ord("A"), int(start["cell"][1:]) - 1
@@ -90,11 +96,12 @@ class Gateway:
             self.sure = True  # False after an interrupted move, until an adult puts the robot back
             self.back = None
             self.moves = 0
+            self.resumes_at_stop = None  # how many times Resume had been pressed when a move stopped
 
     def save_state(self):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         saved = {"col": self.col, "row": self.row, "facing": self.facing, "sure": self.sure,
-                 "back": self.back, "moves": self.moves}
+                 "back": self.back, "moves": self.moves, "resumes_at_stop": self.resumes_at_stop}
         (STATE_DIR / "gateway.json").write_text(json.dumps(saved) + "\n", encoding="utf-8")
 
     # The serial link -------------------------------------------------------------------------
@@ -115,12 +122,14 @@ class Gateway:
             fd = os.open(path, os.O_RDWR | os.O_NOCTTY | os.O_NONBLOCK)
         except OSError as e:
             raise RobotNotConnected(f"the robot is not connected ({path}: {e.strerror})") from None
-        tty.setraw(fd)
+        # TCSANOW: keep what the robot already said (an old answer is dropped by drain(), an event
+        # is read). Nothing that matters depends on catching an event, though: see check_resumed().
+        tty.setraw(fd, termios.TCSANOW)
         attrs = termios.tcgetattr(fd)
         attrs[4] = attrs[5] = termios.B115200  # the real robot; no effect on the simulator
         termios.tcsetattr(fd, termios.TCSANOW, attrs)
-        termios.tcflush(fd, termios.TCIFLUSH)
         self.fd, self.buffer = fd, b""
+        self.drain()
         reply = self.request("HELLO")
         if not reply.startswith("OK HELLO robot"):
             self.close()
@@ -157,11 +166,35 @@ class Gateway:
         return line.decode("ascii", "replace").strip()
 
     def event(self, line):
-        """An event from the robot that is not the answer to a question."""
-        if line == "EVT RESUMED" and not self.sure and self.back is not None:
-            # An adult put the robot back where the interrupted move started.
+        """An event from the robot that is not the answer to a question (EVT BUMP, EVT RESUMED).
+        Nothing depends on it: a new gateway may start after the event, so the state of the robot
+        is always read again with STATE."""
+
+    def fields(self):
+        reply = self.request("STATE")
+        return dict(part.split("=", 1) for part in reply.split()[2:])
+
+    def check_resumed(self):
+        """After an interrupted move: has an adult pressed Resume since? The robot counts the presses;
+        the gateway compares with the count it saw when the move stopped."""
+        fields = self.fields()
+        presses = int(fields.get("resumes", 0))
+        released = fields.get("wait_adult") == "0" and fields.get("estop") == "0"
+        if self.resumes_at_stop is None:
+            # The count was not known when the move stopped (the cable was loose). A robot that no
+            # longer waits, remembers its last stop and has seen Resume was released by an adult;
+            # a robot that restarted remembers neither.
+            if released and presses > 0 and fields.get("last_stop", "none") != "none":
+                resumed = True
+            else:
+                self.resumes_at_stop, resumed = presses, False
+        elif presses < self.resumes_at_stop:
+            self.resumes_at_stop, resumed = presses, False  # the robot restarted: count from now
+        else:
+            resumed = presses > self.resumes_at_stop and released
+        if resumed:
             self.col, self.row, self.facing = self.back
-            self.sure, self.back = True, None
+            self.sure, self.back, self.resumes_at_stop = True, None, None
 
     def drain(self):
         """Read what the robot said while nobody asked (Resume pressed, old answers)."""
@@ -188,8 +221,7 @@ class Gateway:
 
     # What the agent can ask ------------------------------------------------------------------
     def robot_state(self):
-        reply = self.request("STATE")
-        fields = dict(part.split("=", 1) for part in reply.split()[2:])
+        fields = self.fields()
         card = fields.get("card", "none")
         return {
             "cell": cell_name(self.col, self.row) if self.sure else None,
@@ -199,7 +231,8 @@ class Gateway:
             "card_ahead": None if card == "none" else {"card": card, "means": self.cards.get(card, "unknown card")},
             "battery_percent": int(fields.get("battery", 0)),
             "emergency_stop": fields.get("estop") == "1",
-            "waiting_for_adult": fields.get("wait_adult") == "1",
+            "waiting_for_adult": fields.get("wait_adult") == "1" or not self.sure,
+            "bumper_touched": fields.get("bumper") == "1",
             "moves_left": self.mat["max_moves"] - self.moves,
             "mat": f"{self.mat['cols']} columns (A to {cell_name(self.mat['cols'] - 1, 0)[0]}), "
                    f"{self.mat['rows']} rows (1 at the top to {self.mat['rows']})",
@@ -251,6 +284,10 @@ class Gateway:
 
     def interrupted(self, why, start):
         self.sure, self.back = False, start
+        try:
+            self.resumes_at_stop = int(self.fields().get("resumes", 0))
+        except (RobotNotConnected, ValueError):
+            self.resumes_at_stop = None  # the cable is loose: counted when the robot answers again
         return {"result": "stopped", "why": REASONS.get(why, why), "position_known": False,
                 "what_to_do": self.adult_instruction()}
 
@@ -266,15 +303,27 @@ class Gateway:
     def run(self, tool, arguments, action):
         """Run one tool call for the agent: connect if needed, never raise, log what it gets."""
         with self.lock:
-            self.load_state()
-            try:
-                self.connect()
-                self.drain()
-                result = action()
-            except RobotNotConnected as e:
-                self.close()
-                result = {"result": "error", "why": str(e)}
-            self.save_state()
+            # One command at a time on the cable, whoever sends it: an agent, a terminal, the page.
+            # Two programs reading the same serial port would take each other's answers.
+            STATE_DIR.mkdir(parents=True, exist_ok=True)
+            with (STATE_DIR / "gateway.lock").open("w") as lock:
+                try:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    result = self.refused("another command is running (an agent, a terminal or the page): "
+                                          "wait for it to end")
+                else:
+                    self.load_state()
+                    try:
+                        self.connect()
+                        self.drain()
+                        if not self.sure:
+                            self.check_resumed()
+                        result = action()
+                    except RobotNotConnected as e:
+                        self.close()
+                        result = {"result": "error", "why": str(e)}
+                    self.save_state()
             text = json.dumps(result, ensure_ascii=False)
             log(tool, arguments, text)
             return text
@@ -339,6 +388,7 @@ def by_hand(args):
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
+        CALLER = os.environ.get("ROBOT_CALLER", "terminal")
         by_hand(sys.argv[1:])
     else:
         serve()
