@@ -173,10 +173,12 @@ protect the robot: the reflexes do that.
 **Events pushed to Claude Code.** With `ROBOT_CHANNEL=1` in the `env` of the
 server in `.mcp.json`, the gateway also pushes each event as it happens, as a Claude Code *channel*:
 Claude Code's own research preview, in interactive sessions only, started with
-`MCP_PROTOCOL_NEGOTIATION=legacy claude --dangerously-load-development-channels server:robot`
-([channels](https://code.claude.com/docs/en/channels)). Tried once on 3 November 2026 with Claude Code 2.1.291, signed in with claude.ai, and Haiku 5.5:
-two events (emergency button, Resume) each started a turn with nobody typing, the line
-`← robot: Robot event, … s ago: …` on screen and an answer from the model. Without network, Claude Code
+`MCP_PROTOCOL_NEGOTIATION=legacy ENABLE_TOOL_SEARCH=false claude --dangerously-load-development-channels server:robot`
+([channels](https://code.claude.com/docs/en/channels)). Tried on 3 November 2026 with Claude Code 2.1.291 then 2.1.317, signed in with claude.ai: each event
+started a turn with nobody typing, the line `← robot: Robot event, … s ago: …` on screen and an answer
+from the model. Add `ENABLE_TOOL_SEARCH=false` to the command: by default Claude Code loads MCP tools
+only on demand, and at the first event Haiku and Sonnet both answered they had no tool for the robot.
+With it, Sonnet called `robot_state` at once, described the robot and moved nothing. Without network, Claude Code
 only says "Channels are not currently available". Not tried with 2.1.303 nor with an API key. OpenCode 2.1.4 and Hermes v0.22.5 have no
 such way: they read `since_last_call`.
 
