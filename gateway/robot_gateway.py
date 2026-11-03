@@ -491,7 +491,8 @@ def robot_state() -> str:
 def step_forward() -> str:
     """Move the robot one cell forwards, then stop. The robot refuses when something is in front,
     and stops by itself if something appears. Never off the mat. If the result is "stopped",
-    do what "what_to_do" says before anything else."""
+    do what "what_to_do" says before anything else. The answer gives the new state, with the card in
+    front ("card_ahead") and what happened meanwhile ("since_last_call"), cards seen included."""
     return GATEWAY.run("step_forward", {}, lambda: GATEWAY.move("MOVE F", "F"))
 
 
@@ -513,9 +514,12 @@ def wait_for_event(seconds: int = 10) -> str:
 
 
 def seen_cards() -> str:
-    """The cards the robot's camera recognised, each with the cell where it is, where the robot saw it
-    from, and when. Moves nothing. The camera only names cards from a short list, and only while the
-    robot stands still; each cell comes from counting the robot's moves."""
+    """The whole record of the cards the robot's camera recognised, each with the cell where it is,
+    where the robot saw it from, and when. Moves nothing. You rarely need it: each new card the camera
+    sees already comes in "since_last_call" of the next answer, whatever the tool, and "card_ahead"
+    names the card in front. Call it to review the whole record, for example after a long pause. The
+    camera only names cards from a short list, only in the cell just in front, and only while the robot
+    stands still; each cell comes from counting the robot's moves."""
     return GATEWAY.run("seen_cards", {}, GATEWAY.seen_cards)
 
 
