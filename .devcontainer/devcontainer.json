@@ -1,0 +1,15 @@
+{
+  "name": "Youth AI Lab: a robot driven by an agent",
+  // The same image as the workshop kit: Python, and the `mcp` package in /opt/workshop/venv for the
+  // gateway. The simulator needs nothing else.
+  // A pinned tag, never `latest`: each version of the guide is tested with one image.
+  "image": "ghcr.io/youth-ai-lab/yal-workshop-devcontainer:2026.10.45",
+  "remoteUser": "vscode",
+  "portsAttributes": {
+    "8780": { "label": "Robot simulator", "onAutoForward": "openBrowser" }
+  },
+  "remoteEnv": {
+    "WORKSHOP_WELCOME": "Welcome! Start the robot simulator with: python3 -I sim/robot_sim.py"
+  },
+  "hostRequirements": { "cpus": 2 }
+}

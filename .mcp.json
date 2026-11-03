@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "robot": {
+      "command": "/opt/workshop/venv/bin/python",
+      "args": ["-I", "gateway/robot_gateway.py"]
+    }
+  }
+}

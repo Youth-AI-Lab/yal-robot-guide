@@ -1,0 +1,30 @@
+# Opens the container of this guide as a Codespace would, then plays each scenario of ci/check_sim.py:
+# the program of the robot, the simulator and the gateway together, with no model and no key.
+name: Simulator checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+
+      - name: Dev Containers command line
+        run: npm install -g @devcontainers/cli@0.89.0
+
+      - name: Open the container
+        timeout-minutes: 10
+        run: devcontainer up --workspace-folder . < /dev/null > up.log 2>&1 || { tail -50 up.log; exit 1; }
+
+      - name: Scenarios, with no model
+        timeout-minutes: 5
+        run: devcontainer exec --workspace-folder . bash -lc 'cd "$PWD" && /opt/workshop/venv/bin/python -I ci/check_sim.py'

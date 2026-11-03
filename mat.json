@@ -1,0 +1,15 @@
+{
+  "_about": "The mat the robot moves on, as the gateway knows it: its size, where the robot starts, the cards the camera can recognise. The gateway does not know where the cards are: the robot finds them. The simulator reads the same file. Sizes are the simulator's; the real mat is TO BE COMPLETED.",
+  "cols": 8,
+  "rows": 6,
+  "cell_cm": 30,
+  "start": {"cell": "A6", "facing": "north"},
+  "max_moves": 40,
+  "move_timeout_s": 8,
+  "cards": {
+    "fire-station": "the fire station, home of the robot",
+    "dry-grass": "dry grass: a fire would spread fast here",
+    "barbecue": "a barbecue",
+    "water-point": "a water point"
+  }
+}

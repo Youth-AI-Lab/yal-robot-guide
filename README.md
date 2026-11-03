@@ -1,0 +1,191 @@
+# A robot driven by an agent: the simulator
+
+## Youth AI Lab - Erasmus+ project
+
+Partners: L.A.B. (Aix-en-Provence, France), UAB (Barcelona, Spain), Perlatecnica (Naples, Italy),
+Digitale Wolven (Antwerp, Belgium), CSC Vent des Îles (La Rochelle, France).
+
+> [!WARNING]
+> **A prototype, for facilitators.** Nothing here has run on a real robot, and no real model has
+> driven it yet. Never use it with young people: the rules for that are not decided.
+
+The young people of the project will build a robot (a STeaMi board and an OpenMV N6 camera) to give
+their chatbot a body. Before the robot exists, this simulator lets you try the whole chain: the
+program of the robot, the gateway that is the only door to it, and an agent that drives it.
+
+```
+ robot (or this simulator)         gateway (MCP server)              agent
+ ┌───────────────────────┐  text   ┌──────────────────────┐  MCP   ┌──────────────┐
+ │ reflexes: stop, speed │ ◄─────► │ 4 tools, its limits  │ ◄────► │ Claude Code, │
+ │ camera: a card label  │  cable  │ writes what the agent│        │ OpenCode,    │
+ └───────────────────────┘         │ receives             │        │ Hermes...    │
+                                   └──────────────────────┘        └──────────────┘
+```
+
+Three rules hold the design together:
+
+- **The robot protects itself.** It stops in front of an obstacle, when the cable comes loose, and
+  when someone presses its emergency button, without asking the computer
+  ([robot/reflex.py](robot/reflex.py), [robot/firmware.py](robot/firmware.py)).
+- **The gateway is the only door.** Four tools, one cell per move, never off the mat, a number of
+  moves per session ([gateway/robot_gateway.py](gateway/robot_gateway.py)).
+- **No image ever leaves the robot.** The camera gives the name of a card from a short list.
+
+The simulator replaces only the physical part. The program of the robot runs in it unchanged, and
+the gateway talks to it through a pseudo-terminal, as it will talk to the robot through its USB
+cable.
+
+---
+
+## Part 1 - Start the simulator
+
+1. Open this repository in a Codespace, or on your computer with the
+   [dev containers guide](https://github.com/Youth-AI-Lab/yal-devcontainer-guide).
+2. In the terminal:
+
+   ```bash
+   python3 -I sim/robot_sim.py
+   ```
+
+   You should see:
+
+   ```
+   Robot simulator: http://127.0.0.1:8780  (in a Codespace: Ports tab, port 8780)
+   Simulated USB cable: /dev/pts/3
+   READY port=8780 serial=/dev/pts/3
+   ```
+
+3. Open the page: in a Codespace, the **Ports** tab, line **Robot simulator (8780)**, then the globe
+   icon. Leave this terminal open: closing it stops the simulator.
+
+On the page: the mat seen from above, the robot (blue circle, its light around it, an arrow where it
+looks), the cards on the floor, two boxes and a rolling ball. The dashed square is the cell the
+camera looks at; the red line is what the distance sensor measures.
+
+---
+
+## Part 2 - Drive it by hand, through the gateway
+
+Open a second terminal. These commands go through the gateway, with the same limits as an agent:
+
+```bash
+python3 -I gateway/robot_gateway.py state
+python3 -I gateway/robot_gateway.py forward
+python3 -I gateway/robot_gateway.py right
+python3 -I gateway/robot_gateway.py light green
+```
+
+Each answer is what an agent would receive, word for word. On the page, **On the wire** shows the
+lines between the computer and the robot, and **What the agent received** shows these answers.
+
+Things to try:
+
+- Drag a box in front of the robot, then `forward`: refused, "something is in front of the robot".
+- `forward` and, while it moves, drag a box right in front of it: the robot stops by itself. The
+  gateway then refuses everything: the position is unknown. Press **An adult puts it back and
+  presses Resume**, then `forward` again.
+- `forward` and, while it moves, **Unplug the cable**: the robot stops after one second (its
+  watchdog). The gateway waits, then says the move was stopped.
+- **Emergency stop**, then `forward`: refused.
+- Turn towards the edge and `forward`: refused, the next cell is outside the mat.
+
+> [!NOTE]
+> The gateway counts the moves to know where the robot is: it never sees the real cell. Set
+> **Wheels slip** to 10 %, drive a few cells, and compare **Real cell** on the page with the `cell`
+> the gateway gives.
+
+---
+
+## Part 3 - Change a reflex
+
+Open [robot/reflex.py](robot/reflex.py), change `STOP_DISTANCE_CM` or `MAX_SPEED_CM_S`, save, and
+press **Reload reflex.py** on the page. If the file has a mistake, the page says so and the old
+reflexes keep running.
+
+The program of the robot keeps its own limits ([robot/firmware.py](robot/firmware.py),
+`HARD_MAX_SPEED_CM_S`, `HARD_MIN_DISTANCE_CM`): `reflex.py` can make the robot more careful, never
+less careful than those.
+
+Both files are written in the part of Python that MicroPython understands, so that the same files
+can run on the robot's board.
+
+---
+
+## Part 4 - Real time or frozen time
+
+The **Time** list changes how the world behaves while the agent thinks:
+
+- **real time**: the ball keeps rolling while nobody moves, as in a room. A model takes seconds to
+  decide; meanwhile the world changes.
+- **frozen**: the world waits for the robot, as in a video game. Agents that play games, like
+  [pokemon-agent](https://github.com/NousResearch/pokemon-agent), live in this world.
+
+This is why the reflexes are on the robot: a study in a simulator measured that decisions of 2.5 to
+14 seconds make language-model agents fail in a world that does not wait, and that fast fixed rules
+combined with a slower model do better
+([Zheng et al., arXiv 2506.07223](https://arxiv.org/abs/2506.07223)).
+
+---
+
+## Part 5 - Connect an agent (not tested with a real model)
+
+The gateway is an MCP server. Its four tools:
+
+| Tool | What it does | Read only |
+|---|---|---|
+| `robot_state()` | distance in front, card in front, battery, buttons, the cell where the gateway thinks the robot is | yes |
+| `step_forward()` | one cell forwards, then stop | no |
+| `turn(direction)` | a quarter turn, `left` or `right` | no |
+| `set_light(color)` | `off`, `red`, `orange`, `green` or `blue` | no |
+
+- **Claude Code**: [.mcp.json](.mcp.json) declares the server. Claude Code asks you before each
+  call; that question is the human in the loop.
+- **Hermes Agent v0.22.5**: add [agents/hermes-robot.yaml](agents/hermes-robot.yaml) to its
+  configuration (not tested). With `trust: untrusted`, Hermes asks a person before each move, and
+  refuses every move where nobody can answer.
+- **Any agent**: the result of each call is written to `.robot-sim/context.jsonl`, and the page
+  shows it. This is exactly what entered the agent's context.
+
+> [!WARNING]
+> Each call sends the robot's state to the company that runs the model. Nothing about a person
+> must go there.
+
+---
+
+## Check that everything works
+
+```bash
+/opt/workshop/venv/bin/python -I ci/check_sim.py
+```
+
+About two minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
+would, and reads in the simulator what really happened: 31 checks, all passed in the image
+2026.10.45 on 2 November 2026 (container with 2 processors, no network).
+
+---
+
+## The protocol between the gateway and the robot
+
+One line of text per command, one line per answer; the head of
+[robot/firmware.py](robot/firmware.py) lists them all. The robot never moves backwards (its distance
+sensor looks forwards only), moves one cell at most per command, and after an interrupted move
+waits for an adult: the computer cannot release it.
+
+---
+
+## Limits to know
+
+- **Simulator values.** Cells of 30 cm, 10 cm/s, a one-second watchdog, a sensor that sees a fence
+  around the mat: the real numbers are TO BE COMPLETED on the robot.
+- **What the simulator cannot tell you**: how the real motors, wheels and sensors behave, the
+  battery, the camera's real mistakes, the radio range, and whether children are safe around the
+  robot.
+- **The real robot**: the small file that gives `firmware.py` the board's sensors and motors is TO
+  BE COMPLETED once the robot is built.
+- **No real model has driven it**, and no group has used it.
+
+---
+
+## About
+
+Texts: CC BY-SA 4.0. Code and configuration: EUPL-1.2. See [REUSE.toml](REUSE.toml).

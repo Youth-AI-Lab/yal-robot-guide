@@ -1,0 +1,19 @@
+version = 1
+SPDX-PackageName = "yal-robot-guide"
+SPDX-PackageSupplier = "Youth AI Lab (Erasmus+)"
+SPDX-PackageDownloadLocation = "https://github.com/Youth-AI-Lab/yal-robot-guide"
+
+# Texts: CC BY-SA 4.0.
+[[annotations]]
+path = ["README.md"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Youth AI Lab partners"
+SPDX-License-Identifier = "CC-BY-SA-4.0"
+
+# The program of the robot, the simulator, the gateway, the checks and the configuration: EUPL-1.2.
+[[annotations]]
+path = [".devcontainer/**", ".github/**", ".gitignore", ".gitattributes", ".mcp.json", "REUSE.toml", "mat.json",
+        "robot/**", "sim/**", "gateway/**", "agents/**", "ci/**"]
+precedence = "aggregate"
+SPDX-FileCopyrightText = "2026 Youth AI Lab partners"
+SPDX-License-Identifier = "EUPL-1.2"

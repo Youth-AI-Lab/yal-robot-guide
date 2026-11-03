@@ -1,0 +1,9 @@
+# What the simulator and the gateway write while they run: the path of the simulated cable, where
+# the gateway thinks the robot is, and what the agent received (context.jsonl). Never shared.
+.robot-sim/
+__pycache__/
+# Files that usually hold a secret: never in this repository.
+.env
+.env.*
+*.env
+*.key

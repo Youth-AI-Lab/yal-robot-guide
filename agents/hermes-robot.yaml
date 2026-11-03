@@ -1,0 +1,33 @@
+# Lines to add to ~/.hermes/config.yaml to let Hermes Agent v0.22.5 drive the robot through the
+# gateway. NOT TESTED with Hermes: the keys come from Hermes's own reference at v0.22.5
+# (website/docs/reference/mcp-config-reference.md, hermes_cli/config_defaults.py).
+# Replace @GUIDE@ with the folder of this guide (in a Codespace: /workspaces/<name of the repository>).
+
+mcp_servers:
+  robot:
+    command: /opt/workshop/venv/bin/python
+    args: ["-I", "@GUIDE@/gateway/robot_gateway.py"]
+    # Each move asks a person first (every tool not marked read only). Where nobody can answer
+    # (hermes chat -q, cron), the move is refused. robot_state is marked read only: it never asks.
+    # Hermes 0.22.6 adds "Always" to this question, and --yolo skips it: stay on 0.22.5.
+    trust: untrusted
+    tools:
+      include: [robot_state, step_forward, turn, set_light]
+      resources: false
+      prompts: false
+    # The gateway never asks the model to write for it, nor the user a question.
+    sampling:
+      enabled: false
+    elicitation:
+      enabled: false
+
+# Only the robot: no files, no terminal, no web, no vision, no memory search.
+platform_toolsets:
+  cli: [clarify]
+
+agent:
+  # Hermes has no limit by default: a model that keeps calling tools would never stop.
+  max_turns: 30
+  run_budget_seconds: 600
+  # Never pixels to the model (the gateway sends none anyway).
+  image_input_mode: text

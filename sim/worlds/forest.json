@@ -1,0 +1,17 @@
+{
+  "_about": "What is on the simulated mat. Cards: a cell and a label of mat.json. Boxes: x, y, width, height in centimetres from the top left corner of the mat. Balls roll back and forth between two points. You can drag the boxes on the page of the simulator.",
+  "cards": [
+    {"cell": "A6", "label": "fire-station"},
+    {"cell": "C2", "label": "dry-grass"},
+    {"cell": "D2", "label": "dry-grass"},
+    {"cell": "F3", "label": "barbecue"},
+    {"cell": "B4", "label": "water-point"}
+  ],
+  "boxes": [
+    {"x": 95, "y": 95, "w": 20, "h": 20, "name": "tree"},
+    {"x": 185, "y": 125, "w": 20, "h": 20, "name": "rock"}
+  ],
+  "balls": [
+    {"from": [135, 15], "to": [135, 165], "radius": 7, "speed_cm_s": 8}
+  ]
+}
