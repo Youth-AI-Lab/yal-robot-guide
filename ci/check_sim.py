@@ -487,6 +487,14 @@ async def scenarios(sim, env):
         took = time.monotonic() - started
         check("wait_for_event: answers when the ball touches the robot", reply.get("result") == "something happened"
               and any("bumper" in e["event"] for e in reply.get("events", [])) and took < 6, (reply, round(took, 1)))
+    sim.fresh(balls=[{"from": [15, 135], "to": [145, 135], "radius": 7, "speed_cm_s": 20}])
+    await asyncio.sleep(3.0)  # the ball touches the robot (about 2 s) before anybody watches
+    async with agent(env) as a:
+        reply = await a.call("wait_for_event", seconds=5)
+        before = [e for e in reply.get("events", []) if "bumper" in e["event"]]
+        check("wait_for_event: an event from before the wait is marked so, with the real wait",
+              before and before[0].get("before_you_started_waiting") is True and reply.get("waited_seconds", 9) < 1,
+              reply)
     sim.fresh()
     async with agent(env) as a:
         await a.call("robot_state")

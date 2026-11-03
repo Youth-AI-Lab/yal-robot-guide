@@ -213,7 +213,9 @@ class Gateway:
             text = EVENTS.get(kind, name)
             if kind == "STOP":
                 text += REASONS.get(reason, reason)
-            events.append({"seconds_ago": round((now - int(ms)) / 1000, 1), "event": text})
+            # "seconds_ago" alone was read by a real model (DeepSeek v4 Flash behind Hermes, 2026-11-03) as
+            # a time since the start of a wait: the name says what it counts from.
+            events.append({"seconds_before_this_answer": round((now - int(ms)) / 1000, 1), "event": text})
         self.cursors[CALLER] = following - 1
         return events
 
@@ -399,8 +401,11 @@ class Gateway:
         return [] if result is None else result.get("since_last_call", [])
 
     def wait_for(self, seconds):
-        """Watch the robot for up to `seconds`, without holding the cable in between."""
-        end = time.monotonic() + seconds
+        """Watch the robot for up to `seconds`, without holding the cable in between. Says how long it
+        really waited, and marks the events that happened before the wait began (they are given at
+        once: the robot kept them)."""
+        start = time.monotonic()
+        end = start + seconds
         while True:
             with self.lock:
                 result = self.locked(lambda: {})
@@ -408,7 +413,12 @@ class Gateway:
                 if result.get("result") == "error":
                     return result
                 if result.get("since_last_call"):
-                    return {"result": "something happened", "events": result["since_last_call"]}
+                    waited = time.monotonic() - start
+                    events = result["since_last_call"]
+                    for event in events:
+                        if event.get("seconds_before_this_answer", 0) > waited + 0.3:
+                            event["before_you_started_waiting"] = True
+                    return {"result": "something happened", "waited_seconds": round(waited, 1), "events": events}
             if time.monotonic() >= end:
                 return {"result": "nothing happened", "waited_seconds": seconds}
             time.sleep(0.3)
@@ -500,12 +510,12 @@ def serve_with_channel(server):
             if not sessions:
                 continue
             for event in await anyio.to_thread.run_sync(GATEWAY.watch_once):
-                content = f"Robot event, {event.get('seconds_ago', 0)} s ago: {event['event']}."
+                content = f"Robot event, {event.get('seconds_before_this_answer', 0)} s ago: {event['event']}."
                 log("(pushed to the agent)", {}, content)
                 # Connection.notify: best effort, never raises (the session's own connection).
                 await sessions[-1]._connection.notify(
                     "notifications/claude/channel",
-                    {"content": content, "meta": {"seconds_ago": str(event.get("seconds_ago", 0))}})
+                    {"content": content, "meta": {"seconds_ago": str(event.get("seconds_before_this_answer", 0))}})
 
     async def main():
         async with stdio_server() as (read, write):
