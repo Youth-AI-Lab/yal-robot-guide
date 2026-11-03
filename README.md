@@ -72,7 +72,8 @@ to drive it by hand:
 - **On the page**, the **Drive** panel. **North**, **West**, **South**, **East** and the arrow keys of
   the keyboard go towards a side of the mat: the robot turns as needed, then moves one cell (as the
   gateway believes it faces). **↑ Forward**, **↺ Left**, **↻ Right** are the moves an agent has, one at
-  a time. **State** and **Light** too. Each button runs the gateway, as the command below would.
+  a time. **State**, **Light** and **Wait for an event (10 s)** too. Each button runs the gateway, as
+  the command below would.
 - **In a second terminal**:
 
   ```bash
@@ -151,7 +152,7 @@ combined with a slower model do better
 
 ## Part 5 - Connect an agent (not tested with a real model)
 
-The gateway is an MCP server. Its four tools:
+The gateway is an MCP server. Its five tools:
 
 | Tool | What it does | Read only |
 |---|---|---|
@@ -159,6 +160,24 @@ The gateway is an MCP server. Its four tools:
 | `step_forward()` | one cell forwards, then stop | no |
 | `turn(direction)` | a quarter turn, `left` or `right` | no |
 | `set_light(color)` | `off`, `red`, `orange`, `green` or `blue` | no |
+| `wait_for_event(seconds)` | watch the robot for 1 to 30 seconds; answers as soon as something happens to it | yes |
+
+**What happened between two calls.** MCP works by questions and answers: an agent learns nothing
+while it thinks. So every answer of the gateway carries `since_last_call`: what happened to the robot
+since that caller's last call (something touched the bumper, came close in front, a move stopped, the
+emergency button, Resume), with how many seconds ago. The robot itself remembers its last 16 events
+(`EVENTS` in the protocol), so nothing is lost when nobody listens; an agent, a terminal and the page
+each have their own count. `wait_for_event` lets an agent watch; it never makes it fast enough to
+protect the robot: the reflexes do that.
+
+**Events pushed to Claude Code (not tested end to end).** With `ROBOT_CHANNEL=1` in the `env` of the
+server in `.mcp.json`, the gateway also pushes each event as it happens, as a Claude Code *channel*:
+Claude Code's own research preview, in interactive sessions only, started with
+`MCP_PROTOCOL_NEGOTIATION=legacy claude --dangerously-load-development-channels server:robot`
+([channels](https://code.claude.com/docs/en/channels)). The checks show the gateway sends it; in a
+container without network, Claude Code 2.1.303 answered "Channels are not currently available", so
+whether the event reaches the model is not measured yet. OpenCode 2.1.4 and Hermes v0.22.5 have no
+such way: they read `since_last_call`.
 
 - **Claude Code**: [.mcp.json](.mcp.json) declares the server. Claude Code asks you before each
   call; that question is the human in the loop.
@@ -181,7 +200,7 @@ The gateway is an MCP server. Its four tools:
 ```
 
 About two minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
-would, and reads in the simulator what really happened: 49 checks, all passed in the image
+would, and reads in the simulator what really happened: 58 checks, all passed in the image
 2026.10.45 on 3 November 2026 (container with 2 processors, no network).
 
 ---

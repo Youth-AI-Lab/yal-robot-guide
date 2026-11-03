@@ -28,7 +28,7 @@ from mcp.client.stdio import stdio_client
 
 GUIDE = Path(__file__).resolve().parent.parent
 PYTHON = sys.executable
-TOOLS = {"robot_state", "step_forward", "turn", "set_light"}
+TOOLS = {"robot_state", "step_forward", "turn", "set_light", "wait_for_event"}
 # A small mat for the checks: 5 x 5 cells of 30 cm, start on C5 facing north, 6 moves.
 MAT = {"cols": 5, "rows": 5, "cell_cm": 30, "start": {"cell": "C5", "facing": "north"},
        "max_moves": 6, "move_timeout_s": 6,
@@ -112,8 +112,9 @@ async def agent(env):
             yield Agent(session)
 
 
-def wire_count(sim, prefix):
-    return sum(1 for w in sim.state()["wire"] if w["dir"] == "in" and w["line"].startswith(prefix))
+def wire_count(sim, word):
+    """How many commands starting with this word the robot received since the mat was loaded."""
+    return sim.state()["link"]["received"].get(word, 0)
 
 
 def near(a, b, tolerance=1.0):
@@ -130,6 +131,35 @@ def box_in_front(sim, gap):
 async def later(seconds, function, *args, **kwargs):
     await asyncio.sleep(seconds)
     return await asyncio.to_thread(function, *args, **kwargs)
+
+
+async def channel_session(env, seconds):
+    """Speak raw JSON-RPC to the gateway, as Claude Code does with MCP_PROTOCOL_NEGOTIATION=legacy:
+    initialize, initialized, then listen. Returns (the initialize answer, the channel notifications)."""
+    process = await asyncio.create_subprocess_exec(
+        PYTHON, "-I", str(GUIDE / "gateway" / "robot_gateway.py"), env=dict(env, ROBOT_CHANNEL="1"),
+        stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+
+    async def send(message):
+        process.stdin.write((json.dumps(message) + "\n").encode())
+        await process.stdin.drain()
+
+    await send({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {
+        "protocolVersion": "2025-06-18", "capabilities": {}, "clientInfo": {"name": "check", "version": "1"}}})
+    init = json.loads(await asyncio.wait_for(process.stdout.readline(), 10))
+    await send({"jsonrpc": "2.0", "method": "notifications/initialized"})
+    pushed, end = [], time.monotonic() + seconds
+    while time.monotonic() < end:
+        try:
+            line = await asyncio.wait_for(process.stdout.readline(), end - time.monotonic())
+        except asyncio.TimeoutError:
+            break
+        message = json.loads(line) if line.strip() else {}
+        if message.get("method") == "notifications/claude/channel":
+            pushed.append(message)
+    process.terminate()
+    await process.wait()
+    return init, pushed
 
 
 def micropython_subset():
@@ -180,9 +210,10 @@ async def scenarios(sim, env):
     async with agent(env) as a:
         tools = (await a.session.list_tools()).tools
         names = {t.name for t in tools}
-        check("the gateway offers exactly four tools", names == TOOLS, names)
+        check("the gateway offers exactly five tools", names == TOOLS, names)
         read_only = {t.name for t in tools if t.annotations and t.annotations.read_only_hint}
-        check("only robot_state is marked read only", read_only == {"robot_state"}, read_only)
+        check("only robot_state and wait_for_event are marked read only",
+              read_only == {"robot_state", "wait_for_event"}, read_only)
 
     # The first prototype: one cell forwards, then it refuses to go on in front of a box.
     sim.fresh(boxes=[{"x": 65, "y": 65, "w": 20, "h": 20, "name": "box"}])
@@ -421,6 +452,63 @@ async def scenarios(sim, env):
     ball = sim.state()["balls"][0]
     check("a ball dragged off the mat stays on it", ball["x"] <= MAT["cols"] * MAT["cell_cm"] - 5 + 0.1
           and ball["y"] >= 5 - 0.1, ball)
+
+    # Events between two calls: the agent hears them at its next call, once; the page has its own count.
+    sim.fresh(balls=[{"from": [15, 135], "to": [145, 135], "radius": 7, "speed_cm_s": 20}])
+    async with agent(env) as a:
+        await a.call("robot_state")
+        await asyncio.sleep(3.0)
+        reply = await a.call("robot_state")
+        heard = [e["event"] for e in reply.get("since_last_call", [])]
+        check("an event between two calls reaches the agent at its next call",
+              any("bumper" in e for e in heard), reply.get("since_last_call"))
+        sim.act(do="mode", mode="frozen")  # the ball stops: nothing new happens
+        await asyncio.sleep(0.3)
+        await a.call("robot_state")
+        reply = await a.call("robot_state")
+        check("each event is given once", not reply.get("since_last_call"), reply.get("since_last_call"))
+        sim.act(do="mode", mode="realtime")
+    status, reply = sim.drive(command="state")
+    check("the page has its own count: it hears the same bump",
+          any("bumper" in e["event"] for e in reply["result"].get("since_last_call", [])), reply)
+    sim.act(do="button", name="stop")
+    await asyncio.sleep(0.3)
+    async with agent(env) as a:
+        reply = await a.call("robot_state")
+        check("the emergency button, pressed while nobody asked, is heard", reply.get("emergency_stop") is True
+              and any("emergency" in e["event"] for e in reply.get("since_last_call", [])), reply)
+
+    # wait_for_event: answers as soon as something happens, or when the time is over.
+    sim.fresh(balls=[{"from": [15, 135], "to": [145, 135], "radius": 7, "speed_cm_s": 20}])
+    async with agent(env) as a:
+        await a.call("robot_state")
+        started = time.monotonic()
+        reply = await a.call("wait_for_event", seconds=10)
+        took = time.monotonic() - started
+        check("wait_for_event: answers when the ball touches the robot", reply.get("result") == "something happened"
+              and any("bumper" in e["event"] for e in reply.get("events", [])) and took < 6, (reply, round(took, 1)))
+    sim.fresh()
+    async with agent(env) as a:
+        await a.call("robot_state")
+        reply = await a.call("wait_for_event", seconds=1)
+        check("wait_for_event: nothing happens, it answers after the time", reply.get("result") == "nothing happened",
+              reply)
+        watching = asyncio.create_task(a.call("wait_for_event", seconds=4))
+        await asyncio.sleep(1.0)
+        status, reply = await asyncio.to_thread(sim.drive, command="state")
+        await watching
+        check("while an agent watches, the page can still ask", status == 200
+              and reply["result"].get("result") != "refused", (status, reply))
+
+    # ROBOT_CHANNEL=1: the gateway pushes each event (Claude Code channel), on the legacy handshake.
+    sim.fresh(balls=[{"from": [15, 135], "to": [145, 135], "radius": 7, "speed_cm_s": 20}])
+    init, pushed = await channel_session(env, seconds=6)
+    capabilities = init.get("result", {}).get("capabilities", {})
+    check("channel: the gateway declares claude/channel and says how to read the events",
+          "claude/channel" in capabilities.get("experimental", {})
+          and "<channel" in init.get("result", {}).get("instructions", ""), init)
+    check("channel: a bump is pushed without any call", any("bumper" in p["params"]["content"] for p in pushed),
+          pushed)
 
     # Real time and frozen time.
     sim.fresh(balls=[{"from": [15, 15], "to": [135, 15], "radius": 5, "speed_cm_s": 10}])

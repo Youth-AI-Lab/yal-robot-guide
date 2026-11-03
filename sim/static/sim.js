@@ -279,7 +279,7 @@ canvas.addEventListener("dblclick", (e) => {
 });
 
 // Driving: each button runs the gateway (POST /api/drive), as a terminal command would.
-const driveButtons = ["d-forward", "d-left", "d-right", "d-state", "d-light", "g-north", "g-west", "g-south", "g-east"]
+const driveButtons = ["d-forward", "d-left", "d-right", "d-state", "d-light", "d-wait", "g-north", "g-west", "g-south", "g-east"]
   .map((id) => document.getElementById(id));
 async function driveRobot(command, extra) {
   if (driveButtons[0].disabled) return;
@@ -306,6 +306,7 @@ document.getElementById("d-forward").addEventListener("click", () => driveRobot(
 document.getElementById("d-left").addEventListener("click", () => driveRobot("left"));
 document.getElementById("d-right").addEventListener("click", () => driveRobot("right"));
 document.getElementById("d-state").addEventListener("click", () => driveRobot("state"));
+document.getElementById("d-wait").addEventListener("click", () => driveRobot("wait"));
 document.getElementById("d-light").addEventListener("click",
   () => driveRobot("light", { color: document.getElementById("d-color").value }));
 for (const side of ["north", "west", "south", "east"]) {

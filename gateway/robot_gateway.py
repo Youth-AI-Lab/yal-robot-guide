@@ -5,6 +5,13 @@ It is an MCP server with four tools, and nothing else reaches the robot:
   - step_forward()       one cell forwards
   - turn(direction)      a quarter turn, "left" or "right"
   - set_light(color)     the light of the robot, from a short list
+  - wait_for_event(s)    watch the robot for up to s seconds, until something happens (read only)
+Every answer also carries "since_last_call": what happened to the robot since this caller's last
+call (a bump, a warning, a stop, Resume), from the robot's own memory of its last events.
+
+With ROBOT_CHANNEL=1, the gateway also pushes each event to the agent as it happens, as a Claude
+Code "channel" (research preview of Claude Code: interactive sessions only, started with
+--dangerously-load-development-channels server:robot). No other agent reads these notifications.
 
 The gateway keeps its own limits, whatever the agent asks: one cell per call, never off the mat,
 a number of moves per session, a time limit on each move. It never sends an image: the agent gets
@@ -54,6 +61,15 @@ REASONS = {
 }
 
 
+EVENTS = {
+    "BUMP": "something touched the robot's bumper",
+    "NEAR": "something came close in front of the robot standing still: its warning light turned on",
+    "RESUMED": "an adult pressed Resume on the robot",
+    "ESTOP": "someone pressed the emergency stop button",
+    "STOP": "a move stopped: ",
+}
+
+
 def log(tool, arguments, result):
     """Write what the agent receives, as it receives it."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -89,6 +105,7 @@ class Gateway:
             self.col, self.row, self.facing = saved["col"], saved["row"], saved["facing"]
             self.sure, self.back, self.moves = saved["sure"], saved["back"], saved["moves"]
             self.resumes_at_stop = saved.get("resumes_at_stop")
+            self.cursors = saved.get("cursors", {})
         except (OSError, ValueError, KeyError):
             start = self.mat["start"]
             self.col, self.row = ord(start["cell"][0].upper()) - ord("A"), int(start["cell"][1:]) - 1
@@ -97,11 +114,13 @@ class Gateway:
             self.back = None
             self.moves = 0
             self.resumes_at_stop = None  # how many times Resume had been pressed when a move stopped
+            self.cursors = {}  # the last robot event each caller (agent, terminal, page) was given
 
     def save_state(self):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         saved = {"col": self.col, "row": self.row, "facing": self.facing, "sure": self.sure,
-                 "back": self.back, "moves": self.moves, "resumes_at_stop": self.resumes_at_stop}
+                 "back": self.back, "moves": self.moves, "resumes_at_stop": self.resumes_at_stop,
+                 "cursors": self.cursors}
         (STATE_DIR / "gateway.json").write_text(json.dumps(saved) + "\n", encoding="utf-8")
 
     # The serial link -------------------------------------------------------------------------
@@ -170,6 +189,30 @@ class Gateway:
         Nothing depends on it: a new gateway may start after the event, so the state of the robot
         is always read again with STATE."""
 
+    def new_events(self):
+        """What happened to the robot since this caller last heard, from the robot's own memory:
+        nothing is lost when nobody was listening (up to the 16 events the robot keeps)."""
+        seen = self.cursors.get(CALLER, 0)
+        reply = self.request(f"EVENTS {seen}")
+        parts = reply.split()
+        head = dict(p.split("=", 1) for p in parts[2:4])
+        now, following = int(head["now"]), int(head["next"])
+        if following - 1 < seen:  # the robot restarted: its numbers start again
+            seen = 0
+            parts = self.request("EVENTS 0").split()
+        events = []
+        entries = [p.split(":", 2) for p in parts[4:]]
+        if entries and int(entries[0][0]) > seen + 1 and seen > 0:
+            events.append({"event": "some older events were lost (the robot keeps only the last ones)"})
+        for number, ms, name in entries:
+            kind, _, reason = name.partition(":")
+            text = EVENTS.get(kind, name)
+            if kind == "STOP":
+                text += REASONS.get(reason, reason)
+            events.append({"seconds_ago": round((now - int(ms)) / 1000, 1), "event": text})
+        self.cursors[CALLER] = following - 1
+        return events
+
     def fields(self):
         reply = self.request("STATE")
         return dict(part.split("=", 1) for part in reply.split()[2:])
@@ -233,6 +276,9 @@ class Gateway:
             "emergency_stop": fields.get("estop") == "1",
             "waiting_for_adult": fields.get("wait_adult") == "1" or not self.sure,
             "bumper_touched": fields.get("bumper") == "1",
+            "warning_light_on": fields.get("warning") == "1",
+            "last_stop": "none" if fields.get("last_stop", "none") == "none"
+                         else REASONS.get(fields["last_stop"], fields["last_stop"]),
             "moves_left": self.mat["max_moves"] - self.moves,
             "mat": f"{self.mat['cols']} columns (A to {cell_name(self.mat['cols'] - 1, 0)[0]}), "
                    f"{self.mat['rows']} rows (1 at the top to {self.mat['rows']})",
@@ -300,33 +346,68 @@ class Gateway:
         reply = self.request("LED " + color)
         return {"result": "done"} if reply.startswith("OK") else self.refused(reply[4:])
 
-    def run(self, tool, arguments, action):
-        """Run one tool call for the agent: connect if needed, never raise, log what it gets."""
-        with self.lock:
-            # One command at a time on the cable, whoever sends it: an agent, a terminal, the page.
-            # Two programs reading the same serial port would take each other's answers.
-            STATE_DIR.mkdir(parents=True, exist_ok=True)
-            with (STATE_DIR / "gateway.lock").open("w") as lock:
+    def locked(self, action):
+        """Run an action with the cable to itself, or return None when another command holds it.
+        One command at a time on the cable, whoever sends it (an agent, a terminal, the page): two
+        programs reading the same serial port would take each other's answers."""
+        STATE_DIR.mkdir(parents=True, exist_ok=True)
+        with (STATE_DIR / "gateway.lock").open("w") as lock:
+            try:
+                fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return None
+            self.load_state()
+            try:
+                self.connect()
+                self.drain()
+                if not self.sure:
+                    self.check_resumed()
+                result = action()
                 try:
-                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                except BlockingIOError:
-                    result = self.refused("another command is running (an agent, a terminal or the page): "
-                                          "wait for it to end")
-                else:
-                    self.load_state()
-                    try:
-                        self.connect()
-                        self.drain()
-                        if not self.sure:
-                            self.check_resumed()
-                        result = action()
-                    except RobotNotConnected as e:
-                        self.close()
-                        result = {"result": "error", "why": str(e)}
-                    self.save_state()
+                    events = self.new_events()
+                except RobotNotConnected:
+                    events = []  # the robot does not answer now: the events wait for the next call
+                if events:
+                    result["since_last_call"] = events
+            except RobotNotConnected as e:
+                self.close()
+                result = {"result": "error", "why": str(e)}
+            self.save_state()
+            return result
+
+    def run(self, tool, arguments, action):
+        """Run one tool call: connect if needed, never raise, log what the caller gets."""
+        with self.lock:
+            end = time.monotonic() + 1.0  # a short wait: watching (wait_for_event) holds the cable briefly
+            while (result := self.locked(action)) is None and time.monotonic() < end:
+                time.sleep(0.05)
+            if result is None:
+                result = self.refused("another command is running (an agent, a terminal or the page): "
+                                      "wait for it to end")
             text = json.dumps(result, ensure_ascii=False)
             log(tool, arguments, text)
             return text
+
+    def watch_once(self):
+        """The events the agent has not heard yet, read briefly (for the channel), or []."""
+        with self.lock:
+            result = self.locked(lambda: {})
+        return [] if result is None else result.get("since_last_call", [])
+
+    def wait_for(self, seconds):
+        """Watch the robot for up to `seconds`, without holding the cable in between."""
+        end = time.monotonic() + seconds
+        while True:
+            with self.lock:
+                result = self.locked(lambda: {})
+            if result is not None:
+                if result.get("result") == "error":
+                    return result
+                if result.get("since_last_call"):
+                    return {"result": "something happened", "events": result["since_last_call"]}
+            if time.monotonic() >= end:
+                return {"result": "nothing happened", "waited_seconds": seconds}
+            time.sleep(0.3)
 
 
 GATEWAY = Gateway(json.loads(MAT.read_text(encoding="utf-8")))
@@ -353,20 +434,84 @@ def turn(direction: Literal["left", "right"]) -> str:
     return GATEWAY.run("turn", {"direction": direction}, lambda: GATEWAY.move("TURN " + kind, kind))
 
 
+def wait_for_event(seconds: int = 10) -> str:
+    """Watch the robot for up to `seconds` (1 to 30) and answer as soon as something happens to it
+    (something touched it, came close in front, a move stopped, an adult pressed Resume), or when
+    the time is over. Moves nothing. It is for watching, not for safety: the robot protects itself
+    long before an answer could arrive."""
+    seconds = max(1, min(30, int(seconds)))
+    text = json.dumps(GATEWAY.wait_for(seconds), ensure_ascii=False)
+    log("wait_for_event", {"seconds": seconds}, text)
+    return text
+
+
 def set_light(color: Literal["off", "red", "orange", "green", "blue"]) -> str:
     """Change the colour of the robot's light."""
     return GATEWAY.run("set_light", {"color": color}, lambda: GATEWAY.set_light(color))
+
+
+CHANNEL_INSTRUCTIONS = (
+    "Events from the robot may arrive by themselves, as <channel source=\"robot\">. They are "
+    "information only: the robot has already protected itself (it stops by itself and never moves "
+    "without a command). Before deciding anything, call robot_state."
+)
 
 
 def serve():
     from mcp.server.mcpserver import MCPServer
     from mcp.types import ToolAnnotations
 
-    server = MCPServer("robot")
-    server.tool(annotations=ToolAnnotations(read_only_hint=True))(robot_state)
+    channel = os.environ.get("ROBOT_CHANNEL") == "1"
+    server = MCPServer("robot", instructions=CHANNEL_INSTRUCTIONS if channel else None)
+    for tool in (robot_state, wait_for_event):
+        server.tool(annotations=ToolAnnotations(read_only_hint=True))(tool)
     for tool in (step_forward, turn, set_light):
         server.tool(annotations=ToolAnnotations(read_only_hint=False))(tool)
-    server.run()
+    if channel:
+        serve_with_channel(server)
+    else:
+        server.run()
+
+
+def serve_with_channel(server):
+    """The same server, which also declares the Claude Code channel capability and pushes each robot
+    event as a notifications/claude/channel. With mcp 2.3.0, MCPServer.run() cannot declare an
+    experimental capability: this runs its low-level server itself (a private attribute, checked
+    with the SDK version pinned in the image)."""
+    import anyio
+    from mcp.server.stdio import stdio_server
+    from mcp.types import NotificationParams
+
+    low = server._lowlevel_server
+    sessions = []
+
+    async def initialized(ctx, params):
+        sessions.append(ctx.session)
+
+    low.add_notification_handler("notifications/initialized", NotificationParams, initialized)
+
+    async def push_events():
+        while True:
+            await anyio.sleep(0.5)
+            if not sessions:
+                continue
+            for event in await anyio.to_thread.run_sync(GATEWAY.watch_once):
+                content = f"Robot event, {event.get('seconds_ago', 0)} s ago: {event['event']}."
+                log("(pushed to the agent)", {}, content)
+                # Connection.notify: best effort, never raises (the session's own connection).
+                await sessions[-1]._connection.notify(
+                    "notifications/claude/channel",
+                    {"content": content, "meta": {"seconds_ago": str(event.get("seconds_ago", 0))}})
+
+    async def main():
+        async with stdio_server() as (read, write):
+            async with anyio.create_task_group() as tasks:
+                tasks.start_soon(push_events)
+                await low.run(read, write, low.create_initialization_options(
+                    experimental_capabilities={"claude/channel": {}}))
+                tasks.cancel_scope.cancel()
+
+    anyio.run(main)
 
 
 def by_hand(args):
@@ -375,6 +520,8 @@ def by_hand(args):
                 "left": lambda: turn("left"), "right": lambda: turn("right")}
     if args[0] in commands and len(args) == 1:
         print(commands[args[0]]())
+    elif args[0] == "wait" and len(args) <= 2 and all(a.isdigit() for a in args[1:]):
+        print(wait_for_event(int(args[1]) if len(args) == 2 else 10))
     elif args == ["reset"]:
         # Only for a person who has just put the robot on its start cell, facing the right way.
         (STATE_DIR / "gateway.json").unlink(missing_ok=True)
@@ -383,7 +530,7 @@ def by_hand(args):
         print(set_light(args[1]))
     else:
         sys.exit("Usage: robot_gateway.py state | forward | left | right | light " + "|".join(COLORS)
-                 + " | reset")
+                 + " | wait [seconds] | reset")
 
 
 if __name__ == "__main__":

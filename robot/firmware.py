@@ -17,11 +17,14 @@ asking the computer. Nothing else is understood.
     TURN L, TURN R ->  OK TURN L, then EVT DONE L, or EVT STOP <reason>
     LED <color>    ->  OK LED <color>
     STOP           ->  OK STOP
+    EVENTS <n>     ->  OK EVENTS now=<ms> next=<id> <id>:<ms>:<event> ...  (the remembered events after n)
     anything else  ->  ERR <reason>
 and, without being asked:
     EVT BUMP       something touched the bumper (a ball, a foot), moving or not
     EVT NEAR       standing still, something came close in front: the light warns (reflex.warn)
     EVT RESUMED    an adult pressed Resume on the robot
+The robot also remembers its last 16 events (those three, ESTOP, and STOP:<reason> when a move
+stops), numbered, with the time of its clock: a computer that was not listening asks EVENTS.
 
 The robot never moves backwards: its distance sensor only looks forwards. Its bumper goes all
 around it: when something touches it, a move stops at once, whatever reflex.py says.
@@ -55,6 +58,7 @@ HARD_MIN_DISTANCE_CM = 3
 TURN_DEG_S = 90
 
 COLORS = ("off", "red", "orange", "green", "blue")
+EVENTS_KEPT = 16
 
 
 class Firmware:
@@ -70,10 +74,23 @@ class Firmware:
         self.resume_held = False
         self.light = "off"  # the colour asked by the computer
         self.warning = False
+        self.events = []  # [number, time in ms, name], the last EVENTS_KEPT
+        self.next_event = 1
         self.last_heard = hal.ticks_ms()
 
     def say(self, text):
         self.hal.write_line(text)
+
+    def remember(self, name):
+        self.events.append([self.next_event, self.hal.ticks_ms(), name])
+        self.next_event += 1
+        if len(self.events) > EVENTS_KEPT:
+            self.events.pop(0)
+
+    def note(self, name):
+        """An event: remembered, and said at once to whoever listens."""
+        self.remember(name)
+        self.say("EVT " + name)
 
     def tick(self):
         """Called many times per second (100 times in the simulator)."""
@@ -85,10 +102,11 @@ class Firmware:
 
         if hal.button("stop") and not self.estop:
             self.estop = True
+            self.remember("ESTOP")
             self.halt("estop")
         touched = hal.bumper()
         if touched and not self.bumped:
-            self.say("EVT BUMP")
+            self.note("BUMP")
             self.halt("bump")
         self.bumped = touched
         resume = hal.button("resume") and not hal.button("stop")
@@ -98,7 +116,7 @@ class Firmware:
             self.estop = False
             self.wait_adult = False
             self.resumes += 1
-            self.say("EVT RESUMED")
+            self.note("RESUMED")
         self.resume_held = resume
 
         if self.motion is None:
@@ -122,7 +140,7 @@ class Firmware:
         if color in COLORS:
             if not self.warning:
                 self.warning = True
-                self.say("EVT NEAR")
+                self.note("NEAR")
             self.hal.led(color)
         elif self.warning:
             self.warning = False
@@ -169,6 +187,7 @@ class Firmware:
         if self.motion is not None:
             self.motion = None
             self.wait_adult = True
+            self.remember("STOP:" + why)
             self.say("EVT STOP " + why)
 
     def refusal(self, kind):
@@ -201,6 +220,13 @@ class Firmware:
             self.say("OK PONG")
         elif word == "STATE" and len(parts) == 1:
             self.say(self.state_line())
+        elif word == "EVENTS" and len(parts) == 2 and parts[1].isdigit():
+            after = int(parts[1])
+            text = "OK EVENTS now=%d next=%d" % (self.hal.ticks_ms(), self.next_event)
+            for number, ms, name in self.events:
+                if number > after:
+                    text += " %d:%d:%s" % (number, ms, name)
+            self.say(text)
         elif word == "STOP" and len(parts) == 1:
             self.halt("command")
             self.say("OK STOP")

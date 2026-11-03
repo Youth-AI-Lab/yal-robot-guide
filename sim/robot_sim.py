@@ -75,6 +75,7 @@ class Link:
         self.plugged = True
         self.buffer = b""
         self.log = log
+        self.received = collections.Counter()  # every command the robot received, by its first word
 
     def read_lines(self, now):
         try:
@@ -91,6 +92,7 @@ class Link:
             text = line.decode("ascii", "replace").strip()
             if text:
                 lines.append(text)
+                self.received[text.split()[0]] += 1
                 self.log.append({"t": round(now, 2), "dir": "in", "line": text})
         return lines
 
@@ -160,6 +162,7 @@ class World:
             self.move_start = None
             self.unplugged_at = None
             self.link.plugged = True
+            self.link.received.clear()
             self.stops = []
             self.last_command_at = None
             self.firmware_module = load_module("firmware", GUIDE / "robot" / "firmware.py")
@@ -305,7 +308,8 @@ class World:
                 "boxes": self.boxes,
                 "balls": [{"x": round(bx, 1), "y": round(by, 1), "radius": b["radius"]}
                           for b in self.balls for bx, by in [self.ball_xy(b)]],
-                "link": {"plugged": self.link.plugged, "serial": self.link.path},
+                "link": {"plugged": self.link.plugged, "serial": self.link.path,
+                         "received": dict(self.link.received)},
                 "reflex": {k: getattr(self.reflex, k, None)
                            for k in ("STOP_DISTANCE_CM", "MAX_SPEED_CM_S", "WATCHDOG_MS", "MIN_BATTERY",
                                      "WARN_DISTANCE_CM")},
@@ -494,7 +498,7 @@ def physics(world, stop):
             next_tick = time.monotonic()
 
 
-DRIVE = {"forward": ["forward"], "left": ["left"], "right": ["right"], "state": ["state"]}
+DRIVE = {"forward": ["forward"], "left": ["left"], "right": ["right"], "state": ["state"], "wait": ["wait", "10"]}
 DRIVE_LOCK = threading.Lock()
 
 
@@ -526,7 +530,7 @@ def gateway(world, args):
     env = dict(os.environ, ROBOT_STATE_DIR=str(world.state_dir), ROBOT_SERIAL=world.link.path,
                ROBOT_MAT=str(world.state_dir / "mat.json"), ROBOT_CALLER="page")
     done = subprocess.run([sys.executable, "-I", str(GUIDE / "gateway" / "robot_gateway.py"), *args],
-                          env=env, capture_output=True, text=True, timeout=world.mat["move_timeout_s"] + 5)
+                          env=env, capture_output=True, text=True, timeout=max(world.mat["move_timeout_s"], 30) + 5)
     if done.returncode != 0:
         raise RuntimeError((done.stderr or done.stdout).strip()[-500:])
     return json.loads(done.stdout)
