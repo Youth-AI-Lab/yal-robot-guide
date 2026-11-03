@@ -39,6 +39,10 @@ ROBOT_RADIUS_CM = 10
 SENSOR_RANGE_CM = 400  # VL53L1X of the STeaMi board: 0 to 4 m (wiki.steami.cc)
 SENSOR_RAYS_DEG = (-5, 0, 5)  # a narrow cone: a choice of the simulator, not a measure
 BATTERY_PER_CM = 0.05
+# The low fence around the simulated mat, this far outside its edge. At the fence itself, a robot on a
+# cell of the edge would see it closer than its stopping distance and could never enter that cell
+# (found on 2026-11-03: an agent concluded the cells of the edge were blocked).
+FENCE_CM = 10
 BUTTON_PRESS_S = 0.2
 STATIC_FILES = {"/": ("index.html", "text/html"), "/sim.js": ("sim.js", "text/javascript"),
                 "/sim.css": ("sim.css", "text/css")}
@@ -212,9 +216,10 @@ class World:
             h = math.radians(self.heading + offset)
             dx, dy = math.sin(h), -math.cos(h)
             hits = [ray_box(self.x, self.y, dx, dy, *box) for box in self.obstacles()]
-            # The border of the mat: the simulated mat has a low fence that the sensor sees.
-            for t in (-self.x / dx if dx < 0 else (self.width - self.x) / dx if dx > 0 else None,
-                      -self.y / dy if dy < 0 else (self.height - self.y) / dy if dy > 0 else None):
+            # The fence around the mat, FENCE_CM outside its edge, which the sensor sees.
+            f = FENCE_CM
+            for t in ((-f - self.x) / dx if dx < 0 else (self.width + f - self.x) / dx if dx > 0 else None,
+                      (-f - self.y) / dy if dy < 0 else (self.height + f - self.y) / dy if dy > 0 else None):
                 hits.append(t)
             for t in hits:
                 if t is not None and t >= 0 and (best is None or t < best):
@@ -278,7 +283,8 @@ class World:
         r = ROBOT_RADIUS_CM
         # Driving into a box or the fence is a collision. A ball in the way only blocks: its touch
         # is counted as a bump (ball_hits).
-        walls = (x < r or y < r or x > self.width - r or y > self.height - r
+        f = FENCE_CM
+        walls = (x < r - f or y < r - f or x > self.width + f - r or y > self.height + f - r
                  or any(circle_box(x, y, r, b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"]) for b in self.boxes))
         ball = any(math.hypot(x - bx, y - by) < r + b["radius"] for b in self.balls for bx, by in [self.ball_xy(b)])
         if walls or ball:

@@ -187,9 +187,10 @@ such way: they read `since_last_call`.
 - **Hermes Agent v0.22.5**: add [agents/hermes-robot.yaml](agents/hermes-robot.yaml) to its
   configuration. With `trust: untrusted`, Hermes asks a person before each move, and refuses every
   move where nobody can answer. Tried with a fake model, then with DeepSeek v4 Flash through
-  OpenRouter (3 sessions, 0.0022 dollars): the model finds the robot's tools through Hermes's
+  OpenRouter (4 sessions, 0.0117 dollars): the model finds the robot's tools through Hermes's
   `tool_search`, calls `robot_state`, says so when a move is refused, and watches with
-  `wait_for_event`. Hermes keeps the
+  `wait_for_event`. With `trust: full` (no approval, in the simulator only), it drove the robot
+  by itself around a tree and a rock to a card, in 13 moves and 3 minutes. Hermes keeps the
   gateway running between two commands; the gateway follows the simulator if it restarts.
 - **Any agent**: the result of each call is written to `.robot-sim/context.jsonl`, and the page
   shows it. This is exactly what entered the agent's context.
@@ -207,7 +208,7 @@ such way: they read `since_last_call`.
 ```
 
 About two minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
-would, and reads in the simulator what really happened: 60 checks, all passed in the image
+would, and reads in the simulator what really happened: 61 checks, all passed in the image
 2026.10.45 on 3 November 2026 (container with 2 processors, no network).
 
 ---
@@ -224,7 +225,8 @@ waits for an adult: the computer cannot release it.
 ## Limits to know
 
 - **Simulator values.** Cells of 30 cm, 10 cm/s, a one-second watchdog, a sensor that sees a fence
-  around the mat: the real numbers are TO BE COMPLETED on the robot.
+  10 cm outside the mat (any closer, and the robot could not enter the cells of the edge): the real
+  numbers are TO BE COMPLETED on the robot.
 - **What the simulator cannot tell you**: how the real motors, wheels and sensors behave, the
   battery, the camera's real mistakes, the radio range, and whether children are safe around the
   robot.

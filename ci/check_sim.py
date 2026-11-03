@@ -528,6 +528,17 @@ async def scenarios(sim, env):
         reply = await a.call("robot_state")
         check("the simulator restarts: the same gateway follows its new port", reply.get("cell") == "C5", reply)
 
+    # A cell of the edge can be entered (the fence is outside the mat), and the gateway stops at the edge.
+    sim.fresh()
+    async with agent(env) as a:
+        await a.call("step_forward")
+        await a.call("turn", direction="right")
+        await a.call("turn", direction="right")
+        reply = await a.call("step_forward")
+        r = sim.state()["robot"]
+        check("a cell of the edge can be entered facing the fence (C4 to C5, facing south)",
+              reply.get("result") == "done" and r["cell"] == "C5" and r["collisions"] == 0, (reply, r))
+
     # Real time and frozen time.
     sim.fresh(balls=[{"from": [15, 15], "to": [135, 15], "radius": 5, "speed_cm_s": 10}])
     sim.act(do="mode", mode="realtime")
