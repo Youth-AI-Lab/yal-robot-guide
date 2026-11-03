@@ -28,7 +28,7 @@ from mcp.client.stdio import stdio_client
 
 GUIDE = Path(__file__).resolve().parent.parent
 PYTHON = sys.executable
-TOOLS = {"robot_state", "step_forward", "turn", "set_light", "wait_for_event"}
+TOOLS = {"robot_state", "step_forward", "turn", "set_light", "wait_for_event", "seen_cards"}
 # A small mat for the checks: 5 x 5 cells of 30 cm, start on C5 facing north, 6 moves.
 MAT = {"cols": 5, "rows": 5, "cell_cm": 30, "start": {"cell": "C5", "facing": "north"},
        "max_moves": 6, "move_timeout_s": 6,
@@ -210,10 +210,10 @@ async def scenarios(sim, env):
     async with agent(env) as a:
         tools = (await a.session.list_tools()).tools
         names = {t.name for t in tools}
-        check("the gateway offers exactly five tools", names == TOOLS, names)
+        check("the gateway offers exactly six tools", names == TOOLS, names)
         read_only = {t.name for t in tools if t.annotations and t.annotations.read_only_hint}
-        check("only robot_state and wait_for_event are marked read only",
-              read_only == {"robot_state", "wait_for_event"}, read_only)
+        check("only robot_state, wait_for_event and seen_cards are marked read only",
+              read_only == {"robot_state", "wait_for_event", "seen_cards"}, read_only)
 
     # The first prototype: one cell forwards, then it refuses to go on in front of a box.
     sim.fresh(boxes=[{"x": 65, "y": 65, "w": 20, "h": 20, "name": "box"}])
@@ -538,6 +538,43 @@ async def scenarios(sim, env):
         r = sim.state()["robot"]
         check("a cell of the edge can be entered facing the fence (C4 to C5, facing south)",
               reply.get("result") == "done" and r["cell"] == "C5" and r["collisions"] == 0, (reply, r))
+
+    # What the camera saw: noted by the robot while it stands still, put on its cell by the gateway.
+    sim.fresh(cards=[{"cell": "C3", "label": "water-point"}])
+    async with agent(env) as a:
+        await a.call("step_forward")
+        await asyncio.sleep(0.6)
+        reply = await a.call("robot_state")
+        heard = [e["event"] for e in reply.get("since_last_call", [])]
+        check("the camera's card reaches the agent, on its cell", any("water-point" in e and "in C3" in e for e in heard),
+              heard)
+        cards = (await a.call("seen_cards"))["cards_seen"]
+        check("seen_cards: the card, its cell, where it was seen from",
+              len(cards) == 1 and cards[0]["cell"] == "C3" and cards[0]["seen_from"] == "C4 facing north", cards)
+        sim.act(do="move_card", **{"from": "C3", "to": "B2"})
+        await asyncio.sleep(0.6)
+        cards = (await a.call("seen_cards"))["cards_seen"]
+        check("a card moved by hand while the robot looks: it leaves the record", cards == [], cards)
+
+    sim.fresh(cards=[{"cell": "C4", "label": "barbecue"}])
+    sim.act(do="noise", camera_miss=1.0)
+    await asyncio.sleep(0.6)
+    async with agent(env) as a:
+        await a.call("robot_state")
+        cards = (await a.call("seen_cards"))["cards_seen"]
+        check("a camera that misses everything: nothing is noted", cards == [], cards)
+        sim.act(do="noise", camera_miss=0.0)
+        await asyncio.sleep(0.6)
+        cards = (await a.call("seen_cards"))["cards_seen"]
+        check("the camera sees again: the card is noted", [c["cell"] for c in cards] == ["C4"], cards)
+
+    sim.fresh(cards=[{"cell": "D4", "label": "dry-grass"}])
+    async with agent(env) as a:
+        await a.call("turn", direction="right")
+        await asyncio.sleep(0.6)
+        reply = await a.call("seen_cards")
+        check("a card glimpsed during a turn (D4, on the diagonal) is not noted", reply["cards_seen"] == []
+              and not any("dry-grass" in e["event"] for e in reply.get("since_last_call", [])), reply)
 
     # Real time and frozen time.
     sim.fresh(balls=[{"from": [15, 15], "to": [135, 15], "radius": 5, "speed_cm_s": 10}])

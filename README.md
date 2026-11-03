@@ -72,7 +72,7 @@ to drive it by hand:
 - **On the page**, the **Drive** panel. **North**, **West**, **South**, **East** and the arrow keys of
   the keyboard go towards a side of the mat: the robot turns as needed, then moves one cell (as the
   gateway believes it faces). **↑ Forward**, **↺ Left**, **↻ Right** are the moves an agent has, one at
-  a time. **State**, **Light** and **Wait for an event (10 s)** too. Each button runs the gateway, as
+  a time. **State**, **Light**, **Seen cards** and **Wait for an event (10 s)** too. Each button runs the gateway, as
   the command below would.
 - **In a second terminal**:
 
@@ -152,7 +152,7 @@ combined with a slower model do better
 
 ## Part 5 - Connect an agent (not tested with a real model)
 
-The gateway is an MCP server. Its five tools:
+The gateway is an MCP server. Its six tools:
 
 | Tool | What it does | Read only |
 |---|---|---|
@@ -161,6 +161,14 @@ The gateway is an MCP server. Its five tools:
 | `turn(direction)` | a quarter turn, `left` or `right` | no |
 | `set_light(color)` | `off`, `red`, `orange`, `green` or `blue` | no |
 | `wait_for_event(seconds)` | watch the robot for 1 to 30 seconds; answers as soon as something happens to it | yes |
+| `seen_cards()` | the cards the camera recognised, with the cell of each, where it was seen from, and when | yes |
+
+**What the camera saw.** The camera only names cards from a short list, never sends an image, and
+the robot only believes it while it stands still: during a move or a turn, the cell in front is not
+one cell. Each card it recognises becomes an event (in `since_last_call`), and the gateway puts it on
+its cell from where it counted the robot to be. `seen_cards` keeps that record, so it does not depend
+on the agent's memory; a card moved by hand leaves it when the robot sees its cell empty. The cells
+come from counting moves: with **Wheels slip** on, they can be wrong.
 
 **What happened between two calls.** MCP works by questions and answers: an agent learns nothing
 while it thinks. So every answer of the gateway carries `since_last_call`: what happened to the robot
@@ -208,7 +216,7 @@ such way: they read `since_last_call`.
 ```
 
 About two minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
-would, and reads in the simulator what really happened: 61 checks, all passed in the image
+would, and reads in the simulator what really happened: 67 checks, all passed in the image
 2026.10.45 on 3 November 2026 (container with 2 processors, no network).
 
 ---

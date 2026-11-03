@@ -13,6 +13,7 @@ asking the computer. Nothing else is understood.
     STATE          ->  OK STATE dist=<cm|none> card=<label|none> battery=<percent>
                        estop=<0|1> wait_adult=<0|1> moving=<0|1> last_stop=<reason> bumper=<0|1>
                        warning=<0|1> resumes=<number of presses on Resume since the robot started>
+                       pose=<number of the robot's place: +1 after each move, stop or Resume>
     MOVE F         ->  OK MOVE F, then EVT DONE F, or EVT STOP <reason>
     TURN L, TURN R ->  OK TURN L, then EVT DONE L, or EVT STOP <reason>
     LED <color>    ->  OK LED <color>
@@ -22,9 +23,12 @@ asking the computer. Nothing else is understood.
 and, without being asked:
     EVT BUMP       something touched the bumper (a ball, a foot), moving or not
     EVT NEAR       standing still, something came close in front: the light warns (reflex.warn)
+    EVT SEEN:<card>:<pose>  standing still, the camera recognised this card in the cell in front
     EVT RESUMED    an adult pressed Resume on the robot
-The robot also remembers its last 16 events (those three, ESTOP, and STOP:<reason> when a move
-stops), numbered, with the time of its clock: a computer that was not listening asks EVENTS.
+The robot also remembers its last 16 events (those, ESTOP, STOP:<reason> when a move stops, and
+SEEN:none:<pose> when a card it saw disappears while it stands still), numbered, with the time of
+its clock: a computer that was not listening asks EVENTS. The camera is only believed while the robot
+stands still: during a move or a turn, the cell in front is not one cell.
 
 The robot never moves backwards: its distance sensor only looks forwards. Its bumper goes all
 around it: when something touches it, a move stops at once, whatever reflex.py says.
@@ -59,6 +63,9 @@ TURN_DEG_S = 90
 
 COLORS = ("off", "red", "orange", "green", "blue")
 EVENTS_KEPT = 16
+# The camera's answer must stay the same this long before the robot believes it (milliseconds). The
+# simulator's value; on the real robot, the camera answers 1 to 2 s late (RobotIA): TO BE COMPLETED.
+CAMERA_STABLE_MS = 200
 
 
 class Firmware:
@@ -76,6 +83,10 @@ class Firmware:
         self.warning = False
         self.events = []  # [number, time in ms, name], the last EVENTS_KEPT
         self.next_event = 1
+        self.pose = 0  # +1 each time the robot may be somewhere else: a move ends, stops, or Resume
+        self.view = None  # the card the camera shows, once believed
+        self.candidate = None
+        self.candidate_since = 0
         self.last_heard = hal.ticks_ms()
 
     def say(self, text):
@@ -116,11 +127,14 @@ class Firmware:
             self.estop = False
             self.wait_adult = False
             self.resumes += 1
+            self.pose += 1  # the adult put it back: a new place
+            self.view = None
             self.note("RESUMED")
         self.resume_held = resume
 
         if self.motion is None:
             self.warn()
+            self.look(now)
             return
         kind = self.motion[0]
         if hal.ticks_diff(now, self.last_heard) > self.reflex.WATCHDOG_MS:
@@ -145,6 +159,21 @@ class Firmware:
         elif self.warning:
             self.warning = False
             self.hal.led(self.light)
+
+    def look(self, now):
+        """Standing still: note the card the camera recognises in front, once its answer is stable,
+        and note when a card it saw disappears."""
+        label = self.hal.camera_label()
+        if label != self.candidate:
+            self.candidate, self.candidate_since = label, now
+            return
+        if label == self.view or self.hal.ticks_diff(now, self.candidate_since) < CAMERA_STABLE_MS:
+            return
+        old, self.view = self.view, label
+        if label:
+            self.note("SEEN:%s:%d" % (label, self.pose))
+        elif old:
+            self.remember("SEEN:none:%d" % self.pose)
 
     def stop_reason(self, kind):
         distance = None
@@ -177,6 +206,7 @@ class Firmware:
 
     def finish(self):
         self.hal.drive(0, 0)
+        self.pose += 1
         kind = self.motion[0]
         self.motion = None
         self.say("EVT DONE " + kind)
@@ -186,6 +216,7 @@ class Firmware:
         self.last_stop = why
         if self.motion is not None:
             self.motion = None
+            self.pose += 1
             self.wait_adult = True
             self.remember("STOP:" + why)
             self.say("EVT STOP " + why)
@@ -243,6 +274,7 @@ class Firmware:
                 return
             cm, deg = self.hal.odometry()
             self.motion = [kind, cm if kind == "F" else deg]
+            self.view = self.candidate = None  # what it saw from here says nothing about the next place
             self.say("OK " + word + " " + kind)
             self.steer()
         else:
@@ -251,7 +283,7 @@ class Firmware:
     def state_line(self):
         distance = self.hal.distance_cm()
         card = self.hal.camera_label()
-        return "OK STATE dist=%s card=%s battery=%d estop=%d wait_adult=%d moving=%d last_stop=%s bumper=%d warning=%d resumes=%d" % (
+        return "OK STATE dist=%s card=%s battery=%d estop=%d wait_adult=%d moving=%d last_stop=%s bumper=%d warning=%d resumes=%d pose=%d" % (
             "none" if distance is None else str(int(distance)),
             card or "none",
             int(self.hal.battery()),
@@ -262,4 +294,5 @@ class Firmware:
             1 if self.bumped else 0,
             1 if self.warning else 0,
             self.resumes,
+            self.pose,
         )

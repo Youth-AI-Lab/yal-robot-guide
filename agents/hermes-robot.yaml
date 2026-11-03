@@ -14,7 +14,7 @@ mcp_servers:
     # Hermes 0.22.6 adds "Always" to this question, and --yolo skips it: stay on 0.22.5.
     trust: untrusted
     tools:
-      include: [robot_state, step_forward, turn, set_light, wait_for_event]
+      include: [robot_state, step_forward, turn, set_light, wait_for_event, seen_cards]
       resources: false
       prompts: false
     # The gateway never asks the model to write for it, nor the user a question.

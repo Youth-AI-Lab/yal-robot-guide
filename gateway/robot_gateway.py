@@ -6,6 +6,7 @@ It is an MCP server with four tools, and nothing else reaches the robot:
   - turn(direction)      a quarter turn, "left" or "right"
   - set_light(color)     the light of the robot, from a short list
   - wait_for_event(s)    watch the robot for up to s seconds, until something happens (read only)
+  - seen_cards()         the cards the camera recognised, with the cell where each one is (read only)
 Every answer also carries "since_last_call": what happened to the robot since this caller's last
 call (a bump, a warning, a stop, Resume), from the robot's own memory of its last events.
 
@@ -67,7 +68,9 @@ EVENTS = {
     "RESUMED": "an adult pressed Resume on the robot",
     "ESTOP": "someone pressed the emergency stop button",
     "STOP": "a move stopped: ",
+    "SEEN": "the camera recognised a card in front: ",
 }
+FACING_STEP = ((0, -1), (1, 0), (0, 1), (-1, 0))  # north, east, south, west
 
 
 def log(tool, arguments, result):
@@ -107,6 +110,8 @@ class Gateway:
             self.sure, self.back, self.moves = saved["sure"], saved["back"], saved["moves"]
             self.resumes_at_stop = saved.get("resumes_at_stop")
             self.cursors = saved.get("cursors", {})
+            self.poses = saved.get("poses", {})
+            self.seen = saved.get("seen", {})
         except (OSError, ValueError, KeyError):
             start = self.mat["start"]
             self.col, self.row = ord(start["cell"][0].upper()) - ord("A"), int(start["cell"][1:]) - 1
@@ -116,12 +121,14 @@ class Gateway:
             self.moves = 0
             self.resumes_at_stop = None  # how many times Resume had been pressed when a move stopped
             self.cursors = {}  # the last robot event each caller (agent, terminal, page) was given
+            self.poses = {}  # the robot's pose number -> [col, row, facing], as counted by the gateway
+            self.seen = {}  # cell -> the last card the camera recognised there
 
     def save_state(self):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         saved = {"col": self.col, "row": self.row, "facing": self.facing, "sure": self.sure,
                  "back": self.back, "moves": self.moves, "resumes_at_stop": self.resumes_at_stop,
-                 "cursors": self.cursors}
+                 "cursors": self.cursors, "poses": self.poses, "seen": self.seen}
         (STATE_DIR / "gateway.json").write_text(json.dumps(saved) + "\n", encoding="utf-8")
 
     # The serial link -------------------------------------------------------------------------
@@ -203,6 +210,7 @@ class Gateway:
         now, following = int(head["now"]), int(head["next"])
         if following - 1 < seen:  # the robot restarted: its numbers start again
             seen = 0
+            self.poses = {}
             parts = self.request("EVENTS 0").split()
         events = []
         entries = [p.split(":", 2) for p in parts[4:]]
@@ -210,6 +218,12 @@ class Gateway:
             events.append({"event": "some older events were lost (the robot keeps only the last ones)"})
         for number, ms, name in entries:
             kind, _, reason = name.partition(":")
+            if kind == "SEEN":
+                text = self.saw(reason, now - int(ms))
+                if text is None:
+                    continue
+                events.append({"seconds_before_this_answer": round((now - int(ms)) / 1000, 1), "event": text})
+                continue
             text = EVENTS.get(kind, name)
             if kind == "STOP":
                 text += REASONS.get(reason, reason)
@@ -219,9 +233,44 @@ class Gateway:
         self.cursors[CALLER] = following - 1
         return events
 
+    def saw(self, reason, age_ms):
+        """A camera event: put the card on its cell, from the pose the robot was at. Returns the text
+        for the agent, or None for a card that disappeared (the record is only updated)."""
+        label, _, pose = reason.rpartition(":")
+        where = self.poses.get(pose)
+        cell = None
+        if where:
+            dc, dr = FACING_STEP[where[2]]
+            col, row = where[0] + dc, where[1] + dr
+            if 0 <= col < self.mat["cols"] and 0 <= row < self.mat["rows"]:
+                cell = cell_name(col, row)
+        if label == "none":
+            if cell in self.seen:
+                del self.seen[cell]  # the card the camera saw there is gone (moved by hand?)
+            return None
+        means = self.cards.get(label, "unknown card")
+        if cell is None:
+            return EVENTS["SEEN"] + f"{label} ({means}); where: not known (the robot's position was not known)"
+        at = (datetime.datetime.now() - datetime.timedelta(milliseconds=age_ms)).strftime("%H:%M:%S")
+        self.seen[cell] = {"card": label, "means": means, "seen_from": f"{cell_name(where[0], where[1])} facing "
+                           f"{FACING[where[2]]}", "at": at}
+        return EVENTS["SEEN"] + f"{label} ({means}), in {cell} as the gateway counts the moves"
+
+    def seen_cards(self):
+        cards = [dict(cell=cell, **entry) for cell, entry in sorted(self.seen.items(), key=lambda kv: kv[1]["at"])]
+        return {"cards_seen": cards,
+                "note": "Each cell comes from counting the robot's moves, not from a measure: if the wheels slip, "
+                        "it can be wrong. A card moved by hand stays here until the robot looks at its old cell again."}
+
     def fields(self):
         reply = self.request("STATE")
-        return dict(part.split("=", 1) for part in reply.split()[2:])
+        fields = dict(part.split("=", 1) for part in reply.split()[2:])
+        if self.sure and "pose" in fields:
+            # Where the robot is at this pose number: lets a later camera event be put on its cell.
+            self.poses[fields["pose"]] = [self.col, self.row, self.facing]
+            for old in sorted(self.poses, key=int)[:-100]:
+                del self.poses[old]
+        return fields
 
     def check_resumed(self):
         """After an interrupted move: has an adult pressed Resume since? The robot counts the presses;
@@ -368,11 +417,15 @@ class Gateway:
                 self.drain()
                 if not self.sure:
                     self.check_resumed()
+                self.fields()  # notes the pose number of where the robot is now
+                # The events first, so that the action answers from an up-to-date record (seen_cards),
+                # then again after it, for what happened during a move.
+                events = self.new_events()
                 result = action()
                 try:
-                    events = self.new_events()
+                    events += self.new_events()
                 except RobotNotConnected:
-                    events = []  # the robot does not answer now: the events wait for the next call
+                    pass  # the robot does not answer now: the events wait for the next call
                 if events:
                     result["since_last_call"] = events
             except RobotNotConnected as e:
@@ -459,6 +512,13 @@ def wait_for_event(seconds: int = 10) -> str:
     return text
 
 
+def seen_cards() -> str:
+    """The cards the robot's camera recognised, each with the cell where it is, where the robot saw it
+    from, and when. Moves nothing. The camera only names cards from a short list, and only while the
+    robot stands still; each cell comes from counting the robot's moves."""
+    return GATEWAY.run("seen_cards", {}, GATEWAY.seen_cards)
+
+
 def set_light(color: Literal["off", "red", "orange", "green", "blue"]) -> str:
     """Change the colour of the robot's light."""
     return GATEWAY.run("set_light", {"color": color}, lambda: GATEWAY.set_light(color))
@@ -477,7 +537,7 @@ def serve():
 
     channel = os.environ.get("ROBOT_CHANNEL") == "1"
     server = MCPServer("robot", instructions=CHANNEL_INSTRUCTIONS if channel else None)
-    for tool in (robot_state, wait_for_event):
+    for tool in (robot_state, wait_for_event, seen_cards):
         server.tool(annotations=ToolAnnotations(read_only_hint=True))(tool)
     for tool in (step_forward, turn, set_light):
         server.tool(annotations=ToolAnnotations(read_only_hint=False))(tool)
@@ -530,7 +590,7 @@ def serve_with_channel(server):
 
 def by_hand(args):
     """Drive the robot without an agent: the same gateway, the same limits."""
-    commands = {"state": robot_state, "forward": step_forward,
+    commands = {"state": robot_state, "forward": step_forward, "seen": seen_cards,
                 "left": lambda: turn("left"), "right": lambda: turn("right")}
     if args[0] in commands and len(args) == 1:
         print(commands[args[0]]())
@@ -544,7 +604,7 @@ def by_hand(args):
         print(set_light(args[1]))
     else:
         sys.exit("Usage: robot_gateway.py state | forward | left | right | light " + "|".join(COLORS)
-                 + " | wait [seconds] | reset")
+                 + " | wait [seconds] | seen | reset")
 
 
 if __name__ == "__main__":

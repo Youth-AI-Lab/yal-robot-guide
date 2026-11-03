@@ -504,7 +504,7 @@ def physics(world, stop):
             next_tick = time.monotonic()
 
 
-DRIVE = {"forward": ["forward"], "left": ["left"], "right": ["right"], "state": ["state"], "wait": ["wait", "10"]}
+DRIVE = {"forward": ["forward"], "left": ["left"], "right": ["right"], "state": ["state"], "wait": ["wait", "10"], "seen": ["seen"]}
 DRIVE_LOCK = threading.Lock()
 
 
