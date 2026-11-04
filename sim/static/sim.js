@@ -80,16 +80,45 @@ function draw() {
     ctx.globalAlpha = 1;
   }
 
-  // The cell the camera looks at.
+  // What the camera can see: a fan in front of the robot.
   const r = state.robot;
   const h = r.heading * Math.PI / 180;
-  const ax = r.x + Math.sin(h) * c, ay = r.y - Math.cos(h) * c;
-  if (ax >= 0 && ay >= 0 && ax < m.cols * c && ay < m.rows * c) {
-    ctx.setLineDash([4, 4]);
-    ctx.strokeStyle = css("--robot");
-    ctx.strokeRect(px(s, Math.floor(ax / c) * c + 1), px(s, Math.floor(ay / c) * c + 1), (c - 2) * s, (c - 2) * s);
-    ctx.setLineDash([]);
+  const cone = state.sensors.cone;
+  if (cone) {
+    const a0 = h - Math.PI / 2 - cone.half_angle * Math.PI / 180, a1 = h - Math.PI / 2 + cone.half_angle * Math.PI / 180;
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(MARGIN, MARGIN, m.cols * c * s, m.rows * c * s);
+    ctx.clip();
+    ctx.fillStyle = css("--camera");
+    ctx.beginPath();
+    ctx.moveTo(px(s, r.x), px(s, r.y));
+    ctx.arc(px(s, r.x), px(s, r.y), cone.range * s, a0, a1);
+    ctx.closePath();
+    ctx.fill();
+    ctx.restore();
   }
+  // Where the camera thinks the cards it sees are (its angle and its distance, with its error).
+  for (const [label, angle, cm] of state.sensors.camera || []) {
+    const a = h + angle * Math.PI / 180;
+    ctx.fillStyle = css("--robot");
+    ctx.beginPath();
+    ctx.arc(px(s, r.x + Math.sin(a) * cm), px(s, r.y - Math.cos(a) * cm), 3.5, 0, 2 * Math.PI);
+    ctx.fill();
+  }
+  // What the gateway believes it saw: what the agent is told.
+  ctx.setLineDash([4, 3]);
+  ctx.strokeStyle = css("--belief");
+  ctx.fillStyle = css("--belief");
+  ctx.font = "10px system-ui";
+  for (const b of state.beliefs || []) {
+    if (b.x === undefined) continue;
+    ctx.beginPath();
+    ctx.arc(px(s, b.x), px(s, b.y), b.u * s, 0, 2 * Math.PI);
+    ctx.stroke();
+    ctx.fillText(b.card + "?", px(s, b.x), px(s, b.y - b.u - 4));
+  }
+  ctx.setLineDash([]);
 
   // Boxes and balls.
   for (const b of state.boxes) {
@@ -147,7 +176,8 @@ function panels() {
   document.getElementById("status").replaceChildren(
     tile("Real cell (only the simulator knows it)", r.cell ?? "off the mat"),
     tile("Distance in front", sensors.distance_cm === null ? "nothing in range" : sensors.distance_cm + " cm"),
-    tile("Card the camera sees", sensors.card_ahead ?? "none"),
+    tile("Card just in front", sensors.card_ahead ?? "none"),
+    tile("Camera sees", (sensors.camera || []).map(([l, a, d]) => l + " " + d + " cm " + (a >= 0 ? "+" : "") + a + "°").join(", ") || "nothing"),
     tile("Battery", r.battery + " %", r.battery < (state.reflex.MIN_BATTERY ?? 0)),
     tile("Moving", r.moving ? "yes" : "no"),
     tile("Emergency stop", r.estop ? "PRESSED" : "no", r.estop),
@@ -335,7 +365,7 @@ on("reset", () => act({ do: "reset" }));
 on("reload", () => act({ do: "reload_reflex" }));
 document.getElementById("mode").addEventListener("change", (e) => act({ do: "mode", mode: e.target.value }));
 for (const [id, out, key, factor] of [["noise-dist", "n-dist", "distance_cm", 1], ["noise-slip", "n-slip", "slip", 100],
-                                       ["noise-cam", "n-cam", "camera_miss", 100]]) {
+                                       ["noise-cam", "n-cam", "camera_miss", 100], ["noise-camd", "n-camd", "camera_distance", 100]]) {
   const input = document.getElementById(id);
   input.addEventListener("input", () => {
     document.getElementById(out).textContent = input.value;

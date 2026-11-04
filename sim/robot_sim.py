@@ -37,6 +37,11 @@ TICK_S = 0.01
 # The simulated robot. The real robot's sizes are TO BE COMPLETED.
 ROBOT_RADIUS_CM = 10
 SENSOR_RANGE_CM = 400  # VL53L1X of the STeaMi board: 0 to 4 m (wiki.steami.cc)
+# The simulated camera: a cone this wide on each side, this deep. The OpenMV N6's real field of view and
+# range for these cards are TO BE COMPLETED (to measure on the robot).
+CAMERA_HALF_ANGLE_DEG = 30
+CAMERA_RANGE_CM = 120
+CAMERA_ANGLE_ERROR_DEG = 2
 SENSOR_RAYS_DEG = (-5, 0, 5)  # a narrow cone: a choice of the simulator, not a measure
 BATTERY_PER_CM = 0.05
 # The low fence around the simulated mat, this far outside its edge. At the fence itself, a robot on a
@@ -134,11 +139,14 @@ class World:
         self.state_dir = Path(state_dir)
         self.lock = threading.RLock()
         self.random = random.Random(seed)
+        self.camera_seed = self.random.random()
         self.wire = collections.deque(maxlen=300)
         self.context = collections.deque(maxlen=100)
         self.link = Link(self.wire)
         self.mode = "realtime"
-        self.noise = {"distance_cm": 0.0, "slip": 0.0, "camera_miss": 0.0}
+        # camera_distance: the camera's distance error, as a share of the distance (an estimate from the
+        # size of the card in the image grows worse with distance).
+        self.noise = {"distance_cm": 0.0, "slip": 0.0, "camera_miss": 0.0, "camera_distance": 0.1}
         self.reflex_error = None
         self.load(mat, world)
 
@@ -229,13 +237,41 @@ class World:
         d = best - ROBOT_RADIUS_CM + self.random.gauss(0, self.noise["distance_cm"])
         return None if d > SENSOR_RANGE_CM else max(0.0, d)
 
-    def card_ahead(self):
-        h = math.radians(self.heading)
-        x, y = self.x + math.sin(h) * self.cell, self.y - math.cos(h) * self.cell
-        label = self.cards.get((int(x // self.cell), int(y // self.cell)))
-        if label and self.random.random() < self.noise["camera_miss"]:
-            return None
-        return label
+    def camera_view(self):
+        """The cards the camera recognises from where the robot stands: [card, angle, cm] each. The
+        error depends on the point of view, not on the frame: it stays the same while the robot stands
+        still (as an estimate does), and changes when it moves. A box hides what is behind it."""
+        out = []
+        view = f"{round(self.x)}:{round(self.y)}:{round(self.heading)}:{self.camera_seed}"
+        for (col, row), label in sorted(self.cards.items()):
+            cx, cy = (col + 0.5) * self.cell, (row + 0.5) * self.cell
+            dx, dy = cx - self.x, cy - self.y
+            d = math.hypot(dx, dy)
+            if d < ROBOT_RADIUS_CM or d > CAMERA_RANGE_CM:
+                continue
+            angle = (math.degrees(math.atan2(dx, -dy)) - self.heading + 540) % 360 - 180
+            if abs(angle) > CAMERA_HALF_ANGLE_DEG:
+                continue
+            ux, uy = dx / d, dy / d
+            hidden = any((t := ray_box(self.x, self.y, ux, uy, *box)) is not None and t < d
+                         for box in ((b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"]) for b in self.boxes))
+            if hidden:
+                continue
+            rng = random.Random(f"{view}:{col}:{row}")
+            if rng.random() < self.noise["camera_miss"]:
+                continue
+            seen_d = d * (1 + rng.gauss(0, self.noise["camera_distance"]))
+            seen_angle = angle + rng.gauss(0, CAMERA_ANGLE_ERROR_DEG)
+            out.append([label, int(round(seen_angle)), int(round(seen_d))])
+        return out
+
+    def gateway_beliefs(self):
+        """What the gateway believes it saw (its record), to draw it next to the truth."""
+        try:
+            seen = json.loads((self.state_dir / "gateway.json").read_text(encoding="utf-8")).get("seen", [])
+        except (OSError, ValueError):
+            return []
+        return [{k: s.get(k) for k in ("card", "x", "y", "u", "cell")} for s in seen if isinstance(s, dict)]
 
     # One step of time ------------------------------------------------------------------------
     def step(self, dt):
@@ -309,7 +345,10 @@ class World:
                           "last_stop": fw.last_stop, "battery": round(self.battery_level, 1),
                           "collisions": self.collisions, "cell": self.cell_of(self.x, self.y),
                           "bumper": fw.bumped, "bumps": self.bumps, "warning": fw.warning},
-                "sensors": {"distance_cm": self.rounded(self.distance()), "card_ahead": self.card_ahead()},
+                "sensors": {"distance_cm": self.rounded(self.distance()), "card_ahead": fw.card_in_front(),
+                            "camera": fw.view if fw.motion is None else [],
+                            "cone": {"half_angle": CAMERA_HALF_ANGLE_DEG, "range": CAMERA_RANGE_CM}},
+                "beliefs": self.gateway_beliefs(),
                 "cards": [{"cell": cell_name(*k), "label": v} for k, v in self.cards.items()],
                 "boxes": self.boxes,
                 "balls": [{"x": round(bx, 1), "y": round(by, 1), "radius": b["radius"]}
@@ -462,8 +501,8 @@ class Hal:
     def button(self, name):
         return self.w.buttons.get(name, -1) > self.w.time
 
-    def camera_label(self):
-        return self.w.card_ahead()
+    def camera_view(self):
+        return self.w.camera_view()
 
     def bumper(self):
         return self.w.touching or self.w.ball_contact

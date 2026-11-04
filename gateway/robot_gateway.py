@@ -29,6 +29,7 @@ Usage:
 import datetime
 import fcntl
 import json
+import math
 import os
 import select
 import sys
@@ -71,6 +72,10 @@ EVENTS = {
     "SEEN": "the camera recognised a card in front: ",
 }
 FACING_STEP = ((0, -1), (1, 0), (0, 1), (-1, 0))  # north, east, south, west
+# How sure the gateway is of a distance given by the camera: this share of the distance, plus a few
+# centimetres. The simulator's camera errs by 10 % by default; the OpenMV N6's is TO BE COMPLETED.
+CAMERA_ERROR = 0.15
+CAMERA_MIN_ERROR_CM = 5
 
 
 def log(tool, arguments, result):
@@ -111,7 +116,9 @@ class Gateway:
             self.resumes_at_stop = saved.get("resumes_at_stop")
             self.cursors = saved.get("cursors", {})
             self.poses = saved.get("poses", {})
-            self.seen = saved.get("seen", {})
+            self.seen = saved.get("seen", [])
+            if not isinstance(self.seen, list):
+                self.seen = []  # a record of an earlier version of the gateway
         except (OSError, ValueError, KeyError):
             start = self.mat["start"]
             self.col, self.row = ord(start["cell"][0].upper()) - ord("A"), int(start["cell"][1:]) - 1
@@ -122,7 +129,7 @@ class Gateway:
             self.resumes_at_stop = None  # how many times Resume had been pressed when a move stopped
             self.cursors = {}  # the last robot event each caller (agent, terminal, page) was given
             self.poses = {}  # the robot's pose number -> [col, row, facing], as counted by the gateway
-            self.seen = {}  # cell -> the last card the camera recognised there
+            self.seen = []  # the cards the camera recognised: estimates, the most precise kept
 
     def save_state(self):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -218,8 +225,8 @@ class Gateway:
             events.append({"event": "some older events were lost (the robot keeps only the last ones)"})
         for number, ms, name in entries:
             kind, _, reason = name.partition(":")
-            if kind == "SEEN":
-                text = self.saw(reason, now - int(ms))
+            if kind in ("SEEN", "GONE"):
+                text = self.saw(kind, reason, now - int(ms))
                 if text is None:
                     continue
                 events.append({"seconds_before_this_answer": round((now - int(ms)) / 1000, 1), "event": text})
@@ -233,34 +240,66 @@ class Gateway:
         self.cursors[CALLER] = following - 1
         return events
 
-    def saw(self, reason, age_ms):
-        """A camera event: put the card on its cell, from the pose the robot was at. Returns the text
-        for the agent, or None for a card that disappeared (the record is only updated)."""
-        label, _, pose = reason.rpartition(":")
+    def saw(self, kind, reason, age_ms):
+        """A camera event (SEEN or GONE): where the card is, from the pose the robot was at, the angle
+        and the distance the camera gave. Returns the text for the agent, or None (GONE only updates the
+        record)."""
+        label, angle, cm, pose = reason.rsplit(":", 3)
+        angle, cm = int(angle), int(cm)
         where = self.poses.get(pose)
-        cell = None
-        if where:
-            dc, dr = FACING_STEP[where[2]]
-            col, row = where[0] + dc, where[1] + dr
-            if 0 <= col < self.mat["cols"] and 0 <= row < self.mat["rows"]:
-                cell = cell_name(col, row)
-        if label == "none":
-            if cell in self.seen:
-                del self.seen[cell]  # the card the camera saw there is gone (moved by hand?)
-            return None
         means = self.cards.get(label, "unknown card")
-        if cell is None:
-            return EVENTS["SEEN"] + f"{label} ({means}); where: not known (the robot's position was not known)"
+        side = "straight ahead" if abs(angle) < 5 else f"{abs(angle)} degrees to the {'right' if angle > 0 else 'left'}"
+        if where is None:
+            if kind == "GONE":
+                return None
+            return EVENTS["SEEN"] + f"{label} ({means}), about {cm} cm away, {side}; where: not known (the robot's position was not known)"
+        cell_cm = self.mat["cell_cm"]
+        heading = math.radians(where[2] * 90 + angle)
+        x = (where[0] + 0.5) * cell_cm + math.sin(heading) * cm
+        y = (where[1] + 0.5) * cell_cm - math.cos(heading) * cm
+        u = max(CAMERA_MIN_ERROR_CM, CAMERA_ERROR * cm + CAMERA_MIN_ERROR_CM)  # grows with the distance
+        if kind == "GONE":
+            self.seen = [s for s in self.seen if not (s["card"] == label and math.hypot(s["x"] - x, s["y"] - y) < max(s["u"], u))]
+            return None
+        cell, others = self.cells_near(x, y, u)
         at = (datetime.datetime.now() - datetime.timedelta(milliseconds=age_ms)).strftime("%H:%M:%S")
-        self.seen[cell] = {"card": label, "means": means, "seen_from": f"{cell_name(where[0], where[1])} facing "
-                           f"{FACING[where[2]]}", "at": at}
-        return EVENTS["SEEN"] + f"{label} ({means}), in {cell} as the gateway counts the moves"
+        entry = {"card": label, "means": means, "cell": cell, "could_also_be": others, "x": round(x, 1),
+                 "y": round(y, 1), "u": round(u, 1), "seen_from": f"{cell_name(where[0], where[1])} facing "
+                 f"{FACING[where[2]]}", "distance_cm": cm, "at": at}
+        # The same card seen again: keep the most precise estimate (seen from closer).
+        # The larger uncertainty, not their sum: two like cards side by side (dry grass in C2 and D2) stay two.
+        same = [s for s in self.seen if s["card"] == label and math.hypot(s["x"] - x, s["y"] - y) < max(s["u"], u)]
+        if not same:
+            self.seen.append(entry)
+        elif u <= min(s["u"] for s in same):
+            self.seen = [s for s in self.seen if s not in same] + [entry]
+        else:
+            entry = min(same, key=lambda s: s["u"])
+        where_text = entry["cell"] if not entry["could_also_be"] else \
+            f"probably {entry['cell']} (could also be {', '.join(entry['could_also_be'])})"
+        return EVENTS["SEEN"] + f"{label} ({means}), about {cm} cm away, {side}: {where_text}, as the gateway counts the moves"
+
+    def cells_near(self, x, y, u):
+        """The cell of the estimate, and the other cells of the mat within its uncertainty."""
+        cell_cm, cols, rows = self.mat["cell_cm"], self.mat["cols"], self.mat["rows"]
+        col = min(max(int(x // cell_cm), 0), cols - 1)
+        row = min(max(int(y // cell_cm), 0), rows - 1)
+        others = []
+        for c in range(cols):
+            for r in range(rows):
+                nx = min(max(x, c * cell_cm), (c + 1) * cell_cm)
+                ny = min(max(y, r * cell_cm), (r + 1) * cell_cm)
+                if (c, r) != (col, row) and math.hypot(nx - x, ny - y) < u:
+                    others.append(cell_name(c, r))
+        return cell_name(col, row), others
 
     def seen_cards(self):
-        cards = [dict(cell=cell, **entry) for cell, entry in sorted(self.seen.items(), key=lambda kv: kv[1]["at"])]
+        keys = ("card", "means", "cell", "could_also_be", "distance_cm", "seen_from", "at")
+        cards = [{k: s[k] for k in keys} for s in sorted(self.seen, key=lambda s: s["at"])]
         return {"cards_seen": cards,
-                "note": "Each cell comes from counting the robot's moves, not from a measure: if the wheels slip, "
-                        "it can be wrong. A card moved by hand stays here until the robot looks at its old cell again."}
+                "note": "The camera sees up to 120 cm ahead, wider when farther, and guesses the distance: the "
+                        "farther the card, the less sure its cell (could_also_be). Seen again from closer, the "
+                        "estimate gets better. The robot's own cell comes from counting its moves, not from a measure."}
 
     def fields(self):
         reply = self.request("STATE")
@@ -518,8 +557,9 @@ def seen_cards() -> str:
     where the robot saw it from, and when. Moves nothing. You rarely need it: each new card the camera
     sees already comes in "since_last_call" of the next answer, whatever the tool, and "card_ahead"
     names the card in front. Call it to review the whole record, for example after a long pause. The
-    camera only names cards from a short list, only in the cell just in front, and only while the robot
-    stands still; each cell comes from counting the robot's moves."""
+    camera names cards from a short list, up to 120 cm ahead in a cone that widens with distance, only
+    while the robot stands still; the farther a card, the less sure its cell ("could_also_be"), and
+    seeing it again from closer makes the estimate better."""
     return GATEWAY.run("seen_cards", {}, GATEWAY.seen_cards)
 
 

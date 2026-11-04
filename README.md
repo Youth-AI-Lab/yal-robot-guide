@@ -163,12 +163,18 @@ The gateway is an MCP server. Its six tools:
 | `wait_for_event(seconds)` | watch the robot for 1 to 30 seconds; answers as soon as something happens to it | yes |
 | `seen_cards()` | the cards the camera recognised, with the cell of each, where it was seen from, and when | yes |
 
-**What the camera saw.** The camera only names cards from a short list, never sends an image, and
-the robot only believes it while it stands still: during a move or a turn, the cell in front is not
-one cell. Each card it recognises becomes an event (in `since_last_call`), and the gateway puts it on
-its cell from where it counted the robot to be. `seen_cards` keeps that record, so it does not depend
-on the agent's memory; a card moved by hand leaves it when the robot sees its cell empty. The cells
-come from counting moves: with **Wheels slip** on, they can be wrong.
+**What the camera saw.** The camera names cards from a short list, never sends an image, and sees
+in a cone in front of the robot (30 degrees each side, up to 120 cm: the simulator's values, TO BE
+COMPLETED on the OpenMV N6), wider when farther; a box hides what is behind it. For each card it
+gives an angle and a distance, which it guesses less well when the card is far (**Camera distance
+error**). The robot only believes it while it stands still. Each card that comes into view becomes an
+event (in `since_last_call`), and the gateway turns it into a cell, with the other cells it could be
+in: "probably F3 (could also be F2, G3)". Seen again from closer, the estimate gets better.
+`seen_cards` keeps that record, so it does not depend on the agent's memory; a card moved by hand
+leaves it when the robot sees it gone. On the page, the shaded fan is what the camera can see, the
+dots are where it thinks the cards are, and the dashed circles are what the gateway believes (what
+the agent is told). The robot's own cell comes from counting moves: with **Wheels slip** on, it can
+be wrong.
 
 **What happened between two calls.** MCP works by questions and answers: an agent learns nothing
 while it thinks. So every answer of the gateway carries `since_last_call`: what happened to the robot
@@ -216,7 +222,7 @@ such way: they read `since_last_call`.
 ```
 
 About two minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
-would, and reads in the simulator what really happened: 67 checks, all passed in the image
+would, and reads in the simulator what really happened: 72 checks, all passed in the image
 2026.10.45 on 3 November 2026 (container with 2 processors, no network).
 
 ---

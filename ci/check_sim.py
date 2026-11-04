@@ -541,20 +541,22 @@ async def scenarios(sim, env):
 
     # What the camera saw: noted by the robot while it stands still, put on its cell by the gateway.
     sim.fresh(cards=[{"cell": "C3", "label": "water-point"}])
+    sim.act(do="noise", camera_distance=0.05)
     async with agent(env) as a:
         await a.call("step_forward")
         await asyncio.sleep(0.6)
         reply = await a.call("robot_state")
         heard = [e["event"] for e in reply.get("since_last_call", [])]
-        check("the camera's card reaches the agent, on its cell", any("water-point" in e and "in C3" in e for e in heard),
-              heard)
+        check("the camera's card reaches the agent, with its distance and cell",
+              any("water-point" in e and "cm away" in e and "C3" in e for e in heard), heard)
         cards = (await a.call("seen_cards"))["cards_seen"]
-        check("seen_cards: the card, its cell, where it was seen from",
+        check("seen_cards: one card, its cell, seen again from closer (C4)",
               len(cards) == 1 and cards[0]["cell"] == "C3" and cards[0]["seen_from"] == "C4 facing north", cards)
         sim.act(do="move_card", **{"from": "C3", "to": "B2"})
         await asyncio.sleep(0.6)
         cards = (await a.call("seen_cards"))["cards_seen"]
-        check("a card moved by hand while the robot looks: it leaves the record", cards == [], cards)
+        check("a card moved by hand while the robot looks: it leaves C3, and is seen again in B2",
+              [x["cell"] for x in cards] == ["B2"] or ("B2" in cards[0]["could_also_be"] and len(cards) == 1), cards)
 
     sim.fresh(cards=[{"cell": "C4", "label": "barbecue"}])
     sim.act(do="noise", camera_miss=1.0)
@@ -566,15 +568,53 @@ async def scenarios(sim, env):
         sim.act(do="noise", camera_miss=0.0)
         await asyncio.sleep(0.6)
         cards = (await a.call("seen_cards"))["cards_seen"]
-        check("the camera sees again: the card is noted", [c["cell"] for c in cards] == ["C4"], cards)
+        check("the camera sees again: the card is noted", [x["cell"] for x in cards] == ["C4"], cards)
 
     sim.fresh(cards=[{"cell": "D4", "label": "dry-grass"}])
     async with agent(env) as a:
         await a.call("turn", direction="right")
         await asyncio.sleep(0.6)
         reply = await a.call("seen_cards")
-        check("a card glimpsed during a turn (D4, on the diagonal) is not noted", reply["cards_seen"] == []
+        check("a card out of the cone (D4, 45 degrees to the side) is not seen", reply["cards_seen"] == []
               and not any("dry-grass" in e["event"] for e in reply.get("since_last_call", [])), reply)
+
+    # Farther: less sure of the cell; seen again from closer, the estimate gets better.
+    sim.fresh(cards=[{"cell": "C2", "label": "barbecue"}])
+    sim.act(do="noise", camera_distance=0.1)
+    await asyncio.sleep(0.6)
+    async with agent(env) as a:
+        far = (await a.call("seen_cards"))["cards_seen"]
+        await a.call("step_forward")
+        await asyncio.sleep(0.6)
+        close = (await a.call("seen_cards"))["cards_seen"]
+        check("a card 90 cm away is seen, its cell not sure",
+              len(far) == 1 and "C2" in [far[0]["cell"]] + far[0]["could_also_be"] and far[0]["could_also_be"], far)
+        check("seen again from closer: the same card, a better estimate",
+              len(close) == 1 and close[0]["cell"] == "C2" and close[0]["distance_cm"] < far[0]["distance_cm"]
+              and len(close[0]["could_also_be"]) < len(far[0]["could_also_be"]), (far, close))
+
+    sim.fresh(cards=[{"cell": "D3", "label": "water-point"}])
+    await asyncio.sleep(0.6)
+    async with agent(env) as a:
+        cards = (await a.call("seen_cards"))["cards_seen"]
+        check("the cone sees to the side when it sees far (D3 from C5 facing north)",
+              len(cards) == 1 and "D3" in [cards[0]["cell"]] + cards[0]["could_also_be"], cards)
+
+    sim.fresh(cards=[{"cell": "C2", "label": "barbecue"}], boxes=[{"x": 65, "y": 65, "w": 20, "h": 20, "name": "box"}])
+    await asyncio.sleep(0.6)
+    async with agent(env) as a:
+        hidden = (await a.call("seen_cards"))["cards_seen"]
+        sim.act(do="remove_box", id=0)
+        await asyncio.sleep(0.6)
+        shown = (await a.call("seen_cards"))["cards_seen"]
+        check("a box hides the card behind it; without the box, the card is seen", hidden == [] and len(shown) == 1,
+              (hidden, shown))
+
+    sim.fresh(cards=[{"cell": "C2", "label": "dry-grass"}, {"cell": "D2", "label": "dry-grass"}])
+    await asyncio.sleep(0.6)
+    async with agent(env) as a:
+        cards = (await a.call("seen_cards"))["cards_seen"]
+        check("two like cards side by side stay two", len(cards) == 2, cards)
 
     # Real time and frozen time.
     sim.fresh(balls=[{"from": [15, 15], "to": [135, 15], "radius": 5, "speed_cm_s": 10}])

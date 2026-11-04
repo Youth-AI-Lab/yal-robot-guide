@@ -15,6 +15,7 @@
 <main>
   <section class="mat">
     <canvas id="mat" aria-label="The mat seen from above"></canvas>
+    <p class="legend">Shaded fan: what the camera can see. Dots: where the camera thinks the cards it sees are. Dashed circles: what the gateway believes it saw (what the agent is told).</p>
     <p class="hint" id="hint">Drag the boxes, the cards and the ball. Double-click a box to remove it. The robot moves only through the gateway: the Drive buttons, the terminal, or an agent.</p>
     <div class="status" id="status"></div>
   </section>
@@ -69,6 +70,8 @@
         <input type="range" id="noise-slip" min="0" max="20" step="1" value="0"></label>
       <label class="row">Camera misses a card <output id="n-cam">0</output> %
         <input type="range" id="noise-cam" min="0" max="50" step="5" value="0"></label>
+      <label class="row">Camera distance error <output id="n-camd">10</output> %
+        <input type="range" id="noise-camd" min="0" max="30" step="1" value="10"></label>
     </section>
     <section>
       <h2>Reflexes (robot/reflex.py)</h2>

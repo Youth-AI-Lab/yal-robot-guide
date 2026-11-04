@@ -23,12 +23,13 @@ asking the computer. Nothing else is understood.
 and, without being asked:
     EVT BUMP       something touched the bumper (a ball, a foot), moving or not
     EVT NEAR       standing still, something came close in front: the light warns (reflex.warn)
-    EVT SEEN:<card>:<pose>  standing still, the camera recognised this card in the cell in front
+    EVT SEEN:<card>:<angle>:<cm>:<pose>  standing still, the camera recognised this card, this many
+                   degrees to the right (negative: to the left) and this far from the robot's centre
     EVT RESUMED    an adult pressed Resume on the robot
-The robot also remembers its last 16 events (those, ESTOP, STOP:<reason> when a move stops, and
-SEEN:none:<pose> when a card it saw disappears while it stands still), numbered, with the time of
-its clock: a computer that was not listening asks EVENTS. The camera is only believed while the robot
-stands still: during a move or a turn, the cell in front is not one cell.
+The robot also remembers its last 32 events (those, ESTOP, STOP:<reason> when a move stops, and
+GONE:<card>:<angle>:<cm>:<pose> when a card it saw leaves its view while it stands still), numbered,
+with the time of its clock: a computer that was not listening asks EVENTS. The camera is only
+believed while the robot stands still: during a move or a turn, nothing it sees is noted.
 
 The robot never moves backwards: its distance sensor only looks forwards. Its bumper goes all
 around it: when something touches it, a move stops at once, whatever reflex.py says.
@@ -47,7 +48,8 @@ What the program needs from the board (hal):
     battery()                          percent
     button(name)                       "stop" or "resume": True while pressed
     bumper()                           True while something touches the bumper
-    camera_label()                     the last card the camera recognised, or None
+    camera_view()                      the cards the camera recognises now: a list of
+                                       [card, angle in degrees (+ = right), distance in cm]
     led(color)                         one of COLORS
 """
 
@@ -62,7 +64,7 @@ HARD_MIN_DISTANCE_CM = 3
 TURN_DEG_S = 90
 
 COLORS = ("off", "red", "orange", "green", "blue")
-EVENTS_KEPT = 16
+EVENTS_KEPT = 32
 # The camera's answer must stay the same this long before the robot believes it (milliseconds). The
 # simulator's value; on the real robot, the camera answers 1 to 2 s late (RobotIA): TO BE COMPLETED.
 CAMERA_STABLE_MS = 200
@@ -84,7 +86,8 @@ class Firmware:
         self.events = []  # [number, time in ms, name], the last EVENTS_KEPT
         self.next_event = 1
         self.pose = 0  # +1 each time the robot may be somewhere else: a move ends, stops, or Resume
-        self.view = None  # the card the camera shows, once believed
+        self.view = []  # what the camera shows, once believed: [[card, angle, cm], ...]
+        self.view_key = None
         self.candidate = None
         self.candidate_since = 0
         self.last_heard = hal.ticks_ms()
@@ -128,7 +131,7 @@ class Firmware:
             self.wait_adult = False
             self.resumes += 1
             self.pose += 1  # the adult put it back: a new place
-            self.view = None
+            self.view, self.view_key = [], None
             self.note("RESUMED")
         self.resume_held = resume
 
@@ -161,19 +164,32 @@ class Firmware:
             self.hal.led(self.light)
 
     def look(self, now):
-        """Standing still: note the card the camera recognises in front, once its answer is stable,
-        and note when a card it saw disappears."""
-        label = self.hal.camera_label()
-        if label != self.candidate:
-            self.candidate, self.candidate_since = label, now
+        """Standing still: once the camera's view is stable, note each card that came into it, and
+        each card that left it (moved by hand, hidden by a box)."""
+        view = self.hal.camera_view()
+        key = repr(view)
+        if key != self.candidate:
+            self.candidate, self.candidate_since = key, now
             return
-        if label == self.view or self.hal.ticks_diff(now, self.candidate_since) < CAMERA_STABLE_MS:
+        if key == self.view_key or self.hal.ticks_diff(now, self.candidate_since) < CAMERA_STABLE_MS:
             return
-        old, self.view = self.view, label
-        if label:
-            self.note("SEEN:%s:%d" % (label, self.pose))
-        elif old:
-            self.remember("SEEN:none:%d" % self.pose)
+        left = list(self.view)
+        self.view, self.view_key = view, key
+        for card, angle, cm in view:
+            if [card, angle, cm] in left:
+                left.remove([card, angle, cm])
+            else:
+                self.note("SEEN:%s:%d:%d:%d" % (card, angle, cm, self.pose))
+        for card, angle, cm in left:
+            self.remember("GONE:%s:%d:%d:%d" % (card, angle, cm, self.pose))
+
+    def card_in_front(self):
+        """The nearest card just in front (the cell ahead), from what the camera shows."""
+        best = None
+        for card, angle, cm in self.hal.camera_view():
+            if -15 <= angle <= 15 and cm <= CELL_CM * 3 // 2 and (best is None or cm < best[1]):
+                best = [card, cm]
+        return None if best is None else best[0]
 
     def stop_reason(self, kind):
         distance = None
@@ -274,7 +290,7 @@ class Firmware:
                 return
             cm, deg = self.hal.odometry()
             self.motion = [kind, cm if kind == "F" else deg]
-            self.view = self.candidate = None  # what it saw from here says nothing about the next place
+            self.view, self.view_key, self.candidate = [], None, None  # nothing seen here is noted once it moves
             self.say("OK " + word + " " + kind)
             self.steer()
         else:
@@ -282,7 +298,7 @@ class Firmware:
 
     def state_line(self):
         distance = self.hal.distance_cm()
-        card = self.hal.camera_label()
+        card = self.card_in_front()
         return "OK STATE dist=%s card=%s battery=%d estop=%d wait_adult=%d moving=%d last_stop=%s bumper=%d warning=%d resumes=%d pose=%d" % (
             "none" if distance is None else str(int(distance)),
             card or "none",
