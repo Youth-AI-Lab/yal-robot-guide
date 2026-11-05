@@ -6,7 +6,7 @@ something, when it stopped). Each scenario starts again from a fresh mat.
 
 Usage, in the Codespace of this guide (the folder of the guide is the current folder):
     /opt/workshop/venv/bin/python -I ci/check_sim.py
-It takes about two minutes. It needs the `mcp` package, which is in /opt/workshop/venv.
+It takes about five minutes. It needs the `mcp` package, which is in /opt/workshop/venv.
 """
 import ast
 import asyncio
@@ -439,6 +439,99 @@ async def scenarios(sim, env):
         reply = await a.call("robot_state")
         check("the adult puts it back on C4, the gateway counts from C4",
               r["cell"] == "C4" and reply.get("cell") == "C4" and reply.get("position_known") is True, (r, reply))
+
+    sim.fresh(balls=[{"from": [135, 105], "to": [135, 105], "radius": 7, "speed_cm_s": 0}])
+    async with agent(env) as a:
+        await a.call("face", direction="east")
+        await asyncio.sleep(1.2)  # the robot notes a ball once it has looked twice
+        await a.call("face", direction="north")
+        sent = wire_count(sim, "MOVE")
+        reply = await a.call("move", direction="east", cells=2)
+        check("sideways with a ball seen near the way (E4): refused, nothing sent, even with the cells seen free",
+              reply.get("result") == "refused" and "ball" in reply.get("why", "") and wire_count(sim, "MOVE") == sent,
+              reply)
+
+    sim.fresh()
+    state_file = Path(env["ROBOT_STATE_DIR"]) / "gateway.json"
+    async with agent(env) as a:
+        await a.call("face", direction="east")
+        await a.call("face", direction="north")
+        saved = json.loads(state_file.read_text())
+        saved["free"] = {cell: when - 200 for cell, when in saved["free"].items()}
+        state_file.write_text(json.dumps(saved))
+        reply = await a.call("move", direction="east")
+        check("a free reading older than two minutes: the slide is refused",
+              reply.get("result") == "refused" and "saw free" in reply.get("why", ""), reply)
+        await a.call("face", direction="east")
+        sim.act(do="add_box", x=95, y=125, w=20, h=20)
+        await a.call("face", direction="east")  # already facing east: nothing moves, the sensor reads again
+        await a.call("face", direction="north")
+        reply = await a.call("move", direction="east")
+        check("a box put down after a free reading: the next reading forgets the free cell, the slide is refused",
+              reply.get("result") == "refused" and "D5" in reply.get("why", "") and sim.state()["robot"]["collisions"] == 0,
+              reply)
+
+    sim.fresh(boxes=[{"x": 65, "y": 65, "w": 20, "h": 20, "name": "box"}])
+    async with agent(env) as a:
+        reply = await a.call("move", direction="north", cells=3)
+        r = sim.state()["robot"]
+        check("a box on the way of a slide forwards (C3): it stays on the last cell it reached (C4), no adult needed",
+              reply.get("result") == "done" and reply.get("cells_moved") == 1 and "in the way" in reply.get("stopped_because", "")
+              and r["cell"] == "C4" and reply["state"]["position_known"] is True
+              and reply["state"]["moves_left"] == MAT["max_moves"] - 1 and r["collisions"] == 0, (reply, r))
+
+    sim.fresh(cards=[{"cell": "C4", "label": "barbecue"}])
+    async with agent(env) as a:
+        await a.call("face", direction="east")
+        await a.call("face", direction="north")
+        reply = await a.call("move", direction="east", stop_if=["card_ahead"])
+        check("card_ahead looks the way the robot faces: a slide sideways is not held by the card in front",
+              reply.get("cells_moved") == 1 and sim.state()["robot"]["cell"] == "D5", reply)
+        sent = wire_count(sim, "MOVE")
+        left = reply["state"]["moves_left"]
+        for bad in (0, 9):
+            reply = await a.call("move", direction="north", cells=bad)
+            check(f"move with cells={bad}: refused, nothing sent, no move counted",
+                  reply.get("result") == "refused" and wire_count(sim, "MOVE") == sent
+                  and (await a.call("robot_state"))["moves_left"] == left, reply)
+
+    # A slide interrupted on a loose cable: the gateway, the adult and the robot agree on the cell.
+    sim.fresh()
+    async with agent(env) as a:
+        unplug = asyncio.create_task(later(4.5, sim.act, do="cable", plugged=False))
+        plug = asyncio.create_task(later(7.0, sim.act, do="cable", plugged=True))
+        reply = await a.call("move", direction="north", cells=3)
+        await unplug
+        await plug
+        check("cable loose in the second cell of a slide: stopped, an adult must come",
+              reply.get("result") == "stopped" and "C4" in reply.get("what_to_do", ""), reply)
+        sim.act(do="adult_resume")
+        await asyncio.sleep(0.5)
+        reply = await a.call("robot_state")
+        r = sim.state()["robot"]
+        check("after the adult: the gateway's cell is the robot's cell (C4)",
+              reply.get("cell") == "C4" and r["cell"] == "C4" and reply.get("position_known") is True, (reply, r))
+
+    # A gateway killed during a slide: the next one knows the position is lost, and where the robot is.
+    sim.fresh()
+    by_hand = subprocess.Popen([PYTHON, "-I", str(GUIDE / "gateway" / "robot_gateway.py"), "move", "north", "3"],
+                               env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    await asyncio.sleep(4.5)
+    by_hand.kill()
+    by_hand.wait()
+    await asyncio.sleep(2.0)  # the robot's watchdog stops it
+    async with agent(env) as a:
+        reply = await a.call("robot_state")
+        check("a gateway killed in the second cell: the next one says the position is unknown",
+              reply.get("position_known") is False, reply)
+        reply = await a.call("step_forward")
+        check("and asks the adult to put the robot on the last cell it reached (C4)",
+              reply.get("result") == "refused" and "C4" in reply.get("what_to_do", ""), reply)
+        sim.act(do="adult_resume")
+        await asyncio.sleep(0.5)
+        reply = await a.call("robot_state")
+        r = sim.state()["robot"]
+        check("after the adult: both on C4", reply.get("cell") == "C4" and r["cell"] == "C4", (reply, r))
 
     # A wrong argument never reaches the robot.
     sim.fresh()

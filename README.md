@@ -16,7 +16,7 @@ program of the robot, the gateway that is the only door to it, and an agent that
 ```
  robot (or this simulator)         gateway (MCP server)              agent
  ┌───────────────────────┐  text   ┌──────────────────────┐  MCP   ┌──────────────┐
- │ reflexes: stop, speed │ ◄─────► │ 4 tools, its limits  │ ◄────► │ Claude Code, │
+ │ reflexes: stop, speed │ ◄─────► │ 9 tools, its limits  │ ◄────► │ Claude Code, │
  │ camera: a card label  │  cable  │ writes what the agent│        │ OpenCode,    │
  └───────────────────────┘         │ receives             │        │ Hermes...    │
                                    └──────────────────────┘        └──────────────┘
@@ -27,8 +27,9 @@ Three rules hold the design together:
 - **The robot protects itself.** It stops in front of an obstacle, when the cable comes loose, and
   when someone presses its emergency button, without asking the computer
   ([robot/reflex.py](robot/reflex.py), [robot/firmware.py](robot/firmware.py)).
-- **The gateway is the only door.** Four tools, one cell per move, never off the mat, a number of
-  moves per session ([gateway/robot_gateway.py](gateway/robot_gateway.py)).
+- **The gateway is the only door.** Nine tools, four cells at most per move (a move counts one,
+  however many cells), never off the mat, backwards or sideways only into cells its sensor saw free,
+  a number of moves per session ([gateway/robot_gateway.py](gateway/robot_gateway.py)).
 - **No image ever leaves the robot.** The camera gives the name of a card from a short list.
 
 The simulator replaces only the physical part. The program of the robot runs in it unchanged, and
@@ -185,10 +186,13 @@ backwards or to a side without turning, and its camera keeps looking the way it 
 counts as one move, however many cells (1 to 4). The robot itself checks the conditions, on each
 cell it reaches, and stops there: the agent answers seconds later (6 s between two calls, median of
 the bench of 5 November), when a ball has already rolled more than a cell. `card_ahead` is also
-checked before it starts, so `move(..., stop_if=["card_ahead"])` never drives onto a card. Its distance
+checked before a slide forwards starts, so `move(..., stop_if=["card_ahead"])` forwards never drives
+onto a card (it looks the way the robot faces: it does not watch a slide sideways). Its distance
 sensor and camera only look forwards: backwards or sideways, the gateway lets it slide only into
 cells the sensor saw free in the last two minutes (`face` that way once, or `look_around`), never
-near a ball seen in the last 10 seconds, and the robot goes slower there. How true a sideways slide
+near a ball seen in the last 10 seconds, and the robot goes slower there. The sensor's beam is
+narrower than the robot (TO BE COMPLETED on the real one): a small thing near the side of a cell can
+be missed, and then the bumper stops the robot. How true a sideways slide
 is on the real wheels is TO BE COMPLETED (mecanum wheels slip more sideways). Not yet tried with a
 model.
 
@@ -277,17 +281,18 @@ such way: they read `since_last_call`.
 /opt/workshop/venv/bin/python -I ci/check_sim.py
 ```
 
-About two minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
-would, and reads in the simulator what really happened: 79 checks, all passed in the image
-2026.10.45 on 3 November 2026 (container with 2 processors, no network).
+About five minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
+would, and reads in the simulator what really happened: 111 checks, all passed in the image
+2026.10.45 on 5 November 2026 (container with 2 processors, no network).
 
 ---
 
 ## The protocol between the gateway and the robot
 
 One line of text per command, one line per answer; the head of
-[robot/firmware.py](robot/firmware.py) lists them all. The robot never moves backwards (its distance
-sensor looks forwards only), moves one cell at most per command, and after an interrupted move
+[robot/firmware.py](robot/firmware.py) lists them all. The robot moves forwards, or slides backwards
+or sideways without turning (more slowly: its distance sensor and camera look forwards only), four
+cells at most per command, and always stops on a cell. After a move interrupted between two cells it
 waits for an adult: the computer cannot release it.
 
 ---

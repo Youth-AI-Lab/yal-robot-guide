@@ -99,7 +99,7 @@ WHY_DONE = {
     "all": "it moved all the cells asked",
     "card": "a card is right in front of the camera",
     "ball": "the camera sees a ball",
-    "new": "the camera recognised a card it had not shown when the move began",
+    "new": "the camera shows a kind of card (a name) it had not shown when the move began",
     "obstacle": "something was in the way: it waited, then stayed on the last cell it reached",
     "bump": "something touched the robot's bumper while it stood on a cell",
     "estop": "someone pressed the emergency stop button while it stood on a cell",
@@ -151,6 +151,8 @@ class Gateway:
             if not isinstance(self.seen, list):
                 self.seen = []  # a record of an earlier version of the gateway
             self.free = saved.get("free", {})
+            self.way = saved.get("way")
+            self.presses = saved.get("presses", 0)
         except (OSError, ValueError, KeyError):
             start = self.mat["start"]
             self.col, self.row = ord(start["cell"][0].upper()) - ord("A"), int(start["cell"][1:]) - 1
@@ -164,13 +166,15 @@ class Gateway:
             self.seen = []  # the cards the camera recognised: estimates, the most precise kept
             self.ball = None  # the last sighting of a moving ball
             self.free = {}  # cell -> when the distance sensor last saw it free (time.time())
+            self.way = None  # during a move: its start cell, then the cells of a slide
+            self.presses = 0  # the robot's count of Resume presses, at its last answer
 
     def save_state(self):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         saved = {"col": self.col, "row": self.row, "facing": self.facing, "sure": self.sure,
                  "back": self.back, "moves": self.moves, "resumes_at_stop": self.resumes_at_stop,
                  "cursors": self.cursors, "poses": self.poses, "seen": self.seen,
-                 "ball": self.ball, "free": self.free}
+                 "ball": self.ball, "free": self.free, "way": self.way, "presses": self.presses}
         (STATE_DIR / "gateway.json").write_text(json.dumps(saved) + "\n", encoding="utf-8")
 
     # The serial link -------------------------------------------------------------------------
@@ -247,6 +251,8 @@ class Gateway:
         nothing is lost when nobody was listening (up to the 16 events the robot keeps)."""
         seen = self.cursors.get(CALLER, 0)
         reply = self.request(f"EVENTS {seen}")
+        if not reply.startswith("OK EVENTS"):
+            raise RobotNotConnected(f"the robot's answer could not be read ({reply[:40]!r})")
         parts = reply.split()
         head = dict(p.split("=", 1) for p in parts[2:4])
         now, following = int(head["now"]), int(head["next"])
@@ -379,13 +385,18 @@ class Gateway:
 
     def fields(self):
         reply = self.request("STATE")
+        if not reply.startswith("OK STATE"):
+            raise RobotNotConnected(f"the robot's answer could not be read ({reply[:40]!r})")
         fields = dict(part.split("=", 1) for part in reply.split()[2:])
+        if fields.get("resumes", "").isdigit():
+            self.presses = int(fields["resumes"])
         if self.sure and "pose" in fields:
             # Where the robot is at this pose number: lets a later camera event be put on its cell.
             self.poses[fields["pose"]] = [self.col, self.row, self.facing]
             for old in sorted(self.poses, key=int)[:-100]:
                 del self.poses[old]
-        if self.sure and fields.get("moving") == "0" and fields.get("dist", "none") != "none":
+        if (self.sure and fields.get("moving") == "0" and fields.get("wait_adult") == "0"
+                and fields.get("estop") == "0" and fields.get("dist", "none") != "none"):
             self.note_free(int(fields["dist"]))
         return fields
 
@@ -395,11 +406,15 @@ class Gateway:
         dc, dr = FACING_STEP[self.facing]
         now = time.time()
         k = 1
-        while k * self.mat["cell_cm"] + STOP_MARGIN_CM <= dist:
+        while True:
             col, row = self.col + dc * k, self.row + dr * k
             if not (0 <= col < self.mat["cols"] and 0 <= row < self.mat["rows"]):
                 break
-            self.free[cell_name(col, row)] = now
+            if k * self.mat["cell_cm"] + STOP_MARGIN_CM <= dist:
+                self.free[cell_name(col, row)] = now
+            else:
+                # Something is there, or behind it the sensor cannot tell: an older "free" no longer holds.
+                self.free.pop(cell_name(col, row), None)
             k += 1
 
     def blind_way(self, cells):
@@ -437,9 +452,14 @@ class Gateway:
             self.resumes_at_stop, resumed = presses, False  # the robot restarted: count from now
         else:
             resumed = presses > self.resumes_at_stop and released
+        if not resumed:
+            # Before the adult acts: the instruction names the cell the robot itself says it reached
+            # (a gateway killed during a move, or a lost EVT CELL). Never after Resume: the adult has
+            # put it where the instruction said.
+            self.reached(fields)
         if resumed:
             self.col, self.row, self.facing = self.back
-            self.sure, self.back, self.resumes_at_stop = True, None, None
+            self.sure, self.back, self.way, self.resumes_at_stop = True, None, None, None
 
     def drain(self):
         """Read what the robot said while nobody asked (Resume pressed, old answers)."""
@@ -451,7 +471,11 @@ class Gateway:
                 self.event(line)
 
     def request(self, line, timeout=1.0):
+        """Send a command and return its answer: "OK <the same word> …" or "ERR …". An older answer
+        still on the wire (OK PONG, the OK STOP of a move that timed out) is skipped: taken for this
+        answer, it would shift every answer after it."""
         self.send(line)
+        word = line.split()[0]
         end = time.monotonic() + timeout
         while True:
             reply = self.read_line(max(0.0, end - time.monotonic()))
@@ -460,9 +484,30 @@ class Gateway:
             if reply.startswith("EVT "):
                 self.event(reply)
                 continue
-            if reply == "OK PONG" and line != "PING":
+            if reply.startswith("OK ") and not reply.startswith("OK " + word):
                 continue
             return reply
+
+    def begin(self, start, way, counted):
+        """Just before a move is sent: written to disk as if it were interrupted (position unknown, put
+        back on its start cell), so that a gateway killed during the move leaves the truth behind.
+        `way`: the cells of a slide; the robot's own count (STATE slid=) says which one it reached."""
+        self.sure, self.back, self.way = False, start, [list(start[:2])] + [list(c) for c in way]
+        self.resumes_at_stop = self.presses
+        self.moves += counted
+        self.save_state()
+
+    def ended(self, counted_back=0):
+        """The move ended on a cell the gateway knows (done, or refused without moving)."""
+        self.sure, self.back, self.way, self.resumes_at_stop = True, None, None, None
+        self.moves -= counted_back
+        self.save_state()
+
+    def reached(self, fields):
+        """Where an interrupted slide left the robot: the last cell it reached, by its own count."""
+        if self.back and self.way and fields.get("slid", "").isdigit():
+            col, row = self.way[min(int(fields["slid"]), len(self.way) - 1)]
+            self.back = (col, row, self.back[2])
 
     # What the agent can ask ------------------------------------------------------------------
     def robot_state(self):
@@ -502,11 +547,12 @@ class Gateway:
             target = (self.col + dc, self.row + dr)
             if not (0 <= target[0] < self.mat["cols"] and 0 <= target[1] < self.mat["rows"]):
                 return self.refused("the next cell is outside the mat")
+        start = (self.col, self.row, self.facing)
+        self.begin(start, [target] if kind == "F" else [], counted)
         reply = self.request(command)
         if reply.startswith("ERR "):
+            self.ended(counted_back=counted)
             return self.refused(reply[4:])
-        self.moves += counted
-        start = (self.col, self.row, self.facing)
         end = time.monotonic() + self.mat["move_timeout_s"]
         next_ping = time.monotonic() + HEARTBEAT_S
         while time.monotonic() < end:
@@ -521,20 +567,26 @@ class Gateway:
                     self.col, self.row = target
                 else:
                     self.facing = (self.facing + (1 if kind == "R" else -1)) % 4
+                self.ended()
                 return {"result": "done", "state": self.robot_state()}
             if line.startswith("EVT STOP "):
                 return self.interrupted(line[9:], start)
             if line.startswith("EVT REFUSED "):
                 # It waited, the way stayed blocked, it never moved: still where it was.
-                self.moves -= counted
+                self.ended(counted_back=counted)
                 return self.refused(line[12:], waited="the robot waited for the way to clear, then gave up")
             if line.startswith("EVT "):
                 self.event(line)
+        self.stop_now()
+        return self.interrupted("timeout", start)
+
+    def stop_now(self):
+        """A move took too long: stop the robot, and read its OK STOP (left unread, it would be taken for
+        the answer to the next question)."""
         try:
-            self.send("STOP")
+            self.request("STOP")
         except RobotNotConnected:
             pass
-        return self.interrupted("timeout", start)
 
     def translate(self, direction, cells, stop_if):
         """MOVE <d> <n> [UNTIL …]: slide towards a side of the mat without turning, one move however many
@@ -568,12 +620,14 @@ class Gateway:
                                     what_to_do=f"face {direction} (one move) or look_around, then move again")
         conditions = [STOP_IF[c] for c in stop_if]
         command = f"MOVE {kind} {len(way)}" + (" UNTIL " + ",".join(conditions) if conditions else "")
+        start, done = (self.col, self.row, self.facing), 0
+        self.begin(start, way, 1)
         reply = self.request(command)
         if reply.startswith("ERR "):
+            self.ended(counted_back=1)
             return self.refused(reply[4:])
-        self.moves += 1
-        start, done = (self.col, self.row, self.facing), 0
-        look = 0.5 if conditions else 0  # the robot stands on each cell for CELL_LOOK_MS (0.3 s)
+        # The robot stands on each cell until its camera's view is believed (2 s at most).
+        look = 2.5 if conditions else 0
         end = time.monotonic() + self.mat["move_timeout_s"] * 2 + look  # sideways: half the speed
         next_ping = time.monotonic() + HEARTBEAT_S
         while time.monotonic() < end:
@@ -596,6 +650,7 @@ class Gateway:
                 reason = WHY_DONE.get(why, why)
                 if why == "all" and len(way) < cells:
                     reason = f"the mat ends after {len(way)} cell{'s' if len(way) > 1 else ''} that way"
+                self.ended(counted_back=1 if done == 0 else 0)  # it never moved: like a refusal, not counted
                 return {"result": "done", "cells_moved": done, "cells_asked": cells, "stopped_because": reason,
                         "state": self.robot_state()}
             if line.startswith("EVT STOP "):
@@ -603,14 +658,11 @@ class Gateway:
                 result["cells_moved"] = done
                 return result
             if line.startswith("EVT REFUSED "):
-                self.moves -= 1
+                self.ended(counted_back=1)
                 return self.refused(line[12:], waited="the robot waited for the way to clear, then gave up")
             if line.startswith("EVT "):
                 self.event(line)
-        try:
-            self.send("STOP")
-        except RobotNotConnected:
-            pass
+        self.stop_now()
         result = self.interrupted("timeout", start)
         result["cells_moved"] = done
         return result
@@ -644,7 +696,9 @@ class Gateway:
     def interrupted(self, why, start):
         self.sure, self.back = False, start
         try:
-            self.resumes_at_stop = int(self.fields().get("resumes", 0))
+            fields = self.fields()
+            self.resumes_at_stop = int(fields.get("resumes", 0))
+            self.reached(fields)  # an EVT CELL may have been lost on a loose cable
         except (RobotNotConnected, ValueError):
             self.resumes_at_stop = None  # the cable is loose: counted when the robot answers again
         return {"result": "stopped", "why": REASONS.get(why, why), "position_known": False,
@@ -689,7 +743,11 @@ class Gateway:
             except RobotNotConnected as e:
                 self.close()
                 result = {"result": "error", "why": str(e)}
-            self.save_state()
+            except (ValueError, KeyError, IndexError) as e:  # an answer of the robot that makes no sense
+                self.close()
+                result = {"result": "error", "why": f"the robot's answer could not be read ({type(e).__name__})"}
+            finally:
+                self.save_state()  # whatever happened, what the gateway knows reaches the disk
             return result
 
     def run(self, tool, arguments, action, move=False):
@@ -769,20 +827,26 @@ def step_forward() -> str:
 
 def move(direction: Literal["north", "east", "south", "west"], cells: int = 1,
          stop_if: list[Literal["card_ahead", "ball_seen", "new_card"]] | None = None) -> str:
-    """Slide the robot up to `cells` cells (1 to 4) towards north, east, south or west (north is towards
+    """Slide the robot 1 to 4 cells (`cells`) towards north, east, south or west (north is towards
     row 1), without turning: its wheels move it in any of the four directions, and the camera keeps
     looking the way the robot faces. It counts as one move, however many cells. It stops on a cell, at
     the first of: all the cells done, the edge of the mat, or a condition of stop_if met:
-    "card_ahead" (a card right in front of the camera; also checked before it starts, so it never
-    drives onto that card), "ball_seen" (the camera sees a ball), "new_card" (the camera recognises a
-    card it did not show when the move began). With stop_if, the robot stands still a moment on each
-    cell so that the camera can look. Its distance sensor and camera only look the way it faces: in
-    any other direction it slides only into cells the sensor saw free in the last two minutes (face
-    that way once, or look_around), never near a ball seen just before. The answer says how many
-    cells it moved and why it stopped; "stopped" means an adult must come, as for step_forward."""
-    cells = max(1, min(MAX_CELLS, int(cells)))
+    "card_ahead" (a card right in front of the camera, the way the robot faces; for a slide forwards it
+    is also checked before it starts, so the robot never drives onto that card; it does not watch the
+    cells of a slide sideways or backwards), "ball_seen" (the camera sees a ball), "new_card" (the
+    camera shows a kind of card, a name, it did not show when the move began). With stop_if, the robot
+    stands still on each cell until its camera has looked. Its distance sensor and camera only look the
+    way it faces: in any other direction it slides only into cells the sensor saw free in the last two
+    minutes (face that way once, or look_around), never near a ball seen just before; the sensor's beam
+    is narrow, so a small thing near the side of a cell can be missed, and then the bumper stops the
+    robot. The answer says how many cells it moved and why it stopped; "stopped" means an adult must
+    come, as for step_forward."""
     stop_if = list(dict.fromkeys(stop_if or []))
     arguments = {"direction": direction, "cells": cells, "stop_if": stop_if}
+    if not isinstance(cells, int) or not 1 <= cells <= MAX_CELLS:
+        text = json.dumps({"result": "refused", "why": f"cells must be 1 to {MAX_CELLS}: nothing was sent"})
+        log("move", arguments, text)
+        return text
     return GATEWAY.run("move", arguments, lambda: GATEWAY.translate(direction, cells, stop_if), move=True)
 
 

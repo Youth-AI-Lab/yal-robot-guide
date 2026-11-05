@@ -14,17 +14,24 @@ it at any time, without asking the computer. Nothing else is understood.
                        estop=<0|1> wait_adult=<0|1> moving=<0|1> last_stop=<reason> bumper=<0|1>
                        warning=<0|1> resumes=<number of presses on Resume since the robot started>
                        pose=<number of the robot's place: +1 after each cell, stop or Resume>
+                       slid=<cells reached in the last move: MOVE F 0 or 1, MOVE <d> <n> 0 to n, a turn 0>
+                       (an adult puts the robot back on the last cell it reached, even when the
+                       computer missed an EVT CELL)
     MOVE F         ->  OK MOVE F, then EVT DONE F, EVT STOP <reason> (stopped on the way: an adult must
                        come), or EVT REFUSED <reason> (it waited, the way stayed blocked, it never moved)
     MOVE <d> <n> [UNTIL <conditions>]
                    ->  slide n cells (1 to MAX_CELLS) without turning: d is F (forwards), B (backwards),
                        L (to its left) or R (to its right). OK MOVE <d> <n>, then EVT CELL <cells done>
                        <pose> on each cell it reaches, and at the end EVT DONE <d> <cells done> <why>:
-                       "all", "card" (a card in front), "ball" (the camera sees a ball), "new" (the
-                       camera recognises a card it did not show when the move began), "obstacle"
-                       (forwards: the way stayed blocked, it stayed on the last cell). Conditions, with
-                       commas: CARD (also checked before it starts), BALL, NEW; with any of them, the
-                       robot stops on each cell for CELL_LOOK_MS, so that the camera can look. EVT STOP
+                       "all", "card" (a card right in front of the camera, the way it faces), "ball" (the
+                       camera sees a ball), "new" (the camera shows a kind of card, a name, it did not
+                       show when the move began), "obstacle" (forwards: the way stayed blocked, it
+                       stayed on the last cell), or "bump", "estop", "watchdog", "command" (STOP) when
+                       that happens while it stands on a cell between two cells: it is on that cell, no
+                       adult needed (after "estop" it still refuses to move until Resume). Conditions,
+                       with commas: CARD (forwards, also checked before it starts, so it never drives
+                       onto that card), BALL, NEW; with any of them, the robot stands on each cell until
+                       the camera's view is believed (CELL_LOOK_MS at least), so that it can look. EVT STOP
                        and EVT REFUSED as for MOVE F; after EVT STOP, the adult puts it back on the last
                        cell it reached.
     TURN L, TURN R ->  OK TURN L, then EVT DONE L, or EVT STOP <reason>
@@ -55,8 +62,8 @@ the way, so it goes there slowly (HARD_BLIND_SPEED_CM_S), and the gateway sends 
 cells its sensor has seen free. Its bumper goes all around it: when something touches it, a move stops
 at once, whatever reflex.py says.
 
-After a move is interrupted (obstacle, watchdog, emergency button, STOP), the robot is somewhere
-between two cells. It refuses to move until an adult puts it back on the cell where the move
+After a move is interrupted while it drives (obstacle, watchdog, emergency button, STOP), the robot is
+somewhere between two cells (not when it stood on a cell between two cells of a slide: EVT DONE above). It refuses to move until an adult puts it back on the cell where the move
 started (for a move of several cells: the last cell it reached) and presses the Resume button on the
 robot (EVT RESUMED, and "resumes" in STATE goes up by one). Nothing from the computer can do that.
 
@@ -90,18 +97,19 @@ HARD_MIN_DISTANCE_CM = 3
 # bumper stops it sooner. A choice of the simulator; on the real robot TO BE COMPLETED.
 HARD_BLIND_SPEED_CM_S = 5
 TURN_DEG_S = 90
-# The most cells one command may move, and how long the robot stands on each cell when the move
-# has conditions (the camera believes what it sees after CAMERA_STABLE_MS standing still).
-MAX_CELLS = 4
-CELL_LOOK_MS = 300
 SLIDES = {"F": (1, 0), "B": (-1, 0), "L": (0, -1), "R": (0, 1)}  # (forwards, to the right)
 CONDITIONS = ("CARD", "BALL", "NEW")
+MAX_CELLS = 4  # the most cells one command may move
 
 COLORS = ("off", "red", "orange", "green", "blue")
 EVENTS_KEPT = 32
 # The camera's answer must stay the same this long before the robot believes it (milliseconds). The
 # simulator's value; on the real robot, the camera answers 1 to 2 s late (RobotIA): TO BE COMPLETED.
 CAMERA_STABLE_MS = 200
+# A move with conditions: on each cell, the robot stands at least this long, and until the camera's
+# view is believed, but never longer than CELL_LOOK_MAX_MS (a camera that never settles).
+CELL_LOOK_MS = CAMERA_STABLE_MS + 100
+CELL_LOOK_MAX_MS = 2000
 # How often the robot looks again at a moving ball to tell whether it comes closer (milliseconds).
 BALL_SAMPLE_MS = 500
 BALL_MOVE_CM = 2  # a change of distance smaller than this: the ball does not move
@@ -117,6 +125,7 @@ class Firmware:
         # A move of several cells (MOVE <d> <n>): [direction, cells asked, cells done, conditions,
         # card names the camera showed since the move began], or None
         self.plan = None
+        self.slid = 0  # cells reached in the last MOVE <d> <n> (STATE slid=)
         self.paused_since = None  # while it waits for the way to clear
         self.estop = False
         self.wait_adult = False
@@ -192,7 +201,8 @@ class Firmware:
             # Standing on a cell of a slide: the camera looks, then the conditions decide.
             self.hal.drive(0, 0, 0)
             self.look(now)
-            if hal.ticks_diff(now, self.motion[1]) >= CELL_LOOK_MS:
+            stood = hal.ticks_diff(now, self.motion[1])
+            if (stood >= CELL_LOOK_MS and self.view_key is not None) or stood >= CELL_LOOK_MAX_MS:
                 why = self.condition_met()
                 if why:
                     self.end_plan(why)
@@ -375,10 +385,13 @@ class Firmware:
         kind = self.motion[0]
         if self.plan is None:
             self.motion = None
+            if kind == "F":
+                self.slid = 1  # MOVE F reached its cell
             self.say("EVT DONE " + kind[-1])
             return
         plan = self.plan
         plan[2] += 1
+        self.slid = plan[2]
         self.say("EVT CELL %d %d" % (plan[2], self.pose))
         if plan[2] >= plan[1]:
             self.end_plan("all")
@@ -467,6 +480,7 @@ class Firmware:
                 self.say("ERR " + why)
                 return
             cm, deg = self.hal.odometry()
+            self.slid = 0
             self.motion = [kind, cm if kind == "F" else deg]
             self.view, self.view_key, self.candidate = [], None, None  # nothing seen here is noted once it moves
             self.ball, self.ball_trend = None, None
@@ -497,20 +511,24 @@ class Firmware:
         if why:
             self.say("ERR " + why)
             return
+        # The names the camera shows now: what it believes, and what it sees this instant (right after
+        # a turn, nothing is believed yet).
         names = []
-        for card, angle, cm in self.view:
-            names.append(card)
+        for card, angle, cm in self.view + self.hal.camera_view():
+            if card != "ball" and card not in names:
+                names.append(card)
+        self.slid = 0
         self.plan = [kind, cells, 0, conditions, names]
         self.say("OK MOVE %s %d" % (kind, cells))
-        if "CARD" in conditions and self.card_in_front():
-            self.end_plan("card")  # already in front of a card: it does not move onto it
+        if kind == "F" and "CARD" in conditions and self.card_in_front():
+            self.end_plan("card")  # already in front of a card: it does not drive onto it
             return
         self.start_cell()
 
     def state_line(self):
         distance = self.hal.distance_cm()
         card = self.card_in_front()
-        return "OK STATE dist=%s card=%s battery=%d estop=%d wait_adult=%d moving=%d last_stop=%s bumper=%d warning=%d resumes=%d pose=%d" % (
+        return "OK STATE dist=%s card=%s battery=%d estop=%d wait_adult=%d moving=%d last_stop=%s bumper=%d warning=%d resumes=%d pose=%d slid=%d" % (
             "none" if distance is None else str(int(distance)),
             card or "none",
             int(self.hal.battery()),
@@ -522,4 +540,5 @@ class Firmware:
             1 if self.warning else 0,
             self.resumes,
             self.pose,
+            self.slid,
         )

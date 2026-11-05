@@ -456,9 +456,21 @@ class World:
                     return {"error": "unknown button"}
                 self.buttons[data["name"]] = self.time + BUTTON_PRESS_S
             elif do == "adult_resume":
-                # An adult puts the robot back on the cell where the interrupted move started,
-                # facing the same way, then presses Resume on the robot.
-                if self.move_start is not None and self.firmware.motion is None:
+                # An adult does what the gateway asks ("put the robot back on cell …, facing …"), then
+                # presses Resume. Without such a request: back on the cell where the interrupted move
+                # started, if the robot waits for an adult; a robot that waits for nobody stays put.
+                asked = None
+                try:
+                    saved = json.loads((self.state_dir / "gateway.json").read_text(encoding="utf-8"))
+                    if not saved.get("sure", True) and saved.get("back"):
+                        asked = saved["back"]
+                except (OSError, ValueError):
+                    pass
+                if asked is not None and self.firmware.motion is None:
+                    col, row, facing = asked
+                    self.x, self.y = (col + 0.5) * self.cell, (row + 0.5) * self.cell
+                    self.heading = float(facing * 90)
+                elif self.move_start is not None and self.firmware.motion is None and self.firmware.wait_adult:
                     x, y, h = self.move_start
                     self.x = (int(x // self.cell) + 0.5) * self.cell
                     self.y = (int(y // self.cell) + 0.5) * self.cell
