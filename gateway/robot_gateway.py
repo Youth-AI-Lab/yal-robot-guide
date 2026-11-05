@@ -277,7 +277,11 @@ class Gateway:
             entry = min(same, key=lambda s: s["u"])
         where_text = entry["cell"] if not entry["could_also_be"] else \
             f"probably {entry['cell']} (could also be {', '.join(entry['could_also_be'])})"
-        return EVENTS["SEEN"] + f"{label} ({means}), about {cm} cm away, {side}: {where_text}, as the gateway counts the moves"
+        # Where it was seen from: the event can reach the agent after the next move (a model took a card
+        # seen from C2 for one seen from D2, 2026-11-05).
+        seen_from = f"{cell_name(where[0], where[1])} facing {FACING[where[2]]}"
+        return (EVENTS["SEEN"] + f"{label} ({means}), seen from {seen_from}, about {cm} cm away, {side}: "
+                f"{where_text}, as the gateway counts the moves")
 
     def cells_near(self, x, y, u):
         """The cell of the estimate, and the other cells of the mat within its uncertainty."""

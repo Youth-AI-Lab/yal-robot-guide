@@ -547,8 +547,9 @@ async def scenarios(sim, env):
         await asyncio.sleep(0.6)
         reply = await a.call("robot_state")
         heard = [e["event"] for e in reply.get("since_last_call", [])]
-        check("the camera's card reaches the agent, with its distance and cell",
-              any("water-point" in e and "cm away" in e and "C3" in e for e in heard), heard)
+        check("the camera's card reaches the agent, with where it was seen from, its distance and cell",
+              any("water-point" in e and "seen from C4 facing north" in e and "cm away" in e and "C3" in e for e in heard),
+              heard)
         cards = (await a.call("seen_cards"))["cards_seen"]
         check("seen_cards: one card, its cell, seen again from closer (C4)",
               len(cards) == 1 and cards[0]["cell"] == "C3" and cards[0]["seen_from"] == "C4 facing north", cards)
