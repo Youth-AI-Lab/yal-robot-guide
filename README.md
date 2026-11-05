@@ -217,7 +217,9 @@ such way: they read `since_last_call`.
 - **Rules for the agent**: [agents/AGENTS.example.md](agents/AGENTS.example.md) is an example of what
   a group could write (look around before moving, cross the ball's path only when it moves away,
   wait when the robot asks for an adult). Name it `AGENTS.md` in the folder where you start the
-  agent. Not tried with a real model yet.
+  agent. Tried on 5 November 2026 with Hermes: with DeepSeek v4 Flash, the robot found the card and
+  stopped in front of it, looked around, let the ball go by, no collision; with `qwen2.5:7b` on the
+  laptop (Ollama, 6 GB card), it gave up after 7 calls.
 
 > [!WARNING]
 > Each call sends the robot's state to the company that runs the model. Nothing about a person

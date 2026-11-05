@@ -648,7 +648,7 @@ async def scenarios(sim, env):
               any("getting closer" in e and "moving south" in e and "C" in e.split(": ")[1][:20] for e in heard), heard)
         check("then moving away (moving north)", any("moving away" in e and "moving north" in e for e in heard), heard)
         check("robot_state gives the last sighting of the ball", (reply.get("ball_last_seen") or {}).get("how")
-              in ("getting closer to the robot", "moving away from the robot", "not moving"), reply.get("ball_last_seen"))
+              in ("getting closer to the robot", "moving away from the robot", "at the same distance from the robot"), reply.get("ball_last_seen"))
         cards = (await a.call("seen_cards"))["cards_seen"]
         check("a card is still noted while a ball moves in the view", [x["card"] for x in cards] == ["barbecue"], cards)
 

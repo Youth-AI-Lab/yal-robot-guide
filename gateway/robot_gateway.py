@@ -304,7 +304,8 @@ class Gateway:
         trend, a1, c1, a2, c2, pose = reason.split(":")
         a1, c1, a2, c2 = int(a1), int(c1), int(a2), int(c2)
         how = {"closer": "getting closer to the robot", "away": "moving away from the robot",
-               "still": "not moving", "gone": "out of the camera's sight now"}[trend]
+               # "still": its distance does not change; it may still be moving, across (seen 2026-11-05).
+               "still": "at the same distance from the robot", "gone": "out of the camera's sight now"}[trend]
         where = self.poses.get(pose)
         at = (datetime.datetime.now() - datetime.timedelta(milliseconds=age_ms)).strftime("%H:%M:%S")
         if where is None:
