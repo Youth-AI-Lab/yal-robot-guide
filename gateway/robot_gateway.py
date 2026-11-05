@@ -47,6 +47,10 @@ HEARTBEAT_S = 0.2
 # Who sends the orders, written in the log: an agent (MCP), a person in a terminal, or the Drive
 # buttons of the simulator's page (which set ROBOT_CALLER=page).
 CALLER = os.environ.get("ROBOT_CALLER", "agent")
+# Options being measured (facilitator/workshops/measures/2026-11-05-robot-variantes/), off by default.
+TOOLS_PLUS = os.environ.get("ROBOT_TOOLS") == "plus"  # two more tools: look_around and face
+BALL_GUARD = os.environ.get("ROBOT_BALL_GUARD") == "1"  # no step into a cell the ball may roll through
+BALL_GUARD_S = 10  # a sighting older than this says nothing about where the ball is now
 FACING = ["north", "east", "south", "west"]
 COLORS = ("off", "red", "orange", "green", "blue")
 REASONS = {
@@ -439,6 +443,9 @@ class Gateway:
             target = (self.col + dc, self.row + dr)
             if not (0 <= target[0] < self.mat["cols"] and 0 <= target[1] < self.mat["rows"]):
                 return self.refused("the next cell is outside the mat")
+            if BALL_GUARD and (why := self.ball_in_the_way(cell_name(*target))):
+                return self.refused(why, what_to_do="Face the ball, watch it (wait_for_event), and step only "
+                                                    "when you have seen it moving away from the robot.")
         reply = self.request(command)
         if reply.startswith("ERR "):
             return self.refused(reply[4:])
@@ -472,6 +479,52 @@ class Gateway:
         except RobotNotConnected:
             pass
         return self.interrupted("timeout", start)
+
+    def ball_in_the_way(self, target):
+        """The ball rule, kept by the robot instead of the agent (option ROBOT_BALL_GUARD): from the last
+        sighting, less than BALL_GUARD_S seconds old and not "moving away", the cells where the ball may be
+        (its estimate, the cells around it, and the next one in its direction). Returns why, or None."""
+        ball = self.ball or {}
+        if "cell" not in ball or ball.get("how") == "moving away from the robot":
+            return None
+        seen = datetime.datetime.combine(datetime.date.today(), datetime.time.fromisoformat(ball["at"]))
+        if (datetime.datetime.now() - seen).total_seconds() > BALL_GUARD_S:
+            return None
+        cells = {ball["cell"], *ball.get("could_also_be", [])}
+        if ball.get("moving") in FACING:
+            dc, dr = FACING_STEP[FACING.index(ball["moving"])]
+            for c in list(cells):
+                col, row = ord(c[0]) - ord("A") + dc, int(c[1:]) - 1 + dr
+                if 0 <= col < self.mat["cols"] and 0 <= row < self.mat["rows"]:
+                    cells.add(cell_name(col, row))
+        if target in cells:
+            return (f"the ball may roll through {target}: last seen {ball['how']} "
+                    f"(probably {ball['cell']}, seen at {ball['at']})")
+        return None
+
+    def look_around(self):
+        """Four quarter turns to the right, a pause after each one for the camera (option ROBOT_TOOLS)."""
+        looked = []
+        for _ in range(4):
+            result = self.move("TURN R", "R")
+            if result.get("result") != "done":
+                result["looked_before_it_stopped"] = looked
+                return result
+            time.sleep(0.5)  # the camera names a card after 200 ms standing still
+            looked.append({"facing": FACING[self.facing], "card_ahead": result["state"]["card_ahead"],
+                           "distance_ahead_cm": result["state"]["distance_ahead_cm"],
+                           "what_the_camera_saw": [e["event"] for e in self.new_events()]})
+        return {"result": "done", "looked": looked, "state": self.robot_state()}
+
+    def face(self, direction):
+        """Turn on the spot until the robot faces north, east, south or west (option ROBOT_TOOLS)."""
+        turns = (FACING.index(direction) - self.facing) % 4
+        result = {"result": "done", "state": self.robot_state()}
+        for kind in {0: "", 1: "R", 2: "RR", 3: "L"}[turns]:
+            result = self.move("TURN " + kind, kind)
+            if result.get("result") != "done":
+                return result
+        return result
 
     def interrupted(self, why, start):
         self.sure, self.back = False, start
@@ -627,6 +680,20 @@ def seen_cards() -> str:
     return GATEWAY.run("seen_cards", {}, GATEWAY.seen_cards)
 
 
+def look_around() -> str:
+    """Turn on the spot all the way round, in four quarter turns to the right (four moves), stopping
+    after each one so that the camera can look. The answer says, for each direction, the card in
+    front, the distance to what is in front and what the camera saw (cards and balls, with their
+    cells). The robot ends facing the way it started."""
+    return GATEWAY.run("look_around", {}, GATEWAY.look_around, move=True)
+
+
+def face(direction: Literal["north", "east", "south", "west"]) -> str:
+    """Turn on the spot until the robot faces this direction (north is towards row 1). One or two
+    quarter turns, or none if it already faces it."""
+    return GATEWAY.run("face", {"direction": direction}, lambda: GATEWAY.face(direction), move=True)
+
+
 def set_light(color: Literal["off", "red", "orange", "green", "blue"]) -> str:
     """Change the colour of the robot's light."""
     return GATEWAY.run("set_light", {"color": color}, lambda: GATEWAY.set_light(color), move=True)
@@ -647,7 +714,7 @@ def serve():
     server = MCPServer("robot", instructions=CHANNEL_INSTRUCTIONS if channel else None)
     for tool in (robot_state, wait_for_event, seen_cards):
         server.tool(annotations=ToolAnnotations(read_only_hint=True))(tool)
-    for tool in (step_forward, turn, set_light):
+    for tool in (step_forward, turn, set_light) + ((look_around, face) if TOOLS_PLUS else ()):
         server.tool(annotations=ToolAnnotations(read_only_hint=False))(tool)
     if channel:
         serve_with_channel(server)

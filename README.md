@@ -229,8 +229,13 @@ such way: they read `since_last_call`.
   OpenCode, Hermes) with each model showed that the model makes the main difference. Sonnet 5.5 found the
   card in 4, 2 and 4 runs out of 5. DeepSeek v4 Flash never found it, in any engine. On the laptop,
   `qwen3:8b` was too slow for a robot that moves in real time, and Hermes refuses a model with less than
-  64,000 tokens of context. No model followed the ball rule as written: the robot's reflex is what
-  protected it.
+  64,000 tokens of context. With Hermes and nine models (three runs each, then five runs of four
+  ways to help the agent), Gemini 4 Argon found the card 3 times out of 3 and Qwen3.8 Flash in most
+  runs, for about 2 US cents a run. Two extra tools, one to look all around and one to face north,
+  east, south or west, helped the models that wandered most. Clearer rules did not help.
+  GPT-6.1 Sol was the only model that crossed the ball's path only after it saw the ball moving
+  away; this is also why it often ran out of turns. The other models crossed without looking:
+  the robot's reflex is what protected it.
 - **One move at a time.** A move sent while another one runs is refused ("send one move at a time"):
   a model that sends several moves at once would otherwise see them run in an order nobody chose.
 
