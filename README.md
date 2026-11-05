@@ -80,6 +80,8 @@ to drive it by hand:
   python3 -I gateway/robot_gateway.py state
   python3 -I gateway/robot_gateway.py forward
   python3 -I gateway/robot_gateway.py right
+  python3 -I gateway/robot_gateway.py around
+  python3 -I gateway/robot_gateway.py face east
   python3 -I gateway/robot_gateway.py light green
   ```
 
@@ -155,16 +157,22 @@ combined with a slower model do better
 
 ## Part 5 - Connect an agent (not tested with a real model)
 
-The gateway is an MCP server. Its six tools:
+The gateway is an MCP server. Its eight tools:
 
 | Tool | What it does | Read only |
 |---|---|---|
 | `robot_state()` | distance in front, card in front, battery, buttons, the cell where the gateway thinks the robot is | yes |
 | `step_forward()` | one cell forwards, then stop | no |
 | `turn(direction)` | a quarter turn, `left` or `right` | no |
+| `look_around()` | a full turn on the spot, a pause in each direction; says what the camera saw in each one. One move | no |
+| `face(direction)` | turn on the spot towards `north`, `east`, `south` or `west`. One move, or none if it already faces it | no |
 | `set_light(color)` | `off`, `red`, `orange`, `green` or `blue` | no |
 | `wait_for_event(seconds)` | watch the robot for 1 to 30 seconds; answers as soon as something happens to it | yes |
 | `seen_cards()` | the cards the camera recognised, with the cell of each, where it was seen from, and when | yes |
+
+`look_around` and `face` count as one move each, so that an agent spends its moves on going
+somewhere, not on counting quarter turns. Tried on 5 November 2026 with Hermes: with these two
+tools, the models that wandered most found the card more often.
 
 **What the camera saw.** The camera names cards from a short list, never sends an image, and sees
 in a cone in front of the robot (30 degrees each side, up to 120 cm: the simulator's values, TO BE

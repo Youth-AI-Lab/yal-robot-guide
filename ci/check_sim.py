@@ -28,7 +28,7 @@ from mcp.client.stdio import stdio_client
 
 GUIDE = Path(__file__).resolve().parent.parent
 PYTHON = sys.executable
-TOOLS = {"robot_state", "step_forward", "turn", "set_light", "wait_for_event", "seen_cards"}
+TOOLS = {"robot_state", "step_forward", "turn", "look_around", "face", "set_light", "wait_for_event", "seen_cards"}
 # A small mat for the checks: 5 x 5 cells of 30 cm, start on C5 facing north, 6 moves.
 MAT = {"cols": 5, "rows": 5, "cell_cm": 30, "start": {"cell": "C5", "facing": "north"},
        "max_moves": 6, "move_timeout_s": 10,
@@ -210,7 +210,7 @@ async def scenarios(sim, env):
     async with agent(env) as a:
         tools = (await a.session.list_tools()).tools
         names = {t.name for t in tools}
-        check("the gateway offers exactly six tools", names == TOOLS, names)
+        check("the gateway offers exactly eight tools", names == TOOLS, names)
         read_only = {t.name for t in tools if t.annotations and t.annotations.read_only_hint}
         check("only robot_state, wait_for_event and seen_cards are marked read only",
               read_only == {"robot_state", "wait_for_event", "seen_cards"}, read_only)
@@ -328,6 +328,35 @@ async def scenarios(sim, env):
         reply = await a.call("turn", direction="right")
         check("no more moves than allowed", reply.get("result") == "refused" and "no moves left" in reply.get("why", ""),
               reply)
+
+    # look_around and face: several quarter turns, one move.
+    sim.fresh(cards=[{"cell": "C4", "label": "barbecue"}])
+    async with agent(env) as a:
+        turns = wire_count(sim, "TURN")
+        reply = await a.call("look_around")
+        looked = reply.get("looked", [])
+        check("look_around: four quarter turns, back facing north, one move",
+              [x["facing"] for x in looked] == ["east", "south", "west", "north"]
+              and wire_count(sim, "TURN") == turns + 4 and reply["state"]["facing"] == "north"
+              and reply["state"]["moves_left"] == MAT["max_moves"] - 1, reply)
+        check("look_around: the card in front, in the direction where it is",
+              (looked[3]["card_ahead"] or {}).get("card") == "barbecue" and looked[0]["card_ahead"] is None, looked)
+        reply = await a.call("face", direction="south")
+        check("face('south'): two quarter turns, one move",
+              reply.get("result") == "done" and reply["state"]["facing"] == "south"
+              and wire_count(sim, "TURN") == turns + 6 and reply["state"]["moves_left"] == MAT["max_moves"] - 2, reply)
+        reply = await a.call("face", direction="south")
+        check("face the way it already faces: nothing sent, no move",
+              wire_count(sim, "TURN") == turns + 6 and reply["state"]["moves_left"] == MAT["max_moves"] - 2, reply)
+        reply = await a.call("face", direction="up")
+        check("face('up'): an error, nothing sent", reply.get("is_error") is True and wire_count(sim, "TURN") == turns + 6,
+              reply)
+        for _ in range(MAT["max_moves"] - 2):
+            await a.call("turn", direction="right")
+        reply = await a.call("look_around")
+        check("look_around with no moves left: refused, nothing sent",
+              reply.get("result") == "refused" and "no moves left" in reply.get("why", "")
+              and wire_count(sim, "TURN") == turns + 6 + MAT["max_moves"] - 2, reply)
 
     # A wrong argument never reaches the robot.
     sim.fresh()
