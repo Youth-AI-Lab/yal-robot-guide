@@ -220,7 +220,8 @@ such way: they read `since_last_call`.
   agent. Tried on 5 November 2026 with Hermes: with DeepSeek v4 Flash, the robot found the card and
   stopped in front of it, looked around, let the ball go by, no collision; with `qwen2.5:7b` on the
   laptop (Ollama, 6 GB card), it gave up after 7 calls. With OpenCode and the same small local models
-  (`qwen2.5:7b`, `qwen3:1.7b`), the robot moved but did not find the card.
+  (`qwen2.5:7b`, `qwen3:1.7b`), the robot moved but did not find the card; nor with
+  `qwen3:30b-a3b-instruct-2507` (18 GB) through OpenCode or Hermes, on the same laptop.
 - **One move at a time.** A move sent while another one runs is refused ("send one move at a time"):
   a model that sends several moves at once would otherwise see them run in an order nobody chose.
 
