@@ -219,7 +219,10 @@ such way: they read `since_last_call`.
   wait when the robot asks for an adult). Name it `AGENTS.md` in the folder where you start the
   agent. Tried on 5 November 2026 with Hermes: with DeepSeek v4 Flash, the robot found the card and
   stopped in front of it, looked around, let the ball go by, no collision; with `qwen2.5:7b` on the
-  laptop (Ollama, 6 GB card), it gave up after 7 calls.
+  laptop (Ollama, 6 GB card), it gave up after 7 calls. With OpenCode and the same small local models
+  (`qwen2.5:7b`, `qwen3:1.7b`), the robot moved but did not find the card.
+- **One move at a time.** A move sent while another one runs is refused ("send one move at a time"):
+  a model that sends several moves at once would otherwise see them run in an order nobody chose.
 
 > [!WARNING]
 > Each call sends the robot's state to the company that runs the model. Nothing about a person
@@ -234,7 +237,7 @@ such way: they read `since_last_call`.
 ```
 
 About two minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
-would, and reads in the simulator what really happened: 78 checks, all passed in the image
+would, and reads in the simulator what really happened: 79 checks, all passed in the image
 2026.10.45 on 3 November 2026 (container with 2 processors, no network).
 
 ---

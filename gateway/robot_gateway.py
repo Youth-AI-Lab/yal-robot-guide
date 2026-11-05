@@ -524,9 +524,19 @@ class Gateway:
             self.save_state()
             return result
 
-    def run(self, tool, arguments, action):
-        """Run one tool call: connect if needed, never raise, log what the caller gets."""
-        with self.lock:
+    def run(self, tool, arguments, action, move=False):
+        """Run one tool call: connect if needed, never raise, log what the caller gets.
+
+        A move does not queue behind another one: several moves sent at once (parallel tool calls, seen
+        with qwen3 through OpenCode, 2026-11-05) would run in an order nobody chose. The first one runs,
+        the others are refused. A question (state, record, watching) waits for its turn."""
+        if not self.lock.acquire(timeout=1.0 if move else -1):
+            result = self.refused("another move is still running: send one move at a time, and read its answer "
+                                  "before the next")
+            text = json.dumps(result, ensure_ascii=False)
+            log(tool, arguments, text)
+            return text
+        try:
             end = time.monotonic() + 1.0  # a short wait: watching (wait_for_event) holds the cable briefly
             while (result := self.locked(action)) is None and time.monotonic() < end:
                 time.sleep(0.05)
@@ -536,6 +546,8 @@ class Gateway:
             text = json.dumps(result, ensure_ascii=False)
             log(tool, arguments, text)
             return text
+        finally:
+            self.lock.release()
 
     def watch_once(self):
         """The events the agent has not heard yet, read briefly (for the channel), or []."""
@@ -584,13 +596,13 @@ def step_forward() -> str:
     and stops by itself if something appears. Never off the mat. If the result is "stopped",
     do what "what_to_do" says before anything else. The answer gives the new state, with the card in
     front ("card_ahead") and what happened meanwhile ("since_last_call"), cards seen included."""
-    return GATEWAY.run("step_forward", {}, lambda: GATEWAY.move("MOVE F", "F"))
+    return GATEWAY.run("step_forward", {}, lambda: GATEWAY.move("MOVE F", "F"), move=True)
 
 
 def turn(direction: Literal["left", "right"]) -> str:
     """Turn the robot a quarter turn on the spot, to its left or to its right, then stop."""
     kind = {"left": "L", "right": "R"}[direction]
-    return GATEWAY.run("turn", {"direction": direction}, lambda: GATEWAY.move("TURN " + kind, kind))
+    return GATEWAY.run("turn", {"direction": direction}, lambda: GATEWAY.move("TURN " + kind, kind), move=True)
 
 
 def wait_for_event(seconds: int = 10) -> str:
@@ -617,7 +629,7 @@ def seen_cards() -> str:
 
 def set_light(color: Literal["off", "red", "orange", "green", "blue"]) -> str:
     """Change the colour of the robot's light."""
-    return GATEWAY.run("set_light", {"color": color}, lambda: GATEWAY.set_light(color))
+    return GATEWAY.run("set_light", {"color": color}, lambda: GATEWAY.set_light(color), move=True)
 
 
 CHANNEL_INSTRUCTIONS = (

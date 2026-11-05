@@ -652,6 +652,16 @@ async def scenarios(sim, env):
         cards = (await a.call("seen_cards"))["cards_seen"]
         check("a card is still noted while a ball moves in the view", [x["card"] for x in cards] == ["barbecue"], cards)
 
+    # Several moves sent at once (parallel tool calls): one runs, the others are refused.
+    sim.fresh()
+    async with agent(env) as a:
+        replies = await asyncio.gather(a.call("step_forward"), a.call("step_forward"), a.call("turn", direction="right"))
+        done = [r for r in replies if r.get("result") == "done"]
+        refused = [r for r in replies if "one move at a time" in r.get("why", "")]
+        r = sim.state()["robot"]
+        check("moves sent at once: one runs, the others are refused (never an order nobody chose)",
+              len(done) == 1 and len(refused) == 2 and r["collisions"] == 0, (replies, r))
+
     # Real time and frozen time.
     sim.fresh(balls=[{"from": [15, 15], "to": [135, 15], "radius": 5, "speed_cm_s": 10}])
     sim.act(do="mode", mode="realtime")
