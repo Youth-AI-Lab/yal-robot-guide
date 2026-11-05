@@ -221,7 +221,11 @@ such way: they read `since_last_call`.
   stopped in front of it, looked around, let the ball go by, no collision; with `qwen2.5:7b` on the
   laptop (Ollama, 6 GB card), it gave up after 7 calls. With OpenCode and the same small local models
   (`qwen2.5:7b`, `qwen3:1.7b`), the robot moved but did not find the card; nor with
-  `qwen3:30b-a3b-instruct-2507` (18 GB) through OpenCode or Hermes, on the same laptop.
+  `qwen3:30b-a3b-instruct-2507` (18 GB) through OpenCode or Hermes, on the same laptop. The same task with
+  three coding agents that had only the robot's tools: Claude Code (Sonnet 5.5), Codex (gpt-6.1-sol) and
+  agy all found the card. Only Codex waited to see the ball move away before it crossed. The other two
+  crossed without looking, the robot's own reflex stopped them, and their reports said they had waited.
+  Read `.robot-sim/context.jsonl`, not only the agent's answer.
 - **One move at a time.** A move sent while another one runs is refused ("send one move at a time"):
   a model that sends several moves at once would otherwise see them run in an order nobody chose.
 
