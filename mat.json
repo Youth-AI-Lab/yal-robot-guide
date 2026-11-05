@@ -5,7 +5,7 @@
   "cell_cm": 30,
   "start": {"cell": "A6", "facing": "north"},
   "max_moves": 40,
-  "move_timeout_s": 8,
+  "move_timeout_s": 12,
   "cards": {
     "fire-station": "the fire station, home of the robot",
     "dry-grass": "dry grass: a fire would spread fast here",

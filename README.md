@@ -97,9 +97,12 @@ Things to try:
 
 - Drag a box onto the cell in front of the robot (the dashed square), then **Forward**: refused,
   "something is in front of the robot".
-- **Forward** and, while it moves, drag a box right in front of it: the robot stops by itself. The
-  gateway then refuses everything: the position is unknown. Press **An adult puts it back and
-  presses Resume**, then **Forward** again.
+- **Forward** and, while it moves, drag a box right in front of it: the robot stops its motors and
+  waits up to 3 seconds (`OBSTACLE_WAIT_MS` in `robot/reflex.py`). Take the box away in time: it
+  finishes its cell. Leave it: it gives up, between two cells, and the gateway refuses everything,
+  since the position is unknown. Press **An adult puts it back and presses Resume**, then
+  **Forward** again. With the box there before the move, it waits, then refuses: it never moved, so
+  no adult is needed.
 - **Forward** and, while it moves, **Unplug the cable**: the robot stops after one second (its
   watchdog). The gateway waits, then says the move was stopped.
 - **Emergency stop**, then **Forward**: refused.
@@ -222,7 +225,7 @@ such way: they read `since_last_call`.
 ```
 
 About two minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
-would, and reads in the simulator what really happened: 72 checks, all passed in the image
+would, and reads in the simulator what really happened: 74 checks, all passed in the image
 2026.10.45 on 3 November 2026 (container with 2 processors, no network).
 
 ---

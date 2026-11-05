@@ -21,6 +21,12 @@ WATCHDOG_MS = 1000
 # Below this battery level (percent), the robot refuses to move.
 MIN_BATTERY = 20
 
+# When something is in its way (a ball rolling past), the robot stops its motors and waits this long
+# (milliseconds) for the way to clear, then goes on with the same move. If it is still blocked, it gives
+# up: a simple refusal if it had not moved yet, a stop if it had. 0: it gives up at once. A touch on the
+# bumper always stops the robot at once.
+OBSTACLE_WAIT_MS = 3000
+
 # While it stands still, the robot never moves away by itself (only a command moves it), but it can
 # warn: when something comes closer than this in front of it (centimetres), warn() chooses its light.
 WARN_DISTANCE_CM = 25

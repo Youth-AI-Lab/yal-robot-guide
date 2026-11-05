@@ -31,7 +31,7 @@ PYTHON = sys.executable
 TOOLS = {"robot_state", "step_forward", "turn", "set_light", "wait_for_event", "seen_cards"}
 # A small mat for the checks: 5 x 5 cells of 30 cm, start on C5 facing north, 6 moves.
 MAT = {"cols": 5, "rows": 5, "cell_cm": 30, "start": {"cell": "C5", "facing": "north"},
-       "max_moves": 6, "move_timeout_s": 6,
+       "max_moves": 6, "move_timeout_s": 10,
        "cards": {"fire-station": "the fire station", "dry-grass": "dry grass",
                  "barbecue": "a barbecue", "water-point": "a water point"}}
 results = []
@@ -227,6 +227,10 @@ async def scenarios(sim, env):
         r = sim.state()["robot"]
         check("prototype: it refuses to go on in front of the box",
               reply.get("result") == "refused" and "in front" in reply.get("why", "") and r["cell"] == "C4", (reply, r))
+        reply = await a.call("robot_state")
+        check("prototype: after waiting in vain, a simple refusal: no adult needed, the position is known",
+              reply.get("position_known") is True and reply.get("waiting_for_adult") is False
+              and reply.get("cell") == "C4", reply)
         check("prototype: no collision", r["collisions"] == 0, r)
 
     # A box dropped in front of the robot while it moves: the reflex stops it, not the agent.
@@ -253,6 +257,21 @@ async def scenarios(sim, env):
         reply = await a.call("step_forward")
         check("after Resume: it moves again", reply.get("result") == "done"
               and reply.get("state", {}).get("cell") == "C4", reply)
+
+    # Something crosses its way during a move and goes: the robot waits, then finishes the cell.
+    sim.fresh()
+    async with agent(env) as a:
+        drop = asyncio.create_task(later(1.0, box_in_front, sim, 4))
+        moving = asyncio.create_task(a.call("step_forward"))
+        box = await drop
+        await asyncio.sleep(1.0)
+        sim.act(do="remove_box", id=box)
+        reply = await moving
+        r = sim.state()["robot"]
+        heard = " ".join(e["event"] for e in reply.get("since_last_call", []))
+        check("a box dropped, then taken away within 3 s: the robot waits, then finishes the cell",
+              reply.get("result") == "done" and r["cell"] == "C4" and near(r["y"], 105) and r["collisions"] == 0
+              and "waited" in heard and "went on" in heard, (reply, r))
 
     # The cable comes loose during a move: the robot stops by itself (watchdog).
     sim.fresh()

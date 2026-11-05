@@ -70,6 +70,8 @@ EVENTS = {
     "ESTOP": "someone pressed the emergency stop button",
     "STOP": "a move stopped: ",
     "SEEN": "the camera recognised a card in front: ",
+    "PAUSE": "something was in the robot's way: it stopped its motors and waited",
+    "GO_ON": "the way was clear again: the robot went on with its move",
 }
 FACING_STEP = ((0, -1), (1, 0), (0, 1), (-1, 0))  # north, east, south, west
 # How sure the gateway is of a distance given by the camera: this share of the distance, plus a few
@@ -418,6 +420,10 @@ class Gateway:
                 return {"result": "done", "state": self.robot_state()}
             if line.startswith("EVT STOP "):
                 return self.interrupted(line[9:], start)
+            if line.startswith("EVT REFUSED "):
+                # It waited, the way stayed blocked, it never moved: still where it was.
+                self.moves -= 1
+                return self.refused(line[12:], waited="the robot waited for the way to clear, then gave up")
             if line.startswith("EVT "):
                 self.event(line)
         try:

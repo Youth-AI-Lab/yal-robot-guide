@@ -14,7 +14,8 @@ asking the computer. Nothing else is understood.
                        estop=<0|1> wait_adult=<0|1> moving=<0|1> last_stop=<reason> bumper=<0|1>
                        warning=<0|1> resumes=<number of presses on Resume since the robot started>
                        pose=<number of the robot's place: +1 after each move, stop or Resume>
-    MOVE F         ->  OK MOVE F, then EVT DONE F, or EVT STOP <reason>
+    MOVE F         ->  OK MOVE F, then EVT DONE F, EVT STOP <reason> (stopped on the way: an adult must
+                       come), or EVT REFUSED <reason> (it waited, the way stayed blocked, it never moved)
     TURN L, TURN R ->  OK TURN L, then EVT DONE L, or EVT STOP <reason>
     LED <color>    ->  OK LED <color>
     STOP           ->  OK STOP
@@ -26,7 +27,11 @@ and, without being asked:
     EVT SEEN:<card>:<angle>:<cm>:<pose>  standing still, the camera recognised this card, this many
                    degrees to the right (negative: to the left) and this far from the robot's centre
     EVT RESUMED    an adult pressed Resume on the robot
-The robot also remembers its last 32 events (those, ESTOP, STOP:<reason> when a move stops, and
+When something is in its way during a forward move, the robot stops its motors and waits up to
+reflex.OBSTACLE_WAIT_MS for the way to clear (PAUSE, then GO_ON), then finishes the same move.
+
+The robot also remembers its last 32 events (those, ESTOP, STOP:<reason> when a move stops, PAUSE and
+GO_ON, and
 GONE:<card>:<angle>:<cm>:<pose> when a card it saw leaves its view while it stands still), numbered,
 with the time of its clock: a computer that was not listening asks EVENTS. The camera is only
 believed while the robot stands still: during a move or a turn, nothing it sees is noted.
@@ -75,6 +80,7 @@ class Firmware:
         self.hal = hal
         self.reflex = reflex
         self.motion = None  # None, or [kind, start] with kind "F", "L" or "R"
+        self.paused_since = None  # while it waits for the way to clear
         self.estop = False
         self.wait_adult = False
         self.last_stop = "none"
@@ -144,9 +150,21 @@ class Firmware:
             self.halt("watchdog")
             return
         why = self.stop_reason(kind)
+        if why == "obstacle" and not self.hal.bumper():
+            # Something in the way, not touching: wait for it to go away (a ball rolling past).
+            self.hal.drive(0, 0)
+            if self.paused_since is None:
+                self.paused_since = now
+                self.remember("PAUSE")
+            elif hal.ticks_diff(now, self.paused_since) > getattr(self.reflex, "OBSTACLE_WAIT_MS", 0):
+                self.give_up("obstacle")
+            return
         if why:
             self.halt(why)
             return
+        if self.paused_since is not None:
+            self.paused_since = None
+            self.remember("GO_ON")
         self.steer()
 
     def warn(self):
@@ -192,12 +210,36 @@ class Firmware:
         return None if best is None else best[0]
 
     def stop_reason(self, kind):
+        """Why the robot cannot go on now, or None. "obstacle": something in the way of the rest of the
+        cell (closer than what is left to go, plus the stopping distance)."""
         distance = None
         if kind == "F":
             distance = self.hal.distance_cm()
             if distance is not None and distance < HARD_MIN_DISTANCE_CM:
                 return "obstacle"
-        return self.reflex.must_stop(distance, self.hal.battery())
+        why = self.reflex.must_stop(distance, self.hal.battery())
+        if why:
+            return why
+        if kind == "F" and distance is not None:
+            cm, deg = self.hal.odometry()
+            left = CELL_CM - (cm - self.motion[1]) if self.motion is not None else CELL_CM
+            if distance < left + self.reflex.STOP_DISTANCE_CM:
+                return "obstacle"
+        return None
+
+    def give_up(self, why):
+        """The way stayed blocked: a refusal if the robot never moved (it is where it was), a stop if
+        it did (somewhere between two cells: an adult must come)."""
+        cm, deg = self.hal.odometry()
+        moved = abs(cm - self.motion[1]) > 0.5 if self.motion[0] == "F" else abs(deg - self.motion[1]) > 1
+        self.paused_since = None
+        if moved:
+            self.halt(why)
+            return
+        self.hal.drive(0, 0)
+        self.motion = None
+        self.last_stop = why
+        self.say("EVT REFUSED " + why)
 
     def steer(self):
         """Drive towards the end of the move, slower near the end, and stop there."""
@@ -230,6 +272,7 @@ class Firmware:
     def halt(self, why):
         self.hal.drive(0, 0)
         self.last_stop = why
+        self.paused_since = None
         if self.motion is not None:
             self.motion = None
             self.pose += 1
@@ -247,13 +290,9 @@ class Firmware:
         if self.hal.bumper():
             return "bump"
         why = self.stop_reason(kind)
-        if why:
+        if why and why != "obstacle":
             return why
-        if kind == "F":
-            # The whole cell must be free, plus the stopping distance.
-            distance = self.hal.distance_cm()
-            if distance is not None and distance < CELL_CM + self.reflex.STOP_DISTANCE_CM:
-                return "obstacle"
+        # Something in the way: the move starts by waiting for it to clear (see tick).
         return None
 
     def answer(self, command):
@@ -291,8 +330,7 @@ class Firmware:
             cm, deg = self.hal.odometry()
             self.motion = [kind, cm if kind == "F" else deg]
             self.view, self.view_key, self.candidate = [], None, None  # nothing seen here is noted once it moves
-            self.say("OK " + word + " " + kind)
-            self.steer()
+            self.say("OK " + word + " " + kind)  # the next tick drives, or waits for the way to clear
         else:
             self.say("ERR unknown")
 
