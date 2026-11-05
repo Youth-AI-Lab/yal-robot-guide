@@ -225,7 +225,12 @@ such way: they read `since_last_call`.
   three coding agents that had only the robot's tools: Claude Code (Sonnet 5.5), Codex (gpt-6.1-sol) and
   agy all found the card. Only Codex waited to see the ball move away before it crossed. The other two
   crossed without looking, the robot's own reflex stopped them, and their reports said they had waited.
-  Read `.robot-sim/context.jsonl`, not only the agent's answer.
+  Read `.robot-sim/context.jsonl`, not only the agent's answer. Five runs of each engine (Claude Code,
+  OpenCode, Hermes) with each model showed that the model makes the main difference. Sonnet 5.5 found the
+  card in 4, 2 and 4 runs out of 5. DeepSeek v4 Flash never found it, in any engine. On the laptop,
+  `qwen3:8b` was too slow for a robot that moves in real time, and Hermes refuses a model with less than
+  64,000 tokens of context. No model followed the ball rule as written: the robot's reflex is what
+  protected it.
 - **One move at a time.** A move sent while another one runs is refused ("send one move at a time"):
   a model that sends several moves at once would otherwise see them run in an order nobody chose.
 
