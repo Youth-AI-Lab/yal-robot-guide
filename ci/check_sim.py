@@ -636,6 +636,22 @@ async def scenarios(sim, env):
         cards = (await a.call("seen_cards"))["cards_seen"]
         check("two like cards side by side stay two", len(cards) == 2, cards)
 
+    # A moving ball in the camera's view: which way it goes, and whether it comes closer.
+    sim.fresh(cards=[{"cell": "C2", "label": "barbecue"}],
+              balls=[{"from": [75, 15], "to": [75, 95], "radius": 7, "speed_cm_s": 10}])
+    async with agent(env) as a:
+        first = await a.call("robot_state")  # the ball starts coming closer within the first second
+        await asyncio.sleep(13.0)
+        reply = await a.call("robot_state")
+        heard = [e["event"] for r in (first, reply) for e in r.get("since_last_call", []) if "ball" in e["event"]]
+        check("the camera sees the ball coming closer (moving south, column C)",
+              any("getting closer" in e and "moving south" in e and "C" in e.split(": ")[1][:20] for e in heard), heard)
+        check("then moving away (moving north)", any("moving away" in e and "moving north" in e for e in heard), heard)
+        check("robot_state gives the last sighting of the ball", (reply.get("ball_last_seen") or {}).get("how")
+              in ("getting closer to the robot", "moving away from the robot", "not moving"), reply.get("ball_last_seen"))
+        cards = (await a.call("seen_cards"))["cards_seen"]
+        check("a card is still noted while a ball moves in the view", [x["card"] for x in cards] == ["barbecue"], cards)
+
     # Real time and frozen time.
     sim.fresh(balls=[{"from": [15, 15], "to": [135, 15], "radius": 5, "speed_cm_s": 10}])
     sim.act(do="mode", mode="realtime")

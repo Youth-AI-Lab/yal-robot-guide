@@ -118,6 +118,7 @@ class Gateway:
             self.resumes_at_stop = saved.get("resumes_at_stop")
             self.cursors = saved.get("cursors", {})
             self.poses = saved.get("poses", {})
+            self.ball = saved.get("ball")
             self.seen = saved.get("seen", [])
             if not isinstance(self.seen, list):
                 self.seen = []  # a record of an earlier version of the gateway
@@ -132,12 +133,14 @@ class Gateway:
             self.cursors = {}  # the last robot event each caller (agent, terminal, page) was given
             self.poses = {}  # the robot's pose number -> [col, row, facing], as counted by the gateway
             self.seen = []  # the cards the camera recognised: estimates, the most precise kept
+            self.ball = None  # the last sighting of a moving ball
 
     def save_state(self):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         saved = {"col": self.col, "row": self.row, "facing": self.facing, "sure": self.sure,
                  "back": self.back, "moves": self.moves, "resumes_at_stop": self.resumes_at_stop,
-                 "cursors": self.cursors, "poses": self.poses, "seen": self.seen}
+                 "cursors": self.cursors, "poses": self.poses, "seen": self.seen,
+                 "ball": self.ball}
         (STATE_DIR / "gateway.json").write_text(json.dumps(saved) + "\n", encoding="utf-8")
 
     # The serial link -------------------------------------------------------------------------
@@ -227,6 +230,10 @@ class Gateway:
             events.append({"event": "some older events were lost (the robot keeps only the last ones)"})
         for number, ms, name in entries:
             kind, _, reason = name.partition(":")
+            if kind == "BALL":
+                text = self.saw_ball(reason, now - int(ms))
+                events.append({"seconds_before_this_answer": round((now - int(ms)) / 1000, 1), "event": text})
+                continue
             if kind in ("SEEN", "GONE"):
                 text = self.saw(kind, reason, now - int(ms))
                 if text is None:
@@ -284,6 +291,38 @@ class Gateway:
         seen_from = f"{cell_name(where[0], where[1])} facing {FACING[where[2]]}"
         return (EVENTS["SEEN"] + f"{label} ({means}), seen from {seen_from}, about {cm} cm away, {side}: "
                 f"{where_text}, as the gateway counts the moves")
+
+    def place(self, where, angle, cm):
+        """A sighting (angle, distance) from a pose, as a point of the mat (centimetres)."""
+        heading = math.radians(where[2] * 90 + angle)
+        cell_cm = self.mat["cell_cm"]
+        return ((where[0] + 0.5) * cell_cm + math.sin(heading) * cm,
+                (where[1] + 0.5) * cell_cm - math.cos(heading) * cm)
+
+    def saw_ball(self, reason, age_ms):
+        """A moving ball: where it is, which way it goes, and whether it comes closer to the robot."""
+        trend, a1, c1, a2, c2, pose = reason.split(":")
+        a1, c1, a2, c2 = int(a1), int(c1), int(a2), int(c2)
+        how = {"closer": "getting closer to the robot", "away": "moving away from the robot",
+               "still": "not moving", "gone": "out of the camera's sight now"}[trend]
+        where = self.poses.get(pose)
+        at = (datetime.datetime.now() - datetime.timedelta(milliseconds=age_ms)).strftime("%H:%M:%S")
+        if where is None:
+            self.ball = {"how": how, "at": at}
+            return f"the camera sees a ball about {c2} cm away, {how}; where: not known (the robot's position was not known)"
+        x1, y1 = self.place(where, a1, c1)
+        x2, y2 = self.place(where, a2, c2)
+        cell, others = self.cells_near(x2, y2, max(CAMERA_MIN_ERROR_CM, CAMERA_ERROR * c2 + CAMERA_MIN_ERROR_CM))
+        dx, dy = x2 - x1, y2 - y1
+        going = "" if math.hypot(dx, dy) < 2 or trend == "gone" else \
+            (", moving " + (("east" if dx > 0 else "west") if abs(dx) > abs(dy) else ("south" if dy > 0 else "north")))
+        in_cell = cell if not others else f"probably {cell} (could also be {', '.join(others)})"
+        seen_from = f"{cell_name(where[0], where[1])} facing {FACING[where[2]]}"
+        self.ball = {"cell": cell, "could_also_be": others, "moving": going[9:] or None, "how": how,
+                     "seen_from": seen_from, "at": at}
+        if trend == "gone":
+            return f"the ball the camera was watching left its sight, last {in_cell}, seen from {seen_from}"
+        return f"the camera sees a ball, seen from {seen_from}, about {c2} cm away: {in_cell}{going}, {how}"
 
     def cells_near(self, x, y, u):
         """The cell of the estimate, and the other cells of the mat within its uncertainty."""
@@ -377,6 +416,7 @@ class Gateway:
             "waiting_for_adult": fields.get("wait_adult") == "1" or not self.sure,
             "bumper_touched": fields.get("bumper") == "1",
             "warning_light_on": fields.get("warning") == "1",
+            "ball_last_seen": self.ball,
             "last_stop": "none" if fields.get("last_stop", "none") == "none"
                          else REASONS.get(fields["last_stop"], fields["last_stop"]),
             "moves_left": self.mat["max_moves"] - self.moves,
@@ -532,7 +572,8 @@ MAT_START = f"{GATEWAY.mat['start']['cell']}, facing {GATEWAY.mat['start']['faci
 
 def robot_state() -> str:
     """What the robot measures now (distance to what is in front, the card in front, battery,
-    emergency stop) and the cell where the gateway thinks it is. Moves nothing. The cell is a
+    emergency stop, the last ball the camera saw and whether it was coming closer or going away) and
+    the cell where the gateway thinks it is. Moves nothing. The cell is a
     count of the moves done, not a measure: after an interrupted move it is unknown."""
     return GATEWAY.run("robot_state", {}, GATEWAY.robot_state)
 

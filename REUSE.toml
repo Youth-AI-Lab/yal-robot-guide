@@ -5,7 +5,7 @@ SPDX-PackageDownloadLocation = "https://github.com/Youth-AI-Lab/yal-robot-guide"
 
 # Texts: CC BY-SA 4.0.
 [[annotations]]
-path = ["README.md"]
+path = ["README.md", "agents/AGENTS.example.md"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Youth AI Lab partners"
 SPDX-License-Identifier = "CC-BY-SA-4.0"

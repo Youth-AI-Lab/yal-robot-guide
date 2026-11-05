@@ -174,7 +174,10 @@ error**). The robot only believes it while it stands still. Each card that comes
 event (in `since_last_call`), and the gateway turns it into a cell, with the other cells it could be
 in: "probably F3 (could also be F2, G3)". Seen again from closer, the estimate gets better.
 `seen_cards` keeps that record, so it does not depend on the agent's memory; a card moved by hand
-leaves it when the robot sees it gone. On the page, the shaded fan is what the camera can see, the
+leaves it when the robot sees it gone. The camera also sees the ball: twice a second, the robot
+compares two sightings and tells when it starts coming closer, going away, or leaves its sight, and
+the gateway says where it is and which way it goes ("probably E3, moving south, getting closer to
+the robot"); `robot_state` gives the last sighting. On the page, the shaded fan is what the camera can see, the
 dots are where it thinks the cards are, and the dashed circles are what the gateway believes (what
 the agent is told). The robot's own cell comes from counting moves: with **Wheels slip** on, it can
 be wrong.
@@ -211,6 +214,10 @@ such way: they read `since_last_call`.
   gateway running between two commands; the gateway follows the simulator if it restarts.
 - **Any agent**: the result of each call is written to `.robot-sim/context.jsonl`, and the page
   shows it. This is exactly what entered the agent's context.
+- **Rules for the agent**: [agents/AGENTS.example.md](agents/AGENTS.example.md) is an example of what
+  a group could write (look around before moving, cross the ball's path only when it moves away,
+  wait when the robot asks for an adult). Name it `AGENTS.md` in the folder where you start the
+  agent. Not tried with a real model yet.
 
 > [!WARNING]
 > Each call sends the robot's state to the company that runs the model. Nothing about a person
@@ -225,7 +232,7 @@ such way: they read `since_last_call`.
 ```
 
 About two minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
-would, and reads in the simulator what really happened: 74 checks, all passed in the image
+would, and reads in the simulator what really happened: 78 checks, all passed in the image
 2026.10.45 on 3 November 2026 (container with 2 processors, no network).
 
 ---

@@ -26,6 +26,8 @@ and, without being asked:
     EVT NEAR       standing still, something came close in front: the light warns (reflex.warn)
     EVT SEEN:<card>:<angle>:<cm>:<pose>  standing still, the camera recognised this card, this many
                    degrees to the right (negative: to the left) and this far from the robot's centre
+    EVT BALL:<trend>:<angle>:<cm>:<angle>:<cm>:<pose>  standing still, the camera sees a ball (two
+                   sightings, half a second apart) and how it moves: closer, away, still, or gone
     EVT RESUMED    an adult pressed Resume on the robot
 When something is in its way during a forward move, the robot stops its motors and waits up to
 reflex.OBSTACLE_WAIT_MS for the way to clear (PAUSE, then GO_ON), then finishes the same move.
@@ -53,8 +55,8 @@ What the program needs from the board (hal):
     battery()                          percent
     button(name)                       "stop" or "resume": True while pressed
     bumper()                           True while something touches the bumper
-    camera_view()                      the cards the camera recognises now: a list of
-                                       [card, angle in degrees (+ = right), distance in cm]
+    camera_view()                      what the camera recognises now (cards, and "ball"): a list of
+                                       [name, angle in degrees (+ = right), distance in cm]
     led(color)                         one of COLORS
 """
 
@@ -73,6 +75,9 @@ EVENTS_KEPT = 32
 # The camera's answer must stay the same this long before the robot believes it (milliseconds). The
 # simulator's value; on the real robot, the camera answers 1 to 2 s late (RobotIA): TO BE COMPLETED.
 CAMERA_STABLE_MS = 200
+# How often the robot looks again at a moving ball to tell whether it comes closer (milliseconds).
+BALL_SAMPLE_MS = 500
+BALL_MOVE_CM = 2  # a change of distance smaller than this: the ball does not move
 
 
 class Firmware:
@@ -92,6 +97,8 @@ class Firmware:
         self.events = []  # [number, time in ms, name], the last EVENTS_KEPT
         self.next_event = 1
         self.pose = 0  # +1 each time the robot may be somewhere else: a move ends, stops, or Resume
+        self.ball = None  # the last sighting of a ball [angle, cm, time], while standing still
+        self.ball_trend = None
         self.view = []  # what the camera shows, once believed: [[card, angle, cm], ...]
         self.view_key = None
         self.candidate = None
@@ -184,7 +191,9 @@ class Firmware:
     def look(self, now):
         """Standing still: once the camera's view is stable, note each card that came into it, and
         each card that left it (moved by hand, hidden by a box)."""
-        view = self.hal.camera_view()
+        everything = self.hal.camera_view()
+        self.watch_ball(now, [v for v in everything if v[0] == "ball"])
+        view = [v for v in everything if v[0] != "ball"]  # the cards: they stay put, the ball does not
         key = repr(view)
         if key != self.candidate:
             self.candidate, self.candidate_since = key, now
@@ -201,11 +210,34 @@ class Firmware:
         for card, angle, cm in left:
             self.remember("GONE:%s:%d:%d:%d" % (card, angle, cm, self.pose))
 
+    def watch_ball(self, now, balls):
+        """Twice a second, compare the nearest ball with the last sighting: note when it starts to come
+        closer, to go away, to stand still, or leaves the camera's view."""
+        if self.ball is not None and self.hal.ticks_diff(now, self.ball[2]) < BALL_SAMPLE_MS:
+            return
+        if not balls:
+            if self.ball_trend is not None:
+                angle, cm = self.ball[0], self.ball[1]
+                self.note("BALL:gone:%d:%d:%d:%d:%d" % (angle, cm, angle, cm, self.pose))
+            self.ball, self.ball_trend = None, None
+            return
+        nearest = balls[0]
+        for b in balls:
+            if b[2] < nearest[2]:
+                nearest = b
+        if self.ball is not None:
+            change = nearest[2] - self.ball[1]
+            trend = "closer" if change < -BALL_MOVE_CM else "away" if change > BALL_MOVE_CM else "still"
+            if trend != self.ball_trend:
+                self.note("BALL:%s:%d:%d:%d:%d:%d" % (trend, self.ball[0], self.ball[1], nearest[1], nearest[2], self.pose))
+                self.ball_trend = trend
+        self.ball = [nearest[1], nearest[2], now]
+
     def card_in_front(self):
         """The nearest card just in front (the cell ahead), from what the camera shows."""
         best = None
         for card, angle, cm in self.hal.camera_view():
-            if -15 <= angle <= 15 and cm <= CELL_CM * 3 // 2 and (best is None or cm < best[1]):
+            if card != "ball" and -15 <= angle <= 15 and cm <= CELL_CM * 3 // 2 and (best is None or cm < best[1]):
                 best = [card, cm]
         return None if best is None else best[0]
 
@@ -330,6 +362,7 @@ class Firmware:
             cm, deg = self.hal.odometry()
             self.motion = [kind, cm if kind == "F" else deg]
             self.view, self.view_key, self.candidate = [], None, None  # nothing seen here is noted once it moves
+            self.ball, self.ball_trend = None, None
             self.say("OK " + word + " " + kind)  # the next tick drives, or waits for the way to clear
         else:
             self.say("ERR unknown")

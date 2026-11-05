@@ -263,6 +263,26 @@ class World:
             seen_d = d * (1 + rng.gauss(0, self.noise["camera_distance"]))
             seen_angle = angle + rng.gauss(0, CAMERA_ANGLE_ERROR_DEG)
             out.append([label, int(round(seen_angle)), int(round(seen_d))])
+        # The balls too, as "ball": the same cone, the same boxes in the way. The error is the same for a
+        # point of view (a bias), so two sightings differ by what the ball really moved.
+        for i, ball in enumerate(self.balls):
+            bx, by = self.ball_xy(ball)
+            dx, dy = bx - self.x, by - self.y
+            d = math.hypot(dx, dy)
+            if d < ROBOT_RADIUS_CM or d > CAMERA_RANGE_CM:
+                continue
+            angle = (math.degrees(math.atan2(dx, -dy)) - self.heading + 540) % 360 - 180
+            if abs(angle) > CAMERA_HALF_ANGLE_DEG:
+                continue
+            ux, uy = dx / d, dy / d
+            if any((t := ray_box(self.x, self.y, ux, uy, *box)) is not None and t < d
+                   for box in ((b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"]) for b in self.boxes)):
+                continue
+            rng = random.Random(f"{view}:ball{i}")
+            if rng.random() < self.noise["camera_miss"]:
+                continue
+            bias, tilt = 1 + rng.gauss(0, self.noise["camera_distance"]), rng.gauss(0, CAMERA_ANGLE_ERROR_DEG)
+            out.append(["ball", int(round(angle + tilt)), int(round(d * bias))])
         return out
 
     def gateway_beliefs(self):
