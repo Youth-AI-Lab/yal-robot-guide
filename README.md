@@ -82,6 +82,7 @@ to drive it by hand:
   python3 -I gateway/robot_gateway.py right
   python3 -I gateway/robot_gateway.py around
   python3 -I gateway/robot_gateway.py face east
+  python3 -I gateway/robot_gateway.py move north 3 card_ahead
   python3 -I gateway/robot_gateway.py light green
   ```
 
@@ -110,6 +111,10 @@ Things to try:
 - **Emergency stop**, then **Forward**: refused.
 - Turn towards the edge and **Forward**: refused, the next cell is outside the mat.
 - Drag a card onto the cell in front of the robot, then **State**: `card_ahead` names it.
+- `move north 3 card_ahead`: the robot slides up to three cells and stops on the cell in front of
+  the first card it meets. Then `move east`: refused, the robot only sees in front of it. `face east`,
+  `face north`, `move east` again: now the distance sensor has seen the cell free, it slides there
+  without turning.
 - Put the robot on the path of the ball (column E) and wait. When the ball comes close in front, the
   light turns red (the warning reflex); when it touches the robot, it bounces off the bumper. The
   robot does not move away: standing still is its safe state, and moving is a decision. While it
@@ -157,12 +162,13 @@ combined with a slower model do better
 
 ## Part 5 - Connect an agent (not tested with a real model)
 
-The gateway is an MCP server. Its eight tools:
+The gateway is an MCP server. Its nine tools:
 
 | Tool | What it does | Read only |
 |---|---|---|
 | `robot_state()` | distance in front, card in front, battery, buttons, the cell where the gateway thinks the robot is | yes |
 | `step_forward()` | one cell forwards, then stop | no |
+| `move(direction, cells, stop_if)` | slide 1 to 4 cells `north`, `east`, `south` or `west` without turning; stops on a cell when `stop_if` is met: `card_ahead`, `ball_seen`, `new_card`. One move | no |
 | `turn(direction)` | a quarter turn, `left` or `right` | no |
 | `look_around()` | a full turn on the spot, a pause in each direction; says what the camera saw in each one. One move | no |
 | `face(direction)` | turn on the spot towards `north`, `east`, `south` or `west`. One move, or none if it already faces it | no |
@@ -173,6 +179,18 @@ The gateway is an MCP server. Its eight tools:
 `look_around` and `face` count as one move each, so that an agent spends its moves on going
 somewhere, not on counting quarter turns. Tried on 5 November 2026 with Hermes: with these two
 tools, the models that wandered most found the card more often.
+
+**`move`: several cells, and conditions.** The robot has mecanum wheels: it slides forwards,
+backwards or to a side without turning, and its camera keeps looking the way it faces. One `move`
+counts as one move, however many cells (1 to 4). The robot itself checks the conditions, on each
+cell it reaches, and stops there: the agent answers seconds later (6 s between two calls, median of
+the bench of 5 November), when a ball has already rolled more than a cell. `card_ahead` is also
+checked before it starts, so `move(..., stop_if=["card_ahead"])` never drives onto a card. Its distance
+sensor and camera only look forwards: backwards or sideways, the gateway lets it slide only into
+cells the sensor saw free in the last two minutes (`face` that way once, or `look_around`), never
+near a ball seen in the last 10 seconds, and the robot goes slower there. How true a sideways slide
+is on the real wheels is TO BE COMPLETED (mecanum wheels slip more sideways). Not yet tried with a
+model.
 
 **What the camera saw.** The camera names cards from a short list, never sends an image, and sees
 in a cone in front of the robot (30 degrees each side, up to 120 cm: the simulator's values, TO BE

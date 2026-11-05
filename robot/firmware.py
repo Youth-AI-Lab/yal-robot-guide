@@ -5,17 +5,28 @@ annotation), because the robot's board runs MicroPython. On the real board, a sm
 the HAL below; that file is TO BE COMPLETED once the robot is built.
 
 The robot reads one command per line from the computer (the gateway) and answers one line. It
-moves one cell at most per command. Its reflexes (reflex.py) can stop it at any time, without
-asking the computer. Nothing else is understood.
+moves four cells at most per command, and always stops on a cell. Its reflexes (reflex.py) can stop
+it at any time, without asking the computer. Nothing else is understood.
 
     HELLO          ->  OK HELLO robot <protocol>
     PING           ->  OK PONG              (the computer says it is still there)
     STATE          ->  OK STATE dist=<cm|none> card=<label|none> battery=<percent>
                        estop=<0|1> wait_adult=<0|1> moving=<0|1> last_stop=<reason> bumper=<0|1>
                        warning=<0|1> resumes=<number of presses on Resume since the robot started>
-                       pose=<number of the robot's place: +1 after each move, stop or Resume>
+                       pose=<number of the robot's place: +1 after each cell, stop or Resume>
     MOVE F         ->  OK MOVE F, then EVT DONE F, EVT STOP <reason> (stopped on the way: an adult must
                        come), or EVT REFUSED <reason> (it waited, the way stayed blocked, it never moved)
+    MOVE <d> <n> [UNTIL <conditions>]
+                   ->  slide n cells (1 to MAX_CELLS) without turning: d is F (forwards), B (backwards),
+                       L (to its left) or R (to its right). OK MOVE <d> <n>, then EVT CELL <cells done>
+                       <pose> on each cell it reaches, and at the end EVT DONE <d> <cells done> <why>:
+                       "all", "card" (a card in front), "ball" (the camera sees a ball), "new" (the
+                       camera recognises a card it did not show when the move began), "obstacle"
+                       (forwards: the way stayed blocked, it stayed on the last cell). Conditions, with
+                       commas: CARD (also checked before it starts), BALL, NEW; with any of them, the
+                       robot stops on each cell for CELL_LOOK_MS, so that the camera can look. EVT STOP
+                       and EVT REFUSED as for MOVE F; after EVT STOP, the adult puts it back on the last
+                       cell it reached.
     TURN L, TURN R ->  OK TURN L, then EVT DONE L, or EVT STOP <reason>
     LED <color>    ->  OK LED <color>
     STOP           ->  OK STOP
@@ -38,19 +49,26 @@ GONE:<card>:<angle>:<cm>:<pose> when a card it saw leaves its view while it stan
 with the time of its clock: a computer that was not listening asks EVENTS. The camera is only
 believed while the robot stands still: during a move or a turn, nothing it sees is noted.
 
-The robot never moves backwards: its distance sensor only looks forwards. Its bumper goes all
-around it: when something touches it, a move stops at once, whatever reflex.py says.
+Its wheels (mecanum wheels) slide it forwards, backwards or to a side, and turn it on the spot. Its
+distance sensor and its camera only look forwards: backwards or sideways, nothing tells it what is in
+the way, so it goes there slowly (HARD_BLIND_SPEED_CM_S), and the gateway sends it there only into
+cells its sensor has seen free. Its bumper goes all around it: when something touches it, a move stops
+at once, whatever reflex.py says.
 
 After a move is interrupted (obstacle, watchdog, emergency button, STOP), the robot is somewhere
 between two cells. It refuses to move until an adult puts it back on the cell where the move
-started and presses the Resume button on the robot (EVT RESUMED, and "resumes" in STATE goes up
-by one). Nothing from the computer can do that.
+started (for a move of several cells: the last cell it reached) and presses the Resume button on the
+robot (EVT RESUMED, and "resumes" in STATE goes up by one). Nothing from the computer can do that.
 
 What the program needs from the board (hal):
     ticks_ms(), ticks_diff(new, old)   a clock in milliseconds
     read_lines(), write_line(text)     the link to the computer
-    drive(speed_cm_s, turn_deg_s)      both wheels: forwards speed, and turning speed (+ = right)
-    odometry()                         (centimetres, degrees) counted by the wheels since start
+    drive(forward_cm_s, right_cm_s, turn_deg_s)
+                                       the four wheels: speed forwards (- = backwards), speed to the
+                                       right (- = to the left), turning speed (+ = right)
+    odometry()                         (centimetres travelled, degrees turned) counted by the wheels
+                                       since start; how true sideways moves are on the real wheels is
+                                       TO BE COMPLETED (mecanum wheels slip more sideways)
     distance_cm()                      the distance sensor in front: a number, or None
     battery()                          percent
     button(name)                       "stop" or "resume": True while pressed
@@ -60,7 +78,7 @@ What the program needs from the board (hal):
     led(color)                         one of COLORS
 """
 
-PROTOCOL = 1
+PROTOCOL = 2
 
 # The length of one cell of the mat (centimetres): the same number as "cell_cm" in mat.json.
 CELL_CM = 30
@@ -68,7 +86,16 @@ CELL_CM = 30
 # Limits that reflex.py cannot loosen.
 HARD_MAX_SPEED_CM_S = 20
 HARD_MIN_DISTANCE_CM = 3
+# Backwards or sideways, where the distance sensor does not look: slower, so that a touch on the
+# bumper stops it sooner. A choice of the simulator; on the real robot TO BE COMPLETED.
+HARD_BLIND_SPEED_CM_S = 5
 TURN_DEG_S = 90
+# The most cells one command may move, and how long the robot stands on each cell when the move
+# has conditions (the camera believes what it sees after CAMERA_STABLE_MS standing still).
+MAX_CELLS = 4
+CELL_LOOK_MS = 300
+SLIDES = {"F": (1, 0), "B": (-1, 0), "L": (0, -1), "R": (0, 1)}  # (forwards, to the right)
+CONDITIONS = ("CARD", "BALL", "NEW")
 
 COLORS = ("off", "red", "orange", "green", "blue")
 EVENTS_KEPT = 32
@@ -84,7 +111,12 @@ class Firmware:
     def __init__(self, hal, reflex):
         self.hal = hal
         self.reflex = reflex
-        self.motion = None  # None, or [kind, start] with kind "F", "L" or "R"
+        # None, or [kind, start]: kind "F", "B", "L" or "R" for one cell of a slide ("F" also for MOVE F),
+        # "TL" or "TR" for a quarter turn, "P" while it stands on a cell between two cells of a slide
+        self.motion = None
+        # A move of several cells (MOVE <d> <n>): [direction, cells asked, cells done, conditions,
+        # card names the camera showed since the move began], or None
+        self.plan = None
         self.paused_since = None  # while it waits for the way to clear
         self.estop = False
         self.wait_adult = False
@@ -156,10 +188,21 @@ class Firmware:
         if hal.ticks_diff(now, self.last_heard) > self.reflex.WATCHDOG_MS:
             self.halt("watchdog")
             return
+        if kind == "P":
+            # Standing on a cell of a slide: the camera looks, then the conditions decide.
+            self.hal.drive(0, 0, 0)
+            self.look(now)
+            if hal.ticks_diff(now, self.motion[1]) >= CELL_LOOK_MS:
+                why = self.condition_met()
+                if why:
+                    self.end_plan(why)
+                else:
+                    self.start_cell()
+            return
         why = self.stop_reason(kind)
         if why == "obstacle" and not self.hal.bumper():
             # Something in the way, not touching: wait for it to go away (a ball rolling past).
-            self.hal.drive(0, 0)
+            self.hal.drive(0, 0, 0)
             if self.paused_since is None:
                 self.paused_since = now
                 self.remember("PAUSE")
@@ -241,9 +284,30 @@ class Firmware:
                 best = [card, cm]
         return None if best is None else best[0]
 
+    def condition_met(self):
+        """On a cell of a slide, after looking: the first condition of the move that is true, or None."""
+        names = self.plan[4]
+        why = None
+        for condition in self.plan[3]:
+            if condition == "CARD" and self.card_in_front():
+                why = why or "card"
+            if condition == "BALL":
+                for seen in self.hal.camera_view():
+                    if seen[0] == "ball":
+                        why = why or "ball"
+            if condition == "NEW":
+                for card, angle, cm in self.view:
+                    if card not in names:
+                        why = why or "new"
+        for card, angle, cm in self.view:
+            if card not in names:
+                names.append(card)
+        return why
+
     def stop_reason(self, kind):
         """Why the robot cannot go on now, or None. "obstacle": something in the way of the rest of the
-        cell (closer than what is left to go, plus the stopping distance)."""
+        cell (closer than what is left to go, plus the stopping distance). Only forwards: the distance
+        sensor sees nothing backwards or sideways (nor while it turns)."""
         distance = None
         if kind == "F":
             distance = self.hal.distance_cm()
@@ -263,48 +327,91 @@ class Firmware:
         """The way stayed blocked: a refusal if the robot never moved (it is where it was), a stop if
         it did (somewhere between two cells: an adult must come)."""
         cm, deg = self.hal.odometry()
-        moved = abs(cm - self.motion[1]) > 0.5 if self.motion[0] == "F" else abs(deg - self.motion[1]) > 1
+        moved = abs(cm - self.motion[1]) > 0.5 if self.motion[0] in SLIDES else abs(deg - self.motion[1]) > 1
         self.paused_since = None
         if moved:
             self.halt(why)
             return
-        self.hal.drive(0, 0)
+        self.hal.drive(0, 0, 0)
+        if self.plan is not None and self.plan[2] > 0:
+            # It is on the last cell it reached: a move that ends early, not a refusal.
+            self.last_stop = why
+            self.end_plan(why)
+            return
         self.motion = None
+        self.plan = None
         self.last_stop = why
         self.say("EVT REFUSED " + why)
 
     def steer(self):
-        """Drive towards the end of the move, slower near the end, and stop there."""
+        """Drive towards the end of the cell (or of the quarter turn), slower near the end, and stop there."""
         cm, deg = self.hal.odometry()
         kind, start = self.motion
-        if kind == "F":
+        if kind in SLIDES:
             left = CELL_CM - (cm - start)
             if left <= 0:
                 self.finish()
                 return
             top = min(self.reflex.MAX_SPEED_CM_S, HARD_MAX_SPEED_CM_S)
-            self.hal.drive(max(2, min(top, left * 3)), 0)
+            if kind != "F":
+                top = min(top, HARD_BLIND_SPEED_CM_S)
+            speed = max(2, min(top, left * 3))
+            forward, right = SLIDES[kind]
+            self.hal.drive(speed * forward, speed * right, 0)
         else:
             left = 90 - abs(deg - start)
             if left <= 0:
                 self.finish()
                 return
             rate = max(10, min(TURN_DEG_S, left * 4))
-            if kind == "L":
+            if kind == "TL":
                 rate = -rate
-            self.hal.drive(0, rate)
+            self.hal.drive(0, 0, rate)
 
     def finish(self):
-        self.hal.drive(0, 0)
+        """The end of a cell, or of a quarter turn."""
+        self.hal.drive(0, 0, 0)
         self.pose += 1
         kind = self.motion[0]
+        if self.plan is None:
+            self.motion = None
+            self.say("EVT DONE " + kind[-1])
+            return
+        plan = self.plan
+        plan[2] += 1
+        self.say("EVT CELL %d %d" % (plan[2], self.pose))
+        if plan[2] >= plan[1]:
+            self.end_plan("all")
+        elif plan[3]:
+            self.motion = ["P", self.hal.ticks_ms()]
+            self.view, self.view_key, self.candidate = [], None, None
+        else:
+            self.start_cell()
+
+    def start_cell(self):
+        """The next cell of a slide: its odometry starts here. A new list each time: the simulator
+        notes where each cell starts (where an adult puts the robot back)."""
+        cm, deg = self.hal.odometry()
+        self.motion = [self.plan[0], cm]
+        self.view, self.view_key, self.candidate = [], None, None  # nothing seen is noted while it moves
+        self.ball, self.ball_trend = None, None
+
+    def end_plan(self, why):
+        self.hal.drive(0, 0, 0)
+        plan = self.plan
         self.motion = None
-        self.say("EVT DONE " + kind)
+        self.plan = None
+        self.say("EVT DONE %s %d %s" % (plan[0], plan[2], why))
 
     def halt(self, why):
-        self.hal.drive(0, 0)
+        self.hal.drive(0, 0, 0)
         self.last_stop = why
         self.paused_since = None
+        if self.motion is not None and self.motion[0] == "P":
+            # Standing on a cell between two cells of a slide: it is on that cell, no adult needed.
+            self.end_plan(why)
+            return
+        self.plan = None
         if self.motion is not None:
             self.motion = None
             self.pose += 1
@@ -354,7 +461,7 @@ class Firmware:
                 self.hal.led(parts[1])
             self.say("OK LED " + parts[1])
         elif (word == "MOVE" and parts[1:] == ["F"]) or (word == "TURN" and parts[1:] in (["L"], ["R"])):
-            kind = parts[1]
+            kind = parts[1] if word == "MOVE" else "T" + parts[1]
             why = self.refusal(kind)
             if why:
                 self.say("ERR " + why)
@@ -363,9 +470,42 @@ class Firmware:
             self.motion = [kind, cm if kind == "F" else deg]
             self.view, self.view_key, self.candidate = [], None, None  # nothing seen here is noted once it moves
             self.ball, self.ball_trend = None, None
-            self.say("OK " + word + " " + kind)  # the next tick drives, or waits for the way to clear
+            self.say("OK " + word + " " + parts[1])  # the next tick drives, or waits for the way to clear
+        elif word == "MOVE" and len(parts) in (3, 5) and parts[1] in SLIDES and parts[2].isdigit():
+            self.slide(parts)
         else:
             self.say("ERR unknown")
+
+    def slide(self, parts):
+        """MOVE <d> <n> [UNTIL <conditions>]: several cells in one direction, without turning."""
+        cells = int(parts[2])
+        conditions = []
+        if len(parts) == 5:
+            if parts[3] != "UNTIL":
+                self.say("ERR unknown")
+                return
+            conditions = parts[4].split(",")
+        bad = False
+        for condition in conditions:
+            if condition not in CONDITIONS:
+                bad = True
+        if cells < 1 or cells > MAX_CELLS or bad:
+            self.say("ERR unknown")
+            return
+        kind = parts[1]
+        why = self.refusal(kind)
+        if why:
+            self.say("ERR " + why)
+            return
+        names = []
+        for card, angle, cm in self.view:
+            names.append(card)
+        self.plan = [kind, cells, 0, conditions, names]
+        self.say("OK MOVE %s %d" % (kind, cells))
+        if "CARD" in conditions and self.card_in_front():
+            self.end_plan("card")  # already in front of a card: it does not move onto it
+            return
+        self.start_cell()
 
     def state_line(self):
         distance = self.hal.distance_cm()

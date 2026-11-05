@@ -164,7 +164,8 @@ class World:
             self.balls = [dict(b, t=0.0) for b in world.get("balls", [])]
             self.next_box = len(self.boxes)
             self.time = 0.0
-            self.speed, self.turn = 0.0, 0.0
+            self.speed, self.strafe, self.turn = 0.0, 0.0, 0.0
+            self.last_motion = None
             self.odo_cm, self.odo_deg = 0.0, 0.0
             self.battery_level = 100.0
             self.led_color = "off"
@@ -297,11 +298,14 @@ class World:
     def step(self, dt):
         with self.lock:
             self.time += dt
-            moving_before = self.firmware.motion is not None
             self.firmware.tick()
-            moving = self.firmware.motion is not None
-            if moving and not moving_before:
+            motion = self.firmware.motion
+            moving = motion is not None
+            # Where each move starts, and each cell of a slide (a new list for each): an adult puts the
+            # robot back there after a stop. Not the pause on a cell between two cells.
+            if moving and motion is not self.last_motion and motion[0] != "P":
                 self.move_start = (self.x, self.y, self.heading)
+            self.last_motion = motion
             # In "frozen" mode the world waits while the robot waits (like a game, not like a room).
             if self.mode == "realtime" or moving:
                 for ball in self.balls:
@@ -325,17 +329,20 @@ class World:
             self.ball_contact = self.ball_contact or contact
 
     def move(self, dt):
-        if self.speed == 0 and self.turn == 0:
+        """The four mecanum wheels: forwards (or backwards), to a side, turning. How true a sideways move
+        is on the real wheels is TO BE COMPLETED (they slip more sideways): the same slip here."""
+        if self.speed == 0 and self.strafe == 0 and self.turn == 0:
             self.touching = False
             return
         real = 1 - self.noise["slip"]
-        self.odo_cm += self.speed * dt
+        travel = math.hypot(self.speed, self.strafe) * dt
+        self.odo_cm += travel
         self.odo_deg += self.turn * dt
-        self.battery_level = max(0.0, self.battery_level - abs(self.speed * dt) * BATTERY_PER_CM)
+        self.battery_level = max(0.0, self.battery_level - travel * BATTERY_PER_CM)
         heading = self.heading + self.turn * dt * real
         h = math.radians(heading)
-        x = self.x + math.sin(h) * self.speed * dt * real
-        y = self.y - math.cos(h) * self.speed * dt * real
+        x = self.x + (math.sin(h) * self.speed + math.cos(h) * self.strafe) * dt * real
+        y = self.y + (-math.cos(h) * self.speed + math.sin(h) * self.strafe) * dt * real
         r = ROBOT_RADIUS_CM
         # Driving into a box or the fence is a collision. A ball in the way only blocks: its touch
         # is counted as a bump (ball_hits).
@@ -506,8 +513,8 @@ class Hal:
             self.w.stops.append({"t": round(self.w.time, 2), "why": text.split()[2],
                                  "unplugged_at": self.w.unplugged_at})
 
-    def drive(self, speed_cm_s, turn_deg_s):
-        self.w.speed, self.w.turn = float(speed_cm_s), float(turn_deg_s)
+    def drive(self, forward_cm_s, right_cm_s, turn_deg_s):
+        self.w.speed, self.w.strafe, self.w.turn = float(forward_cm_s), float(right_cm_s), float(turn_deg_s)
 
     def odometry(self):
         return self.w.odo_cm, self.w.odo_deg

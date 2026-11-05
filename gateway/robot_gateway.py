@@ -1,8 +1,11 @@
 """The gateway between an agent and the robot: the only door.
 
-It is an MCP server with eight tools, and nothing else reaches the robot:
+It is an MCP server with nine tools, and nothing else reaches the robot:
   - robot_state()        what the robot measures now, and where the gateway thinks it is (read only)
   - step_forward()       one cell forwards
+  - move(direction, cells, stop_if)
+                         slide up to four cells north, east, south or west without turning (mecanum
+                         wheels), stopping on a cell when a condition is met (one move)
   - turn(direction)      a quarter turn, "left" or "right"
   - look_around()        a full turn on the spot, looking in each direction (one move)
   - face(direction)      turn on the spot towards north, east, south or west (one move)
@@ -16,8 +19,9 @@ With ROBOT_CHANNEL=1, the gateway also pushes each event to the agent as it happ
 Code "channel" (research preview of Claude Code: interactive sessions only, started with
 --dangerously-load-development-channels server:robot). No other agent reads these notifications.
 
-The gateway keeps its own limits, whatever the agent asks: one cell per call, never off the mat,
-a number of moves per session, a time limit on each move. It never sends an image: the agent gets
+The gateway keeps its own limits, whatever the agent asks: four cells per call at most, never off
+the mat, backwards or sideways only into cells its distance sensor saw free, a number of moves per
+session (a command counts one, however many cells), a time limit on each cell. It never sends an image: the agent gets
 short texts, and each one is written to .robot-sim/context.jsonl, so that people can read exactly
 what entered the agent's context (the simulator shows it).
 
@@ -26,7 +30,7 @@ the simulator (its path is in .robot-sim/serial). Set ROBOT_SERIAL to choose ano
 
 Usage:
     as an MCP server (stdio), for an agent:  /opt/workshop/venv/bin/python -I gateway/robot_gateway.py
-    by hand, without an agent:               python3 -I gateway/robot_gateway.py state|forward|left|right|around|face <direction>|light <color>
+    by hand, without an agent:               python3 -I gateway/robot_gateway.py state|forward|left|right|around|face <direction>|move <direction> [cells] [conditions]|light <color>
 """
 import datetime
 import fcntl
@@ -80,6 +84,28 @@ FACING_STEP = ((0, -1), (1, 0), (0, 1), (-1, 0))  # north, east, south, west
 # centimetres. The simulator's camera errs by 10 % by default; the OpenMV N6's is TO BE COMPLETED.
 CAMERA_ERROR = 0.15
 CAMERA_MIN_ERROR_CM = 5
+# move(): the most cells per call (the robot's own MAX_CELLS), how long a free reading of the distance
+# sensor stays believed (a box can be put down meanwhile), how long a ball seen near the way forbids a
+# move backwards or sideways. Choices of the gateway, not measures.
+MAX_CELLS = 4
+FREE_FOR_S = 120
+BALL_RECENT_S = 10
+# A cell counts as free when the sensor sees nothing up to its far side plus this margin (as
+# reflex.STOP_DISTANCE_CM). The beam is narrower than the robot (5 degrees each side in the simulator,
+# TO BE COMPLETED on the robot): a free reading only says the line in front of it is clear.
+STOP_MARGIN_CM = 8
+STOP_IF = {"card_ahead": "CARD", "ball_seen": "BALL", "new_card": "NEW"}
+WHY_DONE = {
+    "all": "it moved all the cells asked",
+    "card": "a card is right in front of the camera",
+    "ball": "the camera sees a ball",
+    "new": "the camera recognised a card it had not shown when the move began",
+    "obstacle": "something was in the way: it waited, then stayed on the last cell it reached",
+    "bump": "something touched the robot's bumper while it stood on a cell",
+    "estop": "someone pressed the emergency stop button while it stood on a cell",
+    "watchdog": "it heard nothing from the computer while it stood on a cell",
+    "command": "the gateway stopped it on a cell",
+}
 
 
 def log(tool, arguments, result):
@@ -124,6 +150,7 @@ class Gateway:
             self.seen = saved.get("seen", [])
             if not isinstance(self.seen, list):
                 self.seen = []  # a record of an earlier version of the gateway
+            self.free = saved.get("free", {})
         except (OSError, ValueError, KeyError):
             start = self.mat["start"]
             self.col, self.row = ord(start["cell"][0].upper()) - ord("A"), int(start["cell"][1:]) - 1
@@ -136,13 +163,14 @@ class Gateway:
             self.poses = {}  # the robot's pose number -> [col, row, facing], as counted by the gateway
             self.seen = []  # the cards the camera recognised: estimates, the most precise kept
             self.ball = None  # the last sighting of a moving ball
+            self.free = {}  # cell -> when the distance sensor last saw it free (time.time())
 
     def save_state(self):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         saved = {"col": self.col, "row": self.row, "facing": self.facing, "sure": self.sure,
                  "back": self.back, "moves": self.moves, "resumes_at_stop": self.resumes_at_stop,
                  "cursors": self.cursors, "poses": self.poses, "seen": self.seen,
-                 "ball": self.ball}
+                 "ball": self.ball, "free": self.free}
         (STATE_DIR / "gateway.json").write_text(json.dumps(saved) + "\n", encoding="utf-8")
 
     # The serial link -------------------------------------------------------------------------
@@ -311,7 +339,7 @@ class Gateway:
         where = self.poses.get(pose)
         at = (datetime.datetime.now() - datetime.timedelta(milliseconds=age_ms)).strftime("%H:%M:%S")
         if where is None:
-            self.ball = {"how": how, "at": at}
+            self.ball = {"how": how, "at": at, "t": time.time() - age_ms / 1000}
             return f"the camera sees a ball about {c2} cm away, {how}; where: not known (the robot's position was not known)"
         x1, y1 = self.place(where, a1, c1)
         x2, y2 = self.place(where, a2, c2)
@@ -322,7 +350,7 @@ class Gateway:
         in_cell = cell if not others else f"probably {cell} (could also be {', '.join(others)})"
         seen_from = f"{cell_name(where[0], where[1])} facing {FACING[where[2]]}"
         self.ball = {"cell": cell, "could_also_be": others, "moving": going[9:] or None, "how": how,
-                     "seen_from": seen_from, "at": at}
+                     "seen_from": seen_from, "at": at, "t": time.time() - age_ms / 1000}
         if trend == "gone":
             return f"the ball the camera was watching left its sight, last {in_cell}, seen from {seen_from}"
         return f"the camera sees a ball, seen from {seen_from}, about {c2} cm away: {in_cell}{going}, {how}"
@@ -357,7 +385,39 @@ class Gateway:
             self.poses[fields["pose"]] = [self.col, self.row, self.facing]
             for old in sorted(self.poses, key=int)[:-100]:
                 del self.poses[old]
+        if self.sure and fields.get("moving") == "0" and fields.get("dist", "none") != "none":
+            self.note_free(int(fields["dist"]))
         return fields
+
+    def note_free(self, dist):
+        """The distance sensor, standing still, sees nothing for `dist` cm in front: the cells the robot
+        could slide into on that line, with its stopping margin, are free (for boxes; a ball moves)."""
+        dc, dr = FACING_STEP[self.facing]
+        now = time.time()
+        k = 1
+        while k * self.mat["cell_cm"] + STOP_MARGIN_CM <= dist:
+            col, row = self.col + dc * k, self.row + dr * k
+            if not (0 <= col < self.mat["cols"] and 0 <= row < self.mat["rows"]):
+                break
+            self.free[cell_name(col, row)] = now
+            k += 1
+
+    def blind_way(self, cells):
+        """Why a move backwards or sideways through these cells is not allowed, or None."""
+        now = time.time()
+        for col, row in cells:
+            if now - self.free.get(cell_name(col, row), 0) > FREE_FOR_S:
+                return cell_name(col, row), "not_seen"
+        ball = self.ball or {}
+        if ball.get("cell") and now - ball.get("t", 0) < BALL_RECENT_S:
+            near = set()
+            for name in [ball["cell"]] + ball.get("could_also_be", []):
+                c, r = ord(name[0]) - ord("A"), int(name[1:]) - 1
+                near |= {(c, r), (c + 1, r), (c - 1, r), (c, r + 1), (c, r - 1)}
+            for col, row in cells:
+                if (col, row) in near:
+                    return cell_name(col, row), "ball"
+        return None
 
     def check_resumed(self):
         """After an interrupted move: has an adult pressed Resume since? The robot counts the presses;
@@ -475,6 +535,85 @@ class Gateway:
         except RobotNotConnected:
             pass
         return self.interrupted("timeout", start)
+
+    def translate(self, direction, cells, stop_if):
+        """MOVE <d> <n> [UNTIL …]: slide towards a side of the mat without turning, one move however many
+        cells. The robot reports each cell it reaches (EVT CELL), so the gateway keeps counting."""
+        if not self.sure:
+            return self.refused("wait_adult", what_to_do=self.adult_instruction())
+        if self.moves >= self.mat["max_moves"]:
+            return self.refused(f"no moves left in this session ({self.mat['max_moves']})")
+        side = FACING.index(direction)
+        kind = "FRBL"[(side - self.facing) % 4]
+        dc, dr = FACING_STEP[side]
+        way = []
+        for k in range(1, cells + 1):
+            col, row = self.col + dc * k, self.row + dr * k
+            if not (0 <= col < self.mat["cols"] and 0 <= row < self.mat["rows"]):
+                break
+            way.append((col, row))
+        if not way:
+            return self.refused("the next cell is outside the mat")
+        if kind != "F":
+            blocked = self.blind_way(way)
+            if blocked:
+                cell, why = blocked
+                if why == "ball":
+                    return self.refused(f"a ball was seen near {cell} less than {BALL_RECENT_S} s ago, and the robot "
+                                        f"cannot see {direction} while it faces {FACING[self.facing]}",
+                                        what_to_do="watch it go away (wait_for_event, face it), then try again")
+                return self.refused(f"the robot only sees in front of it ({FACING[self.facing]}): it slides {direction} "
+                                    f"only into cells its distance sensor saw free in the last {FREE_FOR_S // 60} "
+                                    f"minutes, and {cell} is not one",
+                                    what_to_do=f"face {direction} (one move) or look_around, then move again")
+        conditions = [STOP_IF[c] for c in stop_if]
+        command = f"MOVE {kind} {len(way)}" + (" UNTIL " + ",".join(conditions) if conditions else "")
+        reply = self.request(command)
+        if reply.startswith("ERR "):
+            return self.refused(reply[4:])
+        self.moves += 1
+        start, done = (self.col, self.row, self.facing), 0
+        look = 0.5 if conditions else 0  # the robot stands on each cell for CELL_LOOK_MS (0.3 s)
+        end = time.monotonic() + self.mat["move_timeout_s"] * 2 + look  # sideways: half the speed
+        next_ping = time.monotonic() + HEARTBEAT_S
+        while time.monotonic() < end:
+            line = self.read_line(max(0.0, min(end, next_ping) - time.monotonic()))
+            if time.monotonic() >= next_ping:
+                self.send("PING")  # "I am still here": without it, the robot stops (its watchdog)
+                next_ping = time.monotonic() + HEARTBEAT_S
+            if line is None or line == "OK PONG":
+                continue
+            if line.startswith("EVT CELL "):
+                k, pose = line.split()[2:4]
+                done = int(k)
+                self.col, self.row = way[done - 1]
+                self.poses[pose] = [self.col, self.row, self.facing]
+                start = (self.col, self.row, self.facing)  # an adult would put it back here
+                end = time.monotonic() + self.mat["move_timeout_s"] * 2 + look
+                continue
+            if line.startswith(f"EVT DONE {kind} "):
+                why = line.split()[4]
+                reason = WHY_DONE.get(why, why)
+                if why == "all" and len(way) < cells:
+                    reason = f"the mat ends after {len(way)} cell{'s' if len(way) > 1 else ''} that way"
+                return {"result": "done", "cells_moved": done, "cells_asked": cells, "stopped_because": reason,
+                        "state": self.robot_state()}
+            if line.startswith("EVT STOP "):
+                result = self.interrupted(line[9:], start)
+                result["cells_moved"] = done
+                return result
+            if line.startswith("EVT REFUSED "):
+                self.moves -= 1
+                return self.refused(line[12:], waited="the robot waited for the way to clear, then gave up")
+            if line.startswith("EVT "):
+                self.event(line)
+        try:
+            self.send("STOP")
+        except RobotNotConnected:
+            pass
+        result = self.interrupted("timeout", start)
+        result["cells_moved"] = done
+        return result
 
     def look_around(self):
         """Four quarter turns to the right, a pause after each one for the camera: one move in all."""
@@ -628,6 +767,25 @@ def step_forward() -> str:
     return GATEWAY.run("step_forward", {}, lambda: GATEWAY.move("MOVE F", "F"), move=True)
 
 
+def move(direction: Literal["north", "east", "south", "west"], cells: int = 1,
+         stop_if: list[Literal["card_ahead", "ball_seen", "new_card"]] | None = None) -> str:
+    """Slide the robot up to `cells` cells (1 to 4) towards north, east, south or west (north is towards
+    row 1), without turning: its wheels move it in any of the four directions, and the camera keeps
+    looking the way the robot faces. It counts as one move, however many cells. It stops on a cell, at
+    the first of: all the cells done, the edge of the mat, or a condition of stop_if met:
+    "card_ahead" (a card right in front of the camera; also checked before it starts, so it never
+    drives onto that card), "ball_seen" (the camera sees a ball), "new_card" (the camera recognises a
+    card it did not show when the move began). With stop_if, the robot stands still a moment on each
+    cell so that the camera can look. Its distance sensor and camera only look the way it faces: in
+    any other direction it slides only into cells the sensor saw free in the last two minutes (face
+    that way once, or look_around), never near a ball seen just before. The answer says how many
+    cells it moved and why it stopped; "stopped" means an adult must come, as for step_forward."""
+    cells = max(1, min(MAX_CELLS, int(cells)))
+    stop_if = list(dict.fromkeys(stop_if or []))
+    arguments = {"direction": direction, "cells": cells, "stop_if": stop_if}
+    return GATEWAY.run("move", arguments, lambda: GATEWAY.translate(direction, cells, stop_if), move=True)
+
+
 def turn(direction: Literal["left", "right"]) -> str:
     """Turn the robot a quarter turn on the spot, to its left or to its right, then stop."""
     kind = {"left": "L", "right": "R"}[direction]
@@ -690,7 +848,7 @@ def serve():
     server = MCPServer("robot", instructions=CHANNEL_INSTRUCTIONS if channel else None)
     for tool in (robot_state, wait_for_event, seen_cards):
         server.tool(annotations=ToolAnnotations(read_only_hint=True))(tool)
-    for tool in (step_forward, turn, look_around, face, set_light):
+    for tool in (step_forward, move, turn, look_around, face, set_light):
         server.tool(annotations=ToolAnnotations(read_only_hint=False))(tool)
     if channel:
         serve_with_channel(server)
@@ -747,6 +905,9 @@ def by_hand(args):
         print(commands[args[0]]())
     elif args[0] == "face" and len(args) == 2 and args[1] in FACING:
         print(face(args[1]))
+    elif (args[0] == "move" and 2 <= len(args) <= 4 and args[1] in FACING and (len(args) < 3 or args[2].isdigit())
+          and all(c in STOP_IF for c in (args[3].split(",") if len(args) == 4 else []))):
+        print(move(args[1], int(args[2]) if len(args) >= 3 else 1, args[3].split(",") if len(args) == 4 else []))
     elif args[0] == "wait" and len(args) <= 2 and all(a.isdigit() for a in args[1:]):
         print(wait_for_event(int(args[1]) if len(args) == 2 else 10))
     elif args == ["reset"]:
@@ -757,6 +918,7 @@ def by_hand(args):
         print(set_light(args[1]))
     else:
         sys.exit("Usage: robot_gateway.py state | forward | left | right | around | face " + "|".join(FACING)
+                 + " | move " + "|".join(FACING) + " [cells 1-4] [" + ",".join(STOP_IF) + "]"
                  + " | light " + "|".join(COLORS) + " | wait [seconds] | seen | reset")
 
 
