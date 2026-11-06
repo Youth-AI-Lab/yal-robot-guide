@@ -305,10 +305,11 @@ class Cartographer:
         or the robot stood on it or went through it), and the line crosses no cell where the sensor met something; never
         straight ahead beyond what the sensor met. What met the sensor is on a cell: something stands there, until the
         sensor sees it free. A box the sensor never met can hide a cell: such a cell is not counted, since nothing says
-        the way to it is free (decision of 2026-11-06). Replayed on the 18 runs of the absent mission of 2026-11-06
-        (facilitator/workshops/measures/2026-11-06-robot-hidden-cells/): the former rule (only cells where the sensor
-        met something stop the view) counted 5 cells a box hid; this one counts none, and leaves about 6 cells per run
-        to look at that the camera had seen."""
+        the way to it is free (decision of 2026-11-06). Replayed on the 27 runs of the absent mission of 2026-11-06
+        (facilitator/workshops/measures/2026-11-06-robot-hidden-cells/, R3): the former rule (only cells where the sensor
+        met something stop the view) counted 5 cells a box hid; this one counts none, and leaves about 4 cells per run
+        to look at that the camera had seen (115 cells). Still possible: a box that sticks out onto a cell the sensor saw
+        free along its own line (a free reading says the line is clear, not the whole cell)."""
         now = time.time()
         cell_cm = self.mat["cell_cm"]
         self.went(self.col, self.row)
@@ -336,16 +337,19 @@ class Cartographer:
                     self.looked[cell_name(col, row)] = now
 
     def between(self, a, b):
-        """The cells the straight line from the centre of cell a to the centre of cell b crosses, a and b left out."""
-        steps = 4 * max(abs(b[0] - a[0]), abs(b[1] - a[1]))
+        """The cells the straight line from the centre of cell a to the centre of cell b crosses, a and b left out, with a
+        margin of a sixth of a cell on each side (5 cm: how near a box of 20 cm in a cell of 30 can come to the line),
+        sampled 20 times per cell, so that a line that cuts the corner of a cell counts it."""
+        steps = 20 * max(abs(b[0] - a[0]), abs(b[1] - a[1]))
         out = set()
         for i in range(1, steps):
             x = a[0] + 0.5 + (b[0] - a[0]) * i / steps
             y = a[1] + 0.5 + (b[1] - a[1]) * i / steps
-            for col in {math.floor(x - 1e-6), math.floor(x + 1e-6)}:
-                for row in {math.floor(y - 1e-6), math.floor(y + 1e-6)}:
-                    out.add((col, row))  # on a corner: both sides
-        return {cell_name(*c) for c in out if c != tuple(a) and c != tuple(b)}
+            for col in {math.floor(x - 0.17), math.floor(x + 0.17)}:
+                for row in {math.floor(y - 0.17), math.floor(y + 0.17)}:
+                    out.add((col, row))
+        cols, rows = self.mat["cols"], self.mat["rows"]
+        return {cell_name(*c) for c in out if c != tuple(a) and c != tuple(b) and 0 <= c[0] < cols and 0 <= c[1] < rows}
 
     def went(self, col, row):
         """The robot stood on this cell, or went through it: nothing stands there, no card is there."""
