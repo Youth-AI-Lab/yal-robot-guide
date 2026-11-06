@@ -186,12 +186,15 @@ backwards or to a side without turning, and its camera keeps looking the way it 
 counts as one move, however many cells (1 to 4). The robot itself checks the conditions, on each
 cell it reaches, and stops there: the agent answers seconds later (6 s between two calls, median of
 the bench of 5 November), when a ball has already rolled more than a cell. The robot never drives onto
-a card: forwards it always stops in front of one, and every slide stops before a cell where the
-gateway has placed a card for sure; `step_forward` refuses a cell with a card. Its distance sensor and
+a card it knows: forwards it always stops in front of one; every slide stops before a cell where the
+gateway has placed a card for sure, and a slide sideways or backwards before any card the camera has
+placed, even from far; `step_forward` refuses a cell with a card, and a cell next to a ball seen in the
+last 10 seconds. Its distance sensor and
 camera only look forwards: backwards or sideways, the gateway lets it slide only into cells the
 sensor saw free in the last two minutes (`face` that way once, or `look_around`; the cells it has just
 been through count too), never into the lane of a ball (the row or column where one was seen
-rolling), never near a ball seen in the last 10 seconds, and the robot goes slower there. The sensor's
+rolling; seen from far, a lane may cover two), never near a ball seen in the last 10 seconds, and
+the robot goes slower there. The sensor's
 beam is narrower than the robot (TO BE COMPLETED on the real one): a small thing near the side of a
 cell can be missed, and then the bumper stops the robot. How true a sideways slide is on the real
 wheels is TO BE COMPLETED (mecanum wheels slip more sideways). Tried on 6 November with Hermes and
@@ -284,7 +287,7 @@ such way: they read `since_last_call`.
 ```
 
 About five minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
-would, and reads in the simulator what really happened: 116 checks, all passed in the image
+would, and reads in the simulator what really happened: 122 checks, all passed in the image
 2026.10.45 on 6 November 2026 (container with 2 processors, no network).
 
 ---

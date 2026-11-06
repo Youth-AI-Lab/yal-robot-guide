@@ -156,6 +156,8 @@ class Gateway:
             self.free = saved.get("free", {})
             self.lanes = saved.get("lanes", {})
             self.way = saved.get("way")
+            self.back_fixed = saved.get("back_fixed", False)
+            self.placed = saved.get("placed", {})
             self.presses = saved.get("presses", 0)
         except (OSError, ValueError, KeyError):
             start = self.mat["start"]
@@ -172,6 +174,8 @@ class Gateway:
             self.free = {}  # cell -> when the distance sensor last saw it free (time.time())
             self.lanes = {}  # "row:3", "col:4" or "cell:E3" -> when a ball was last seen there (time.time())
             self.way = None  # during a move: its start cell, then the cells of a slide
+            self.back_fixed = False  # True once the cell given to the adult is final
+            self.placed = {}  # cell -> when a card was last placed there for sure (kept when a box hides it)
             self.presses = 0  # the robot's count of Resume presses, at its last answer
 
     def save_state(self):
@@ -179,7 +183,8 @@ class Gateway:
         saved = {"col": self.col, "row": self.row, "facing": self.facing, "sure": self.sure,
                  "back": self.back, "moves": self.moves, "resumes_at_stop": self.resumes_at_stop,
                  "cursors": self.cursors, "poses": self.poses, "seen": self.seen,
-                 "ball": self.ball, "free": self.free, "lanes": self.lanes, "way": self.way, "presses": self.presses}
+                 "ball": self.ball, "free": self.free, "lanes": self.lanes, "way": self.way, "back_fixed": self.back_fixed,
+                 "placed": self.placed, "presses": self.presses}
         (STATE_DIR / "gateway.json").write_text(json.dumps(saved) + "\n", encoding="utf-8")
 
     # The serial link -------------------------------------------------------------------------
@@ -318,6 +323,8 @@ class Gateway:
                  f"{FACING[where[2]]}", "distance_cm": cm, "at": at}
         # The same card seen again: keep the most precise estimate (seen from closer).
         # The larger uncertainty, not their sum: two like cards side by side (dry grass in C2 and D2) stay two.
+        if not others:
+            self.placed[cell] = time.time()
         same = [s for s in self.seen if s["card"] == label and math.hypot(s["x"] - x, s["y"] - y) < max(s["u"], u)]
         if not same:
             self.seen.append(entry)
@@ -362,10 +369,12 @@ class Gateway:
         seen_from = f"{cell_name(where[0], where[1])} facing {FACING[where[2]]}"
         self.ball = {"cell": cell, "could_also_be": others, "moving": going[9:] or None, "how": how,
                      "seen_from": seen_from, "at": at, "t": time.time() - age_ms / 1000}
-        moving = going[9:]
-        lane = (f"row:{int(cell[1:]) - 1}" if moving in ("east", "west") else
-                f"col:{ord(cell[0]) - ord('A')}" if moving in ("north", "south") else f"cell:{cell}")
-        self.lanes[lane] = time.time() - age_ms / 1000
+        # Its lane, for every cell it could be on (from far, the estimate can fall on the next row).
+        moving, when = going[9:], time.time() - age_ms / 1000
+        for name in [cell] + others:
+            lane = (f"row:{int(name[1:]) - 1}" if moving in ("east", "west") else
+                    f"col:{ord(name[0]) - ord('A')}" if moving in ("north", "south") else f"cell:{name}")
+            self.lanes[lane] = when
         if trend == "gone":
             return f"the ball the camera was watching left its sight, last {in_cell}, seen from {seen_from}"
         return f"the camera sees a ball, seen from {seen_from}, about {c2} cm away: {in_cell}{going}, {how}"
@@ -384,10 +393,14 @@ class Gateway:
                     others.append(cell_name(c, r))
         return cell_name(col, row), others
 
-    def card_cells(self):
+    def card_cells(self, all_seen=False):
         """The cells where the gateway placed a card the camera recognised, when it is sure of the cell (a card
-        seen from far could be on a neighbour: it would then block the cell in front of it)."""
-        return {s["cell"] for s in self.seen if not s.get("could_also_be")}
+        seen from far could be on a neighbour: it would then block the cell in front of it), and the cells of
+        sure cards that left the camera's view in the last LANE_FOR_S (hidden by a box, they are still there).
+        all_seen: every probable cell, sure or not (for a slide sideways, which no camera watches)."""
+        now = time.time()
+        sure = {s["cell"] for s in self.seen if all_seen or not s.get("could_also_be")}
+        return sure | {c for c, t in self.placed.items() if now - t < LANE_FOR_S}
 
     def seen_cards(self):
         keys = ("card", "means", "cell", "could_also_be", "distance_cm", "seen_from", "at")
@@ -486,10 +499,10 @@ class Gateway:
             self.resumes_at_stop, resumed = presses, False  # the robot restarted: count from now
         else:
             resumed = presses > self.resumes_at_stop and released
-        if not resumed:
+        if not resumed and not self.back_fixed:
             # Before the adult acts: the instruction names the cell the robot itself says it reached
-            # (a gateway killed during a move, or a lost EVT CELL). Never after Resume: the adult has
-            # put it where the instruction said.
+            # (a gateway killed during a move, or a lost EVT CELL). Once given, it never changes (the adult
+            # may already be acting on it), and never after Resume.
             self.reached(fields)
         if resumed:
             self.col, self.row, self.facing = self.back
@@ -527,6 +540,7 @@ class Gateway:
         back on its start cell), so that a gateway killed during the move leaves the truth behind.
         `way`: the cells of a slide; the robot's own count (STATE slid=) says which one it reached."""
         self.sure, self.back, self.way = False, start, [list(start[:2])] + [list(c) for c in way]
+        self.back_fixed = False
         self.resumes_at_stop = self.presses
         self.moves += counted
         self.save_state()
@@ -545,6 +559,7 @@ class Gateway:
                 k -= 1  # never put it back on a ball's lane: on the last cell before it
             col, row = self.way[k]
             self.back = (col, row, self.back[2])
+            self.back_fixed = True
 
     # What the agent can ask ------------------------------------------------------------------
     def robot_state(self):
@@ -588,6 +603,10 @@ class Gateway:
             if self.fields().get("card", "none") != "none" or cell_name(*target) in self.card_cells():
                 return self.refused(f"a card is on the next cell ({cell_name(*target)}): the robot never drives onto a "
                                     "card", what_to_do="stop here if it is the one you look for, or go round it")
+            near = self.ball_near([target])
+            if near:
+                return self.refused(f"a ball was seen near {near} less than {BALL_RECENT_S} s ago",
+                                    what_to_do="watch it go away (wait_for_event), then try again")
         start = (self.col, self.row, self.facing)
         self.begin(start, [target] if kind == "F" else [], counted)
         reply = self.request(command)
@@ -649,7 +668,7 @@ class Gateway:
         if not way:
             return self.refused("the next cell is outside the mat")
         edge = len(way) < cells
-        cards, card_stop = self.card_cells(), None
+        cards, card_stop = self.card_cells(all_seen=kind != "F"), None
         for k, cell in enumerate(way):
             if cell_name(*cell) in cards:
                 card_stop, way = cell_name(*cell), way[:k]
@@ -856,12 +875,21 @@ class Gateway:
         back at once, again and again (seen on 5 and 6 November)."""
         start = time.monotonic()
         end = start + seconds
-        earlier = []
+        earlier = []  # [time of the poll that read them, event]: events from before the wait
+
+        def kept():
+            # Their age as of this answer, not as of the poll that read them.
+            now = time.monotonic()
+            return [dict(e, seconds_before_this_answer=round(e.get("seconds_before_this_answer", 0) + now - at, 1))
+                    for at, e in earlier]
+
         while True:
             with self.lock:
                 result = self.locked(lambda: {})
             if result is not None:
                 if result.get("result") == "error":
+                    if earlier:
+                        result["events"] = kept()
                     return result
                 events = result.get("since_last_call", [])
                 waited = time.monotonic() - start
@@ -869,12 +897,12 @@ class Gateway:
                     if event.get("seconds_before_this_answer", 0) > waited + 0.3:
                         event["before_you_started_waiting"] = True
                 if any(not e.get("before_you_started_waiting") for e in events):
-                    return {"result": "something happened", "waited_seconds": round(waited, 1), "events": earlier + events}
-                earlier += events
+                    return {"result": "something happened", "waited_seconds": round(waited, 1), "events": kept() + events}
+                earlier += [(time.monotonic(), e) for e in events]
             if time.monotonic() >= end:
                 answer = {"result": "nothing new happened" if earlier else "nothing happened", "waited_seconds": seconds}
                 if earlier:
-                    answer["events"] = earlier
+                    answer["events"] = kept()
                 return answer
             time.sleep(0.3)
 
@@ -893,7 +921,8 @@ def robot_state() -> str:
 
 def step_forward() -> str:
     """Move the robot one cell forwards, then stop. The robot refuses when something is in front,
-    and stops by itself if something appears. Never off the mat, never onto a card. If the result is "stopped",
+    and stops by itself if something appears. Never off the mat, never onto a card, never near a ball
+    seen in the last 10 seconds. If the result is "stopped",
     do what "what_to_do" says before anything else. The answer gives the new state, with the card in
     front ("card_ahead") and what happened meanwhile ("since_last_call"), cards seen included."""
     return GATEWAY.run("step_forward", {}, lambda: GATEWAY.move("MOVE F", "F"), move=True)
@@ -908,12 +937,15 @@ def move(direction: Literal["north", "east", "south", "west"], cells: int = 1,
     "card_ahead" (a card right in front of the camera, the way the robot faces; a slide forwards always
     stops in front of a card, with or without it), "ball_seen" (the camera sees a ball), "new_card" (the
     camera shows a kind of card, a name, it did not show when the move began). The robot never drives
-    onto a card: a slide also stops before a cell where the gateway placed a card for sure. With stop_if, the robot
+    onto a card it knows: forwards it stops in front of any card; every slide stops before a cell where the
+    gateway placed a card for sure, and a slide sideways or backwards before any card the camera placed,
+    even from far. With stop_if, the robot
     stands still on each cell until its camera has looked. Its distance sensor and camera only look the
     way it faces: in any other direction it slides only into cells the sensor saw free in the last two
     minutes (face that way once, or look_around; the cells it has just been through count too), never into
     the lane of a ball (the row or column where one was seen rolling) and never near a ball seen just
-    before; forwards too, never near a ball seen just before. The sensor's beam
+    before (from far, a lane may cover two rows or columns); forwards too, never near a ball seen just
+    before. The sensor's beam
     is narrow, so a small thing near the side of a cell can be missed, and then the bumper stops the
     robot. The answer says how many cells it moved and why it stopped; "stopped" means an adult must
     come, as for step_forward."""

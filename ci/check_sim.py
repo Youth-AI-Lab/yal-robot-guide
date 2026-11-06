@@ -539,6 +539,49 @@ async def scenarios(sim, env):
               reply.get("result") == "refused" and "lane" in reply.get("why", "") and wire_count(sim, "MOVE") == sent,
               reply)
 
+    # Forwards, never next to a ball seen just before: step_forward and move alike.
+    sim.fresh(balls=[{"from": [75, 75], "to": [75, 75], "radius": 7, "speed_cm_s": 0}])
+    async with agent(env) as a:
+        await asyncio.sleep(1.2)
+        await a.call("robot_state")
+        sent = wire_count(sim, "MOVE")
+        slide = await a.call("move", direction="north")
+        step = await a.call("step_forward")
+        check("forwards, next to a ball seen just before (C3): move and step_forward refused, nothing sent",
+              slide.get("result") == "refused" and step.get("result") == "refused" and "less than" in step.get("why", "")
+              and wire_count(sim, "MOVE") == sent, (slide, step))
+
+    # A ball rolling along row 3: the gateway notes row 3 as its lane.
+    sim.fresh(balls=[{"from": [15, 75], "to": [145, 75], "radius": 7, "speed_cm_s": 8}])
+    async with agent(env) as a:
+        await asyncio.sleep(4.0)
+        reply = await a.call("robot_state")
+        lanes = json.loads((Path(env["ROBOT_STATE_DIR"]) / "gateway.json").read_text()).get("lanes", {})
+        check("a ball rolling along row 3: row 3 is noted as its lane, the robot on C5 is not on it",
+              "row:2" in lanes and reply.get("on_a_ball_lane") is False, (lanes, reply.get("on_a_ball_lane")))
+
+    # Stopped on a lane: the adult is sent to the last cell before it, and the instruction does not change.
+    sim.fresh()
+    state_file = Path(env["ROBOT_STATE_DIR"]) / "gateway.json"
+    async with agent(env) as a:
+        await a.call("robot_state")
+        saved = json.loads(state_file.read_text())
+        saved["lanes"] = {"row:3": time.time()}  # row 4, as if a ball had been seen rolling there
+        state_file.write_text(json.dumps(saved))
+        press = asyncio.create_task(later(4.5, sim.act, do="button", name="stop"))
+        reply = await a.call("move", direction="north", cells=3)
+        await press
+        check("stopped after C4, on a ball's lane: the adult is asked to put the robot back on C5, off the lane",
+              reply.get("result") == "stopped" and "C5" in reply.get("what_to_do", ""), reply)
+        await asyncio.sleep(1.0)
+        again = await a.call("step_forward")
+        check("the instruction stays the same while the robot waits", "C5" in again.get("what_to_do", ""), again)
+        sim.act(do="adult_resume")
+        await asyncio.sleep(0.5)
+        reply = await a.call("robot_state")
+        check("after the adult: both on C5", reply.get("cell") == "C5" and sim.state()["robot"]["cell"] == "C5",
+              (reply, sim.state()["robot"]))
+
     # A slide interrupted on a loose cable: the gateway, the adult and the robot agree on the cell.
     sim.fresh()
     async with agent(env) as a:
@@ -769,6 +812,19 @@ async def scenarios(sim, env):
               before and before[0].get("before_you_started_waiting") is True
               and (reply.get("waited_seconds", 0) >= 4.5 or any(not e.get("before_you_started_waiting")
                                                                   for e in reply.get("events", []))), reply)
+    sim.fresh(balls=[{"from": [15, 135], "to": [145, 135], "radius": 7, "speed_cm_s": 20}])
+    await asyncio.sleep(3.0)  # the ball touches the robot before anybody watches
+    sim.act(do="mode", mode="frozen")  # then the world waits: nothing new can happen
+    async with agent(env) as a:
+        started = time.monotonic()
+        reply = await a.call("wait_for_event", seconds=3)
+        took = time.monotonic() - started
+        old = [e for e in reply.get("events", []) if "bumper" in e["event"]]
+        check("wait_for_event with only events from before: it waits the whole time, gives them, and their age",
+              reply.get("result") == "nothing new happened" and took >= 2.8 and old
+              and old[0].get("before_you_started_waiting") is True and old[0]["seconds_before_this_answer"] >= 3,
+              (reply, round(took, 1)))
+    sim.act(do="mode", mode="realtime")
     sim.fresh()
     async with agent(env) as a:
         await a.call("robot_state")

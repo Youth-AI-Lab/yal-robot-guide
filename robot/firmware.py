@@ -290,7 +290,9 @@ class Firmware:
         """The nearest card just in front (the cell ahead), from what the camera shows."""
         best = None
         for card, angle, cm in self.hal.camera_view():
-            if card != "ball" and -15 <= angle <= 15 and cm <= CELL_CM * 3 // 2 and (best is None or cm < best[1]):
+            # 40 cm: a card on the next cell is seen at about 30 cm, one two cells away at about 60 cm; with the
+            # camera's error, 45 cm took a card two cells away for one in front (review of 2026-11-06).
+            if card != "ball" and -15 <= angle <= 15 and cm <= CELL_CM * 4 // 3 and (best is None or cm < best[1]):
                 best = [card, cm]
         return None if best is None else best[0]
 
