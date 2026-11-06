@@ -989,6 +989,13 @@ async def scenarios(sim, env):
         check("coverage: a box in C3 hides C2, C1 and B2 (the line to B2 crosses C3)",
               {"C2", "C1", "B2", "D2"} <= set(cover["not_looked_at_yet"]) and "C3" not in cover["not_looked_at_yet"]
               and "B3" not in cover["not_looked_at_yet"], cover)
+        check("coverage: met once, the box is not yet said to stand there (a ball rolls on)",
+              cover["something_stands_there"] == [], cover)
+        await asyncio.sleep(10.5)
+        await a.call("robot_state")
+        cover = (await a.call("seen_cards"))["camera_coverage"]
+        check("coverage: met again 10 s later, something stands on C3, set apart from the cells looked at",
+              cover["something_stands_there"] == ["C3"] and "C3" not in cover["not_looked_at_yet"], cover)
 
     # Every cell looked at: the agent hears it once, with the cards seen.
     state_file = Path(env["ROBOT_STATE_DIR"]) / "gateway.json"
@@ -1004,7 +1011,7 @@ async def scenarios(sim, env):
         again = await a.call("robot_state")
         heard = [e["event"] for e in first.get("since_last_call", [])]
         check("every cell looked at: said once, with the cards seen",
-              any("every cell" in e and "water-point" in e for e in heard)
+              any("every cell" in e and "water-point" in e and "any other card is not on the mat" in e for e in heard)
               and not any("every cell" in e["event"] for e in again.get("since_last_call", []))
               and first["cells_not_looked_at_yet"] == 0, (first, again))
     sim.fresh()

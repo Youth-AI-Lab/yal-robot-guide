@@ -105,6 +105,8 @@ STOP_MARGIN_CM = 8
 CAMERA_HALF_ANGLE_DEG = 30
 CAMERA_RANGE_CM = 120
 SENSOR_FROM_CENTRE_CM = 10
+# Something the distance sensor met on a cell at two moments this far apart stands there (a box): a ball rolls on.
+STANDS_FOR_S = 10
 STOP_IF = {"card_ahead": "CARD", "ball_seen": "BALL", "new_card": "NEW"}
 WHY_DONE = {
     "all": "it moved all the cells asked",
@@ -168,7 +170,7 @@ class Gateway:
             self.placed = saved.get("placed", {})
             self.presses = saved.get("presses", 0)
             self.looked = saved.get("looked", {})
-            self.blocked = saved.get("blocked", {})
+            self.blocked = {c: v for c, v in saved.get("blocked", {}).items() if isinstance(v, list)}
             self.covered_said = saved.get("covered_said", False)
         except (OSError, ValueError, KeyError):
             start = self.mat["start"]
@@ -189,7 +191,7 @@ class Gateway:
             self.placed = {}  # cell -> when a card was last placed there for sure (kept when a box hides it)
             self.presses = 0  # the robot's count of Resume presses, at its last answer
             self.looked = {}  # cell -> when the camera last looked at it, or the robot stood on it (time.time())
-            self.blocked = {}  # cell -> when the distance sensor last met something there (a box, a ball)
+            self.blocked = {}  # cell -> [first, last] time the distance sensor met something there (a box, a ball)
             self.covered_said = False  # the agent was told the camera has looked at every cell it can
 
     def save_state(self):
@@ -480,7 +482,7 @@ class Gateway:
             k = round(hit / cell_cm)
             col, row = self.col + dc * k, self.row + dr * k
             if k >= 1 and 0 <= col < self.mat["cols"] and 0 <= row < self.mat["rows"]:
-                self.blocked[cell_name(col, row)] = now
+                self.blocked.setdefault(cell_name(col, row), [now, now])[1] = now
         for col in range(self.mat["cols"]):
             for row in range(self.mat["rows"]):
                 dx, dy = (col - self.col) * cell_cm, (row - self.row) * cell_cm
@@ -514,16 +516,20 @@ class Gateway:
         self.blocked.pop(cell_name(col, row), None)
 
     def coverage(self):
-        """What the camera has looked at, for the agent: a count, and the cells it has not looked at yet."""
+        """What the camera has looked at, for the agent: a count, and the cells it has not looked at yet. A cell
+        where something stands (met by the distance sensor at two moments STANDS_FOR_S apart, not seen free since)
+        is left out: there is nothing there for the camera to look at. The note gives no advice: "a last look at a
+        cell next to a box costs little" sent a model round a rock for 25 calls, sure the card was under it
+        (DeepSeek v4 Flash behind Hermes, 2026-11-06). A box the distance sensor never met can still hide a
+        cell: the gateway cannot know it, and the agent is not asked to guess."""
         cells = [cell_name(c, r) for r in range(self.mat["rows"]) for c in range(self.mat["cols"])]
-        blocked = [c for c in cells if c in self.blocked and c not in self.looked]
-        left = [c for c in cells if c not in self.looked and c not in self.blocked]
-        return {"cells_looked_at": len(cells) - len(left) - len(blocked), "cells_on_the_mat": len(cells),
-                "not_looked_at_yet": left, "something_stands_there": blocked,
-                "note": "As far as the gateway can tell: a cell counts once the robot stood still with it in the "
-                        "camera's cone, or stood on it. A box the distance sensor never met can hide a cell: when "
-                        "a card you look for is missing, a last look at a cell next to a box costs little. Cards "
-                        "do not move: a cell looked at stays looked at."}
+        stands = [c for c in cells if c in self.blocked and self.blocked[c][1] - self.blocked[c][0] >= STANDS_FOR_S]
+        left = [c for c in cells if c not in self.looked and c not in stands]
+        return {"cells_looked_at": len(cells) - len(left) - len(stands), "cells_on_the_mat": len(cells),
+                "not_looked_at_yet": left, "something_stands_there": stands,
+                "note": "A cell counts once the robot stood still with it in the camera's cone, or stood on it; a "
+                        "cell where something stands has nothing to look at. Cards do not move: a cell looked at "
+                        "stays looked at. When no cell is left, a card that is not in cards_seen is not on the mat."}
 
     def on_lane(self, col, row):
         """A cell on the lane of a ball seen in the last LANE_FOR_S (its row or column, or the cell)."""
@@ -921,9 +927,9 @@ class Gateway:
                 if not left and not self.covered_said:
                     self.covered_said = True
                     names = sorted({c["card"] for c in self.seen})
-                    events.append({"event": "the camera has now looked at every cell it can reach, as far as the "
-                                   "gateway can tell (seen_cards: camera_coverage); cards seen: "
-                                   + (", ".join(names) if names else "none")})
+                    events.append({"event": "the camera has now looked at every cell of the mat (seen_cards: "
+                                   "camera_coverage): the cards on the mat are the ones it saw, "
+                                   + (", ".join(names) if names else "none") + "; any other card is not on the mat"})
                 elif left:
                     self.covered_said = False
                 if events:

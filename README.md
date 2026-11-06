@@ -212,8 +212,10 @@ in: "probably F3 (could also be F2, G3)". Seen again from closer, the estimate g
 leaves it when the robot sees it gone. It also keeps which cells the camera has looked at
 (`camera_coverage`): a cell counts once the robot stood still with it in the camera's cone, unless the
 line to it crosses a cell where the distance sensor met something, and a cell the robot stood on
-counts too. When none is left, the agent hears it once. The gateway knows boxes only through the
-distance sensor: a box it never met can still hide a cell. The camera also sees the ball: twice a second, the robot
+counts too. A cell where the sensor met something at two moments 10 s apart is set apart: something
+stands there (a box; a ball rolls on). When no cell is left, the agent hears it once: the cards on the
+mat are the ones the camera saw. The gateway knows boxes only through the distance sensor: a box it
+never met can still hide a cell, which the agent is not told to guess about. The camera also sees the ball: twice a second, the robot
 compares two sightings and tells when it starts coming closer, going away, or leaves its sight, and
 the gateway says where it is and which way it goes ("probably E3, moving south, getting closer to
 the robot"); `robot_state` gives the last sighting. On the page, the shaded fan is what the camera can see, the
