@@ -1,0 +1,15 @@
+{
+  "_about": "The library of bricks a group composes its robot's personality from. Two kinds, marked as such: \"pilot\" bricks are settings of the Pilot, held by its code and always applied; \"strategist\" bricks are instructions in the Strategist's system message, which the model follows often but can forget. A group finds out at the simulator which ones always hold. No brick can loosen the Referee's rules. The texts come from the cards of the bench of 6 November 2026 (facilitator/workshops/measures/2026-11-06-robot-architectures/personas/).",
+  "bricks": {
+    "long_legs": {"kind": "pilot", "settings": {"max_leg": 4}, "means": "the Pilot goes up to 4 cells in one move"},
+    "short_legs": {"kind": "pilot", "settings": {"max_leg": 2}, "means": "the Pilot goes 2 cells at most in one move"},
+    "pilot_waits_for_balls": {"kind": "pilot", "settings": {"careful_balls": true}, "means": "before each leg, the Pilot waits while a ball seen just before comes closer"},
+    "pilot_never_waits_for_balls": {"kind": "pilot", "settings": {"careful_balls": false}, "means": "the Pilot never waits for a ball (the Referee still refuses what is unsafe)"},
+    "pilot_looks_each_leg": {"kind": "pilot", "settings": {"look_each_leg": true}, "means": "the Pilot looks around before every leg"},
+    "go_far": {"kind": "strategist", "text": "Go far in one go: when you have an idea where to go, go there at once with `go_to_cell`."},
+    "look_only_when_lost": {"kind": "strategist", "text": "Do not look around again before moving if you already know enough. Look around only when you have no idea where to go."},
+    "dont_wait_for_balls": {"kind": "strategist", "text": "Do not wait for balls: the robot protects itself."},
+    "look_before_each_route": {"kind": "strategist", "text": "Never move without having looked just before: call `look_around` before every `go_to_cell`."},
+    "wait_for_balls": {"kind": "strategist", "text": "When a ball was seen coming closer, wait (`wait_for_event`) and look again, until you see it moving away. Only then go."}
+  }
+}

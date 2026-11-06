@@ -2,9 +2,9 @@
 
 The simulator replaces only the physical part: the wheels, the distance sensor, the camera, the
 buttons, the battery and the USB cable. The program of the robot (robot/firmware.py and
-robot/reflex.py) runs here unchanged, and the gateway (gateway/robot_gateway.py) talks to it
-through a pseudo-terminal, as it would talk to the robot through its USB cable. So the gateway and
-the agent cannot tell the simulator from the robot.
+robot/reflex.py, the Reflex) runs here unchanged, and the Referee (stack/referee.py) talks to it
+through a pseudo-terminal, as it would talk to the robot through its USB cable. So the stack above
+the Reflex cannot tell the simulator from the robot.
 
 The camera gives a card label, never an image: this is what the camera of the robot will send.
 
@@ -74,7 +74,7 @@ HEADINGS = {"north": 0, "east": 90, "south": 180, "west": 270}
 
 
 class Link:
-    """The USB cable: a pseudo-terminal. The gateway opens its other end like a serial port."""
+    """The USB cable: a pseudo-terminal. The Referee opens its other end like a serial port."""
 
     def __init__(self, log):
         self.master, self.slave = os.openpty()
@@ -181,9 +181,11 @@ class World:
             self.firmware_module = load_module("firmware", GUIDE / "robot" / "firmware.py")
             self.reflex = load_module("reflex", GUIDE / "robot" / "reflex.py")
             self.firmware = self.firmware_module.Firmware(Hal(self), self.reflex)
-            # The robot is back on its start cell: the gateway must count from there again.
-            (self.state_dir / "gateway.json").unlink(missing_ok=True)
-            # The mat in use, for the gateway started by the Drive buttons of the page.
+            # The robot is back on its start cell: a new session. The Cartographer counts from there again,
+            # the Referee counts the moves from zero.
+            (self.state_dir / "terrain.json").unlink(missing_ok=True)
+            (self.state_dir / "referee.json").unlink(missing_ok=True)
+            # The mat in use, for the stack started by the Drive buttons of the page.
             (self.state_dir / "mat.json").write_text(json.dumps(mat, indent=2) + "\n", encoding="utf-8")
 
     def reload_reflex(self):
@@ -286,10 +288,10 @@ class World:
             out.append(["ball", int(round(angle + tilt)), int(round(d * bias))])
         return out
 
-    def gateway_beliefs(self):
-        """What the gateway believes it saw (its record), to draw it next to the truth."""
+    def beliefs(self):
+        """What the Cartographer believes the camera saw (its record), to draw it next to the truth."""
         try:
-            seen = json.loads((self.state_dir / "gateway.json").read_text(encoding="utf-8")).get("seen", [])
+            seen = json.loads((self.state_dir / "terrain.json").read_text(encoding="utf-8")).get("seen", [])
         except (OSError, ValueError):
             return []
         return [{k: s.get(k) for k in ("card", "x", "y", "u", "cell")} for s in seen if isinstance(s, dict)]
@@ -375,7 +377,7 @@ class World:
                 "sensors": {"distance_cm": self.rounded(self.distance()), "card_ahead": fw.card_in_front(),
                             "camera": fw.view if fw.motion is None else [],
                             "cone": {"half_angle": CAMERA_HALF_ANGLE_DEG, "range": CAMERA_RANGE_CM}},
-                "beliefs": self.gateway_beliefs(),
+                "beliefs": self.beliefs(),
                 "cards": [{"cell": cell_name(*k), "label": v} for k, v in self.cards.items()],
                 "boxes": self.boxes,
                 "balls": [{"x": round(bx, 1), "y": round(by, 1), "radius": b["radius"]}
@@ -407,9 +409,9 @@ class World:
         """What the page (or the checks) can do: everything a person could do around the mat."""
         do = data.get("do")
         if do in ("reset", "load_world"):
-            # Not while a command runs: the gateway would save a position for a robot that is no
-            # longer there. The lock is the gateway's own (one command at a time, see robot_gateway.py).
-            with (self.state_dir / "gateway.lock").open("w") as lock:
+            # Not while a command runs: the Cartographer would save a position for a robot that is no
+            # longer there. The lock is the Referee's own (one command at a time, see stack/referee.py).
+            with (self.state_dir / "stack.lock").open("w") as lock:
                 try:
                     fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
                 except BlockingIOError:
@@ -456,12 +458,12 @@ class World:
                     return {"error": "unknown button"}
                 self.buttons[data["name"]] = self.time + BUTTON_PRESS_S
             elif do == "adult_resume":
-                # An adult does what the gateway asks ("put the robot back on cell …, facing …"), then
+                # An adult does what the Cartographer asks ("put the robot back on cell …, facing …"), then
                 # presses Resume. Without such a request: back on the cell where the interrupted move
                 # started, if the robot waits for an adult; a robot that waits for nobody stays put.
                 asked = None
                 try:
-                    saved = json.loads((self.state_dir / "gateway.json").read_text(encoding="utf-8"))
+                    saved = json.loads((self.state_dir / "terrain.json").read_text(encoding="utf-8"))
                     if not saved.get("sure", True) and saved.get("back"):
                         asked = saved["back"]
                 except (OSError, ValueError):
@@ -551,7 +553,7 @@ class Hal:
 
 
 def tail_context(world, path, stop):
-    """Show on the page what the gateway gave the agent (the gateway writes it to context.jsonl)."""
+    """Show on the page what the stack gave its caller (stack/common.py writes it to context.jsonl)."""
     position = path.stat().st_size if path.exists() else 0
     while not stop.is_set():
         try:
@@ -587,8 +589,8 @@ DRIVE_LOCK = threading.Lock()
 
 
 def drive(world, data):
-    """A Drive button of the page: it runs the gateway, as `robot_gateway.py forward` in a terminal
-    would. The page never talks to the robot itself: same door, same limits, same log as an agent."""
+    """A Drive button of the page: it runs the stack, as `stack/drive.py forward` in a terminal
+    would. The page never talks to the robot itself: same door, same rules, same log as an agent."""
     command = data.get("command")
     args = DRIVE.get(command)
     if command == "light" and data.get("color") in world.firmware_module.COLORS:
@@ -602,18 +604,18 @@ def drive(world, data):
     try:
         if args == ["go"]:
             return 200, go(world, data["direction"])
-        return 200, {"ok": True, "result": gateway(world, args)}
+        return 200, {"ok": True, "result": drive_stack(world, args)}
     except (subprocess.TimeoutExpired, ValueError, RuntimeError) as e:
         return 500, {"error": f"{type(e).__name__}: {e}"}
     finally:
         DRIVE_LOCK.release()
 
 
-def gateway(world, args):
-    """One command of the gateway, in a process of its own, exactly as typed in a terminal."""
+def drive_stack(world, args):
+    """One command of the stack, in a process of its own, exactly as typed in a terminal."""
     env = dict(os.environ, ROBOT_STATE_DIR=str(world.state_dir), ROBOT_SERIAL=world.link.path,
                ROBOT_MAT=str(world.state_dir / "mat.json"), ROBOT_CALLER="page")
-    done = subprocess.run([sys.executable, "-I", str(GUIDE / "gateway" / "robot_gateway.py"), *args],
+    done = subprocess.run([sys.executable, "-I", str(GUIDE / "stack" / "drive.py"), *args],
                           env=env, capture_output=True, text=True, timeout=max(world.mat["move_timeout_s"], 30) + 5)
     if done.returncode != 0:
         raise RuntimeError((done.stderr or done.stdout).strip()[-500:])
@@ -621,11 +623,11 @@ def gateway(world, args):
 
 
 def go(world, direction):
-    """An arrow key: towards a side of the mat. The gateway's own moves: turn on the spot until the
-    robot faces that way (as the gateway believes), then one cell forwards. Stops at the first move
+    """An arrow key: towards a side of the mat. The stack's own moves: turn on the spot until the
+    robot faces that way (as the Cartographer believes), then one cell forwards. Stops at the first move
     that is not done."""
     order = ["north", "east", "south", "west"]
-    state = gateway(world, ["state"])
+    state = drive_stack(world, ["state"])
     if state.get("result") in ("refused", "error") or state.get("facing") is None:
         return {"ok": True, "result": state, "moves": ["state"]}
     turns = {0: [], 1: ["right"], 2: ["right", "right"], 3: ["left"]}[
@@ -633,7 +635,7 @@ def go(world, direction):
     moves = []
     for move in turns + ["forward"]:
         moves.append(move)
-        result = gateway(world, [move])
+        result = drive_stack(world, [move])
         if result.get("result") != "done":
             break
     return {"ok": True, "result": result, "moves": moves}
@@ -717,7 +719,7 @@ def main():
     state = Path(args.state_dir)
     state.mkdir(parents=True, exist_ok=True)
     world = World(mat, json.loads(Path(args.world).read_text(encoding="utf-8")), state, seed=args.seed)
-    # Where the gateway finds the cable of the simulated robot.
+    # Where the Referee finds the cable of the simulated robot.
     (state / "serial").write_text(world.link.path + "\n", encoding="utf-8")
     context = state / "context.jsonl"
 

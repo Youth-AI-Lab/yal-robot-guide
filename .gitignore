@@ -1,5 +1,6 @@
-# What the simulator and the gateway write while they run: the path of the simulated cable, where
-# the gateway thinks the robot is, and what the agent received (context.jsonl). Never shared.
+# What the simulator and the stack write while they run: the path of the simulated cable, the map of
+# the terrain, the Referee's count and journal, the missions, and what each caller received
+# (context.jsonl). Never shared.
 .robot-sim/
 __pycache__/
 # Files that usually hold a secret: never in this repository.

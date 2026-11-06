@@ -1,5 +1,5 @@
 # Lines to add to ~/.hermes/config.yaml to let Hermes Agent v0.22.5 drive the robot through the
-# gateway. The keys come from Hermes's own reference at v0.22.5 (website/docs/reference/
+# stack (stack/drive.py: the Pilot's step tools, down to the Referee). The keys come from Hermes's own reference at v0.22.5 (website/docs/reference/
 # mcp-config-reference.md, hermes_cli/config_defaults.py). Tried on 3 November 2026 with a fake model,
 # not with a real one: Hermes accepts them, shows the model only these tools (found through its
 # tool_search), and refuses step_forward in `hermes chat -q`, where nobody can approve it.
@@ -8,7 +8,7 @@
 mcp_servers:
   robot:
     command: /opt/workshop/venv/bin/python
-    args: ["-I", "@GUIDE@/gateway/robot_gateway.py"]
+    args: ["-I", "@GUIDE@/stack/drive.py"]
     # Each move asks a person first (every tool not marked read only). Where nobody can answer
     # (hermes chat -q, cron), the move is refused. robot_state is marked read only: it never asks.
     # Hermes 0.22.6 adds "Always" to this question, and --yolo skips it: stay on 0.22.5.
@@ -17,7 +17,7 @@ mcp_servers:
       include: [robot_state, step_forward, move, turn, look_around, face, set_light, wait_for_event, seen_cards]
       resources: false
       prompts: false
-    # The gateway never asks the model to write for it, nor the user a question.
+    # The stack never asks the model to write for it, nor the user a question.
     sampling:
       enabled: false
     elicitation:
@@ -31,5 +31,5 @@ agent:
   # Hermes has no limit by default: a model that keeps calling tools would never stop.
   max_turns: 30
   run_budget_seconds: 600
-  # Never pixels to the model (the gateway sends none anyway).
+  # Never pixels to the model (the stack sends none anyway).
   image_input_mode: text

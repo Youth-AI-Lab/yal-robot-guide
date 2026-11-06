@@ -11,30 +11,43 @@ Digitale Wolven (Antwerp, Belgium), CSC Vent des Îles (La Rochelle, France).
 
 The young people of the project will build a robot (a STeaMi board and an OpenMV N6 camera) to give
 their chatbot a body. Before the robot exists, this simulator lets you try the whole chain: the
-program of the robot, the gateway that is the only door to it, and an agent that drives it.
+program of the robot, and the stack of programs above it that decide what it does, down to the one
+that is the only door to it.
 
 ```
- robot (or this simulator)         gateway (MCP server)              agent
- ┌───────────────────────┐  text   ┌──────────────────────┐  MCP   ┌──────────────┐
- │ reflexes: stop, speed │ ◄─────► │ 9 tools, its limits  │ ◄────► │ Claude Code, │
- │ camera: a card label  │  cable  │ writes what the agent│        │ OpenCode,    │
- └───────────────────────┘         │ receives             │        │ Hermes...    │
-                                   └──────────────────────┘        └──────────────┘
+ robot (or this simulator)          the stack (stack/), on a Raspberry Pi or on this computer
+ ┌──────────────────────┐  text   ┌─────────┐   ┌──────────────┐   ┌───────┐   ┌────────────┐
+ │ Reflex: stops, never │ ◄─────► │ Referee │ ◄►│ Cartographer │ ◄►│ Pilot │ ◄►│ Strategist │ ◄── mission
+ │ waits for anyone     │  cable  │ the     │   │ the map of   │   │ the   │   │ a loop and │     (closed
+ │ camera: a card label │         │ rules   │   │ the terrain  │   │ way   │   │ a model    │     format)
+ └──────────────────────┘         └─────────┘   └──────────────┘   └───────┘   └────────────┘
 ```
+
+Each tier of the stack talks only to its neighbours, in a language of its own (the head of each file
+says which):
+
+| Tier | What it does | File |
+|---|---|---|
+| Reflex | on the robot: stops by itself (bumper, obstacle, silent cable), moves, keeps its last events | [robot/firmware.py](robot/firmware.py), [robot/reflex.py](robot/reflex.py) |
+| Referee | the only door to the robot: judges each command against the rules written by the adults, refuses, counts the moves, keeps a journal | [stack/referee.py](stack/referee.py), [stack/rules.json](stack/rules.json) |
+| Cartographer | the map of the terrain (where the robot probably is, the cards, the balls, the cells seen free), and the translation of "go east" into "slide to the right" | [stack/cartographer.py](stack/cartographer.py) |
+| Pilot | code without a model: how to reach the goal (the way, exploring, waiting for an adult) | [stack/pilot.py](stack/pilot.py) |
+| Strategist | a loop and a model: which tool next, following the group's personality; ends each mission with a closed report | [stack/strategist.py](stack/strategist.py) |
+| Interpreter | the chatbot that turns the group's words into a mission, and the report back into words: TO BE COMPLETED; [stack/mission.py](stack/mission.py) stands in for it | |
 
 Three rules hold the design together:
 
 - **The robot protects itself.** It stops in front of an obstacle, when the cable comes loose, and
   when someone presses its emergency button, without asking the computer
   ([robot/reflex.py](robot/reflex.py), [robot/firmware.py](robot/firmware.py)).
-- **The gateway is the only door.** Nine tools, four cells at most per move (a move counts one,
-  however many cells), never off the mat, backwards or sideways only into cells its sensor saw free,
-  a number of moves per session ([gateway/robot_gateway.py](gateway/robot_gateway.py)).
+- **The Referee is the only door.** Four cells at most per move (a move counts one, however many
+  cells), never off the mat, never onto a card, backwards or sideways only into cells its sensor saw
+  free, a number of moves per session. No personality and no model can loosen these rules
+  ([stack/rules.json](stack/rules.json), [mat.json](mat.json)).
 - **No image ever leaves the robot.** The camera gives the name of a card from a short list.
 
 The simulator replaces only the physical part. The program of the robot runs in it unchanged, and
-the gateway talks to it through a pseudo-terminal, as it will talk to the robot through its USB
-cable.
+the Referee talks to it through a pseudo-terminal, as it will talk to the robot through its cable.
 
 ---
 
@@ -65,26 +78,26 @@ camera looks at; the red line is what the distance sensor measures.
 
 ---
 
-## Part 2 - Drive it, through the gateway
+## Part 2 - Drive it, through the stack
 
-The robot moves only through the gateway, the same door an agent uses, with the same limits. Two ways
-to drive it by hand:
+The robot moves only through the stack, down to the Referee: the same door the Strategist uses, with the
+same rules. Two ways to drive it by hand:
 
 - **On the page**, the **Drive** panel. **North**, **West**, **South**, **East** and the arrow keys of
   the keyboard go towards a side of the mat: the robot turns as needed, then moves one cell (as the
-  gateway believes it faces). **↑ Forward**, **↺ Left**, **↻ Right** are the moves an agent has, one at
-  a time. **State**, **Light**, **Seen cards** and **Wait for an event (10 s)** too. Each button runs the gateway, as
+  Cartographer believes it faces). **↑ Forward**, **↺ Left**, **↻ Right** are the moves an agent has, one at
+  a time. **State**, **Light**, **Seen cards** and **Wait for an event (10 s)** too. Each button runs the stack, as
   the command below would.
 - **In a second terminal**:
 
   ```bash
-  python3 -I gateway/robot_gateway.py state
-  python3 -I gateway/robot_gateway.py forward
-  python3 -I gateway/robot_gateway.py right
-  python3 -I gateway/robot_gateway.py around
-  python3 -I gateway/robot_gateway.py face east
-  python3 -I gateway/robot_gateway.py move north 3 card_ahead
-  python3 -I gateway/robot_gateway.py light green
+  python3 -I stack/drive.py state
+  python3 -I stack/drive.py forward
+  python3 -I stack/drive.py right
+  python3 -I stack/drive.py around
+  python3 -I stack/drive.py face east
+  python3 -I stack/drive.py move north 3 card_ahead
+  python3 -I stack/drive.py light green
   ```
 
 Each answer is what an agent would receive, word for word. On the page, **On the wire** shows the
@@ -94,7 +107,7 @@ any other is refused, wherever it comes from.
 
 You can drag with the mouse everything that lies on the mat: the boxes (obstacles, brown squares,
 **Add a box** adds one, a double-click removes one), the cards (they land on a cell) and the ball
-(with its whole path). Not the robot: the gateway counts its moves to know where it is, so a robot
+(with its whole path). Not the robot: the Cartographer counts its moves to know where it is, so a robot
 moved by hand would be lost. Press **Start again** to put it back on its start cell.
 
 Things to try:
@@ -103,12 +116,12 @@ Things to try:
   "something is in front of the robot".
 - **Forward** and, while it moves, drag a box right in front of it: the robot stops its motors and
   waits up to 3 seconds (`OBSTACLE_WAIT_MS` in `robot/reflex.py`). Take the box away in time: it
-  finishes its cell. Leave it: it gives up, between two cells, and the gateway refuses everything,
+  finishes its cell. Leave it: it gives up, between two cells, and the Cartographer refuses every move,
   since the position is unknown. Press **An adult puts it back and presses Resume**, then
   **Forward** again. With the box there before the move, it waits, then refuses: it never moved, so
   no adult is needed.
 - **Forward** and, while it moves, **Unplug the cable**: the robot stops after one second (its
-  watchdog). The gateway waits, then says the move was stopped.
+  watchdog). The Referee waits, then says the move was stopped.
 - **Emergency stop**, then **Forward**: refused.
 - Turn towards the edge and **Forward**: refused, the next cell is outside the mat.
 - Drag a card onto the cell in front of the robot, then **State**: `card_ahead` names it.
@@ -122,9 +135,9 @@ Things to try:
   moves, the ball stops it (distance sensor in front, bumper on the sides).
 
 > [!NOTE]
-> The gateway counts the moves to know where the robot is: it never sees the real cell. Set
+> The Cartographer counts the moves to know where the robot is: it never sees the real cell. Set
 > **Wheels slip** to 10 %, drive a few cells, and compare **Real cell** on the page with the `cell`
-> the gateway gives.
+> the Cartographer gives.
 
 ---
 
@@ -161,13 +174,75 @@ combined with a slower model do better
 
 ---
 
-## Part 5 - Connect an agent (not tested with a real model)
+## Part 5 - Give it a mission
 
-The gateway is an MCP server. Its nine tools:
+The Strategist takes a mission in a closed format: a list of steps, each one an action from a short
+list with one argument from a short list, and a personality. It never receives the group's words: it
+builds the sentences its model reads from these fields alone, and the model ends the mission with
+`report`, whose fields are closed too. Until the Interpreter (the chatbot that turns the group's words
+into a mission) is written, [stack/mission.py](stack/mission.py) stands in for it.
+
+| Step | Argument | What the robot does |
+|---|---|---|
+| `reach_card` | a card of [mat.json](mat.json) | stops right in front of it, facing it |
+| `set_light` | `off`, `red`, `orange`, `green`, `blue` | sets its light |
+| `find_card` | a card | finds out whether it is on the mat, and on which cell |
+| `survey` | a card | finds every card of that kind, with its cell |
+
+1. Without a model, the Pilot alone does each step (no network, no cost). With the simulator running,
+   in a second terminal:
+
+   ```bash
+   python3 -I stack/mission.py reach_card:barbecue set_light:green --model none
+   ```
+
+   You should see its report, on one line, with `"outcome": "done"` and
+   `"cards": [{"card": "barbecue", "cell": "F3"}]`.
+
+2. With a scripted model, which checks the loop without any network: `--model fake`.
+
+3. With a real model, through OpenRouter. The key is read on stdin, never on the command line, and
+   `--cap` sets the most the mission may cost, in US dollars:
+
+   ```bash
+   read -rs KEY && printf %s "$KEY" | python3 -I stack/mission.py find_card:barbecue --model qwen-flash --cap 0.10; unset KEY
+   ```
+
+   > [!WARNING]
+   > Each call sends the mission and the robot's state to the company that runs the model. Nothing
+   > about a person must go there.
+
+4. A personality: `--personality cautious` or `--personality adventurous`, two compositions of
+   bricks from [stack/personality/bricks.json](stack/personality/bricks.json). A brick is either a
+   setting of the Pilot (code: always applied, such as "2 cells at most in one move") or an
+   instruction to the Strategist's model (text: often followed, sometimes forgotten). No brick can
+   loosen the Referee's rules.
+
+5. In another terminal, `python3 -I stack/mission.py pause`, then `resume`, or `stop`. The loop
+   handles it without asking the model. A move under way ends first (stopping the move itself is TO
+   BE COMPLETED).
+
+What to read afterwards, in `.robot-sim/`: `missions/<time>/` (the mission, every message the model
+received and sent, the report, what it cost) and `referee.jsonl` (every command the Referee sent or
+refused, with the rule).
+
+The Strategist offers its model one size of tools: the route tools by default (`go_to_cell`,
+`look_around`, `face`, `wait_for_event`, `seen_cards`, `set_light`, `robot_state`), `--tools goal`
+(`explore`, `go_to_card`) or `--tools step` (the nine tools of part 6). On 6 November 2026, with the
+loop this one comes from, one run per mission with Qwen3.8 Flash and DeepSeek v4 Flash: with the route
+tools, the adventurous card looked 0.20 to 0.28 times per cell and the cautious one 0.64 to 0.68, and
+the cautious one failed twice in ten runs, for lack of moves. Not yet run with this stack.
+
+---
+
+## Part 6 - Connect an agent of your own (not tested with a real model)
+
+[stack/drive.py](stack/drive.py) is an MCP server: the Pilot's nine step tools, which go down the
+whole stack, for an agent of your own instead of the Strategist:
 
 | Tool | What it does | Read only |
 |---|---|---|
-| `robot_state()` | distance in front, card in front, battery, buttons, the cell where the gateway thinks the robot is | yes |
+| `robot_state()` | distance in front, card in front, battery, buttons, the cell where the Cartographer thinks the robot is | yes |
 | `step_forward()` | one cell forwards, then stop | no |
 | `move(direction, cells, stop_if)` | slide 1 to 4 cells `north`, `east`, `south` or `west` without turning; stops on a cell when `stop_if` is met: `card_ahead`, `ball_seen`, `new_card`. One move | no |
 | `turn(direction)` | a quarter turn, `left` or `right` | no |
@@ -187,10 +262,10 @@ counts as one move, however many cells (1 to 4). The robot itself checks the con
 cell it reaches, and stops there: the agent answers seconds later (6 s between two calls, median of
 the bench of 5 November), when a ball has already rolled more than a cell. The robot never drives onto
 a card it knows: forwards it always stops in front of one; every slide stops before a cell where the
-gateway has placed a card for sure, and a slide sideways or backwards before any card the camera has
+Cartographer has placed a card for sure, and a slide sideways or backwards before any card the camera has
 placed, even from far; `step_forward` and a slide forwards refuse a cell with a card, and a cell where a
 ball was seen in the last 10 seconds (or next to one that was coming closer). Its distance sensor and
-camera only look forwards: backwards or sideways, the gateway lets it slide only into cells the
+camera only look forwards: backwards or sideways, the Referee lets it slide only into cells the
 sensor saw free in the last two minutes (`face` that way once, or `look_around`; the cells it has just
 been through count too), never into the lane of a ball (the row or column where one was seen
 rolling; seen from far, a lane may cover two), never near a ball seen in the last 10 seconds, and
@@ -206,7 +281,7 @@ in a cone in front of the robot (30 degrees each side, up to 120 cm: the simulat
 COMPLETED on the OpenMV N6), wider when farther; a box hides what is behind it. For each card it
 gives an angle and a distance, which it guesses less well when the card is far (**Camera distance
 error**). The robot only believes it while it stands still. Each card that comes into view becomes an
-event (in `since_last_call`), and the gateway turns it into a cell, with the other cells it could be
+event (in `since_last_call`), and the Cartographer turns it into a cell, with the other cells it could be
 in: "probably F3 (could also be F2, G3)". Seen again from closer, the estimate gets better.
 `seen_cards` keeps that record, so it does not depend on the agent's memory; a card moved by hand
 leaves it when the robot sees it gone. It also keeps which cells the camera has looked at
@@ -214,17 +289,17 @@ leaves it when the robot sees it gone. It also keeps which cells the camera has 
 line to it crosses a cell where the distance sensor met something, and a cell the robot stood on
 counts too. A cell where the sensor met something at two moments 10 s apart is set apart: something
 stands there (a box; a ball rolls on). When no cell is left, the agent hears it once: the cards on the
-mat are the ones the camera saw. The gateway knows boxes only through the distance sensor: a box it
+mat are the ones the camera saw. The Cartographer knows boxes only through the distance sensor: a box it
 never met can still hide a cell, which the agent is not told to guess about. The camera also sees the ball: twice a second, the robot
 compares two sightings and tells when it starts coming closer, going away, or leaves its sight, and
-the gateway says where it is and which way it goes ("probably E3, moving south, getting closer to
+the Cartographer says where it is and which way it goes ("probably E3, moving south, getting closer to
 the robot"); `robot_state` gives the last sighting. On the page, the shaded fan is what the camera can see, the
-dots are where it thinks the cards are, and the dashed circles are what the gateway believes (what
+dots are where it thinks the cards are, and the dashed circles are what the Cartographer believes (what
 the agent is told). The robot's own cell comes from counting moves: with **Wheels slip** on, it can
 be wrong.
 
 **What happened between two calls.** MCP works by questions and answers: an agent learns nothing
-while it thinks. So every answer of the gateway carries `since_last_call`: what happened to the robot
+while it thinks. So every answer of the stack carries `since_last_call`: what happened to the robot
 since that caller's last call (something touched the bumper, came close in front, a move stopped, the
 emergency button, Resume), with how many seconds ago. The robot itself remembers its last 16 events
 (`EVENTS` in the protocol), so nothing is lost when nobody listens; an agent, a terminal and the page
@@ -232,7 +307,7 @@ each have their own count. `wait_for_event` lets an agent watch; it never makes 
 protect the robot: the reflexes do that.
 
 **Events pushed to Claude Code.** With `ROBOT_CHANNEL=1` in the `env` of the
-server in `.mcp.json`, the gateway also pushes each event as it happens, as a Claude Code *channel*:
+server in `.mcp.json`, drive.py also pushes each event as it happens, as a Claude Code *channel*:
 Claude Code's own research preview, in interactive sessions only, started with
 `MCP_PROTOCOL_NEGOTIATION=legacy ENABLE_TOOL_SEARCH=false claude --dangerously-load-development-channels server:robot`
 ([channels](https://code.claude.com/docs/en/channels)). Tried on 3 November 2026 with Claude Code 2.1.291 then 2.1.317, signed in with claude.ai: each event
@@ -251,8 +326,9 @@ such way: they read `since_last_call`.
   OpenRouter (4 sessions, 0.0117 dollars): the model finds the robot's tools through Hermes's
   `tool_search`, calls `robot_state`, says so when a move is refused, and watches with
   `wait_for_event`. With `trust: full` (no approval, in the simulator only), it drove the robot
-  by itself around a tree and a rock to a card, in 13 moves and 3 minutes. Hermes keeps the
-  gateway running between two commands; the gateway follows the simulator if it restarts.
+  by itself around a tree and a rock to a card, in 13 moves and 3 minutes. Hermes keeps
+  drive.py running between two commands; it follows the simulator if it restarts. These trials ran
+  with the gateway that the stack replaced (the same tools, the same rules, in one program).
 - **Any agent**: the result of each call is written to `.robot-sim/context.jsonl`, and the page
   shows it. This is exactly what entered the agent's context.
 - **Rules for the agent**: [agents/AGENTS.example.md](agents/AGENTS.example.md) is an example of what
@@ -292,13 +368,14 @@ such way: they read `since_last_call`.
 /opt/workshop/venv/bin/python -I ci/check_sim.py
 ```
 
-About five minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
-would, and reads in the simulator what really happened: 123 checks, all passed in the image
-2026.10.45 on 6 November 2026 (container with 2 processors, no network).
+About seven minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
+would, then gives missions to the Strategist with no model or a scripted one, and reads in the
+simulator what really happened: 141 checks, all passed in the image 2026.10.45 on 6 November 2026
+(container with 2 processors, no network).
 
 ---
 
-## The protocol between the gateway and the robot
+## The protocol between the Referee and the robot
 
 One line of text per command, one line per answer; the head of
 [robot/firmware.py](robot/firmware.py) lists them all. The robot moves forwards, or slides backwards

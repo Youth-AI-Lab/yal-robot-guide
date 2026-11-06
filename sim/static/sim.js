@@ -1,6 +1,6 @@
 // The page of the simulator: it draws what the simulator sends ten times per second, and sends
 // back what a person does around the mat (drag a box, press a button). It never talks to the robot
-// directly: only the gateway does.
+// directly: only the Referee does.
 "use strict";
 
 const canvas = document.getElementById("mat");
@@ -106,7 +106,7 @@ function draw() {
     ctx.arc(px(s, r.x + Math.sin(a) * cm), px(s, r.y - Math.cos(a) * cm), 3.5, 0, 2 * Math.PI);
     ctx.fill();
   }
-  // What the gateway believes it saw: what the agent is told.
+  // Where the Cartographer places the cards the camera saw: what the Pilot and the Strategist are told.
   ctx.setLineDash([4, 3]);
   ctx.strokeStyle = css("--belief");
   ctx.fillStyle = css("--belief");
@@ -241,7 +241,7 @@ function fill(id, items, make) {
 }
 
 // Dragging what is on the mat. The robot is not dragged: an adult who moves it by hand makes the
-// gateway lose count of where it is (it counts the moves). It moves only through the gateway.
+// Cartographer lose count of where it is (it counts the moves). It moves only through the stack.
 function toCm(event) {
   const rect = canvas.getBoundingClientRect();
   const s = (canvas.clientWidth - MARGIN) / (state.mat.cols * state.mat.cell_cm);
@@ -276,7 +276,7 @@ canvas.addEventListener("pointerdown", (e) => {
   const g = grab(toCm(e));
   if (!g) return;
   if (g.kind === "robot") {
-    notice("The robot cannot be moved by hand here: the gateway counts its moves to know where it is. "
+    notice("The robot cannot be moved by hand here: the Cartographer counts its moves to know where it is. "
            + "Drive it with the Drive buttons, or press \"Start again\".");
     return;
   }
@@ -308,7 +308,7 @@ canvas.addEventListener("dblclick", (e) => {
   if (b) act({ do: "remove_box", id: b.id });
 });
 
-// Driving: each button runs the gateway (POST /api/drive), as a terminal command would.
+// Driving: each button runs the stack (POST /api/drive), as a terminal command would.
 const driveButtons = ["d-forward", "d-left", "d-right", "d-state", "d-light", "d-seen", "d-wait", "g-north", "g-west", "g-south", "g-east"]
   .map((id) => document.getElementById(id));
 async function driveRobot(command, extra) {

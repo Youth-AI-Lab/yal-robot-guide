@@ -1,0 +1,2 @@
+{"_about": "A cautious robot: better slow than sorry. The bricks of the bench's cautious card; \"go at most two cells at a time\" is now a brick of the Pilot (code) instead of an instruction to the model.", "name": "cautious",
+ "bricks": ["short_legs", "pilot_waits_for_balls", "look_before_each_route", "wait_for_balls"]}

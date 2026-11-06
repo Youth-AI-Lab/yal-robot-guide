@@ -1,5 +1,5 @@
 # Opens the container of this guide as a Codespace would, then plays each scenario of ci/check_sim.py:
-# the program of the robot, the simulator and the gateway together, with no model and no key.
+# the program of the robot, the simulator and the stack together, with no model and no key.
 name: Simulator checks
 
 on:

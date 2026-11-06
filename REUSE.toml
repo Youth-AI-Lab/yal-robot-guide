@@ -10,10 +10,10 @@ precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Youth AI Lab partners"
 SPDX-License-Identifier = "CC-BY-SA-4.0"
 
-# The program of the robot, the simulator, the gateway, the checks and the configuration: EUPL-1.2.
+# The program of the robot, the simulator, the stack, the checks and the configuration: EUPL-1.2.
 [[annotations]]
 path = [".devcontainer/**", ".github/**", ".gitignore", ".gitattributes", ".mcp.json", "REUSE.toml", "mat.json",
-        "robot/**", "sim/**", "gateway/**", "agents/**", "ci/**"]
+        "robot/**", "sim/**", "stack/**", "agents/**", "ci/**"]
 precedence = "aggregate"
 SPDX-FileCopyrightText = "2026 Youth AI Lab partners"
 SPDX-License-Identifier = "EUPL-1.2"

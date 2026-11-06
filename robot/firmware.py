@@ -4,7 +4,7 @@ It is written in the part of Python that MicroPython understands (no import, no 
 annotation), because the robot's board runs MicroPython. On the real board, a small file gives it
 the HAL below; that file is TO BE COMPLETED once the robot is built.
 
-The robot reads one command per line from the computer (the gateway) and answers one line. It
+The robot reads one command per line from the computer (the Referee) and answers one line. It
 moves four cells at most per command, and always stops on a cell. Its reflexes (reflex.py) can stop
 it at any time, without asking the computer. Nothing else is understood.
 
@@ -59,7 +59,7 @@ believed while the robot stands still: during a move or a turn, nothing it sees 
 
 Its wheels (mecanum wheels) slide it forwards, backwards or to a side, and turn it on the spot. Its
 distance sensor and its camera only look forwards: backwards or sideways, nothing tells it what is in
-the way, so it goes there slowly (HARD_BLIND_SPEED_CM_S), and the gateway sends it there only into
+the way, so it goes there slowly (HARD_BLIND_SPEED_CM_S), and the Referee sends it there only into
 cells its sensor has seen free. Its bumper goes all around it: when something touches it, a move stops
 at once, whatever reflex.py says.
 

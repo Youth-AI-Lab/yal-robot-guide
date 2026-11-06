@@ -1,8 +1,9 @@
-"""Checks the robot's program, the simulator and the gateway together, as an agent would use them.
+"""Checks the robot's program, the simulator and the stack together, as an agent or the Strategist would use them.
 
-No model and no key: this script calls the tools of the gateway itself, through MCP, in the order a
-model could, and reads in the simulator what really happened (where the robot is, whether it hit
-something, when it stopped). Each scenario starts again from a fresh mat.
+No model and no key: this script calls the step tools of the stack itself, through MCP, in the order a
+model could, then gives missions to the Strategist with no model or a scripted one, and reads in the
+simulator what really happened (where the robot is, whether it hit something, when it stopped). Each
+scenario starts again from a fresh mat.
 
 Usage, in the Codespace of this guide (the folder of the guide is the current folder):
     /opt/workshop/venv/bin/python -I ci/check_sim.py
@@ -87,7 +88,7 @@ class Sim:
 
 
 class Agent:
-    """A pretend agent: it calls the tools of the gateway through MCP, as a model would."""
+    """A pretend agent: it calls the step tools of the stack (stack/drive.py) through MCP, as a model would."""
 
     def __init__(self, session):
         self.session = session
@@ -106,7 +107,7 @@ class Agent:
 
 @contextlib.asynccontextmanager
 async def agent(env):
-    params = StdioServerParameters(command=PYTHON, args=["-I", str(GUIDE / "gateway" / "robot_gateway.py")], env=env)
+    params = StdioServerParameters(command=PYTHON, args=["-I", str(GUIDE / "stack" / "drive.py")], env=env)
     async with stdio_client(params) as (read, write):
         async with ClientSession(read, write) as session:
             await session.initialize()
@@ -135,10 +136,10 @@ async def later(seconds, function, *args, **kwargs):
 
 
 async def channel_session(env, seconds):
-    """Speak raw JSON-RPC to the gateway, as Claude Code does with MCP_PROTOCOL_NEGOTIATION=legacy:
+    """Speak raw JSON-RPC to stack/drive.py, as Claude Code does with MCP_PROTOCOL_NEGOTIATION=legacy:
     initialize, initialized, then listen. Returns (the initialize answer, the channel notifications)."""
     process = await asyncio.create_subprocess_exec(
-        PYTHON, "-I", str(GUIDE / "gateway" / "robot_gateway.py"), env=dict(env, ROBOT_CHANNEL="1"),
+        PYTHON, "-I", str(GUIDE / "stack" / "drive.py"), env=dict(env, ROBOT_CHANNEL="1"),
         stdin=asyncio.subprocess.PIPE, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
 
     async def send(message):
@@ -195,6 +196,7 @@ async def main():
         sim = Sim(state_dir, mat_path)
         try:
             await scenarios(sim, env)
+            stack_scenarios(sim, env)
         finally:
             sim.stop()
         check(f"only text reached the agent, never an image ({len(CALLS)} answers)",
@@ -453,7 +455,7 @@ async def scenarios(sim, env):
               reply)
 
     sim.fresh()
-    state_file = Path(env["ROBOT_STATE_DIR"]) / "gateway.json"
+    state_file = Path(env["ROBOT_STATE_DIR"]) / "terrain.json"
     async with agent(env) as a:
         await a.call("face", direction="east")
         await a.call("face", direction="north")
@@ -564,13 +566,13 @@ async def scenarios(sim, env):
     async with agent(env) as a:
         await asyncio.sleep(4.0)
         reply = await a.call("robot_state")
-        lanes = json.loads((Path(env["ROBOT_STATE_DIR"]) / "gateway.json").read_text()).get("lanes", {})
+        lanes = json.loads((Path(env["ROBOT_STATE_DIR"]) / "terrain.json").read_text()).get("lanes", {})
         check("a ball rolling along row 3: row 3 is noted as its lane, the robot on C5 is not on it",
               "row:2" in lanes and reply.get("on_a_ball_lane") is False, (lanes, reply.get("on_a_ball_lane")))
 
     # Stopped on a lane: the adult is sent to the last cell before it, and the instruction does not change.
     sim.fresh()
-    state_file = Path(env["ROBOT_STATE_DIR"]) / "gateway.json"
+    state_file = Path(env["ROBOT_STATE_DIR"]) / "terrain.json"
     async with agent(env) as a:
         await a.call("robot_state")
         saved = json.loads(state_file.read_text())
@@ -609,7 +611,7 @@ async def scenarios(sim, env):
 
     # A gateway killed during a slide: the next one knows the position is lost, and where the robot is.
     sim.fresh()
-    by_hand = subprocess.Popen([PYTHON, "-I", str(GUIDE / "gateway" / "robot_gateway.py"), "move", "north", "3"],
+    by_hand = subprocess.Popen([PYTHON, "-I", str(GUIDE / "stack" / "drive.py"), "move", "north", "3"],
                                env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     await asyncio.sleep(4.5)
     by_hand.kill()
@@ -998,7 +1000,7 @@ async def scenarios(sim, env):
               cover["something_stands_there"] == ["C3"] and "C3" not in cover["not_looked_at_yet"], cover)
 
     # Every cell looked at: the agent hears it once, with the cards seen.
-    state_file = Path(env["ROBOT_STATE_DIR"]) / "gateway.json"
+    state_file = Path(env["ROBOT_STATE_DIR"]) / "terrain.json"
     sim.fresh(cards=[{"cell": "C3", "label": "water-point"}])
     await asyncio.sleep(0.6)
     async with agent(env) as a:
@@ -1057,6 +1059,73 @@ async def scenarios(sim, env):
     await asyncio.sleep(1.0)
     check("frozen: the world waits for the robot", sim.state()["balls"][0] == first)
     sim.act(do="mode", mode="realtime")
+
+
+def mission(env, *args, wait=True):
+    """The Interpreter's stand-in: stack/mission.py, in a process of its own."""
+    command = [PYTHON, "-I", str(GUIDE / "stack" / "mission.py"), *args]
+    if not wait:
+        return subprocess.Popen(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    return subprocess.run(command, env=env, capture_output=True, text=True, timeout=300)
+
+
+def stack_scenarios(sim, env):
+    """The stack above the Referee: a mission in the closed format, through the Strategist, the Pilot and the
+    Cartographer, with no model (the Pilot alone) or a scripted one. No network, no key."""
+    big = dict(MAT, max_moves=40)
+    world = {"cards": [{"cell": "C2", "label": "barbecue"}], "boxes": [], "balls": []}
+    sim.act(do="load_world", mat=big, world=world)
+    done = mission(env, "reach_card:barbecue", "set_light:green", "--model", "none")
+    report = json.loads(done.stdout or "{}")
+    r = sim.state()["robot"]
+    check("mission without a model: the Pilot alone stops in front of the barbecue, light green",
+          report.get("outcome") == "done" and {"card": "barbecue", "cell": "C2"} in report.get("cards", [])
+          and r["cell"] == "C3" and r["collisions"] == 0, (done.stderr[-500:], report, r))
+
+    sim.act(do="load_world", mat=big, world=world)
+    done = mission(env, "find_card:barbecue", "--model", "fake")
+    report = json.loads(done.stdout or "{}")
+    check("mission with a scripted model: it looks, reads the record, reports the card and its cell",
+          report.get("outcome") == "done" and report.get("cards") == [{"card": "barbecue", "cell": "C2"}]
+          and report.get("turns") == 4, (done.stderr[-500:], report))
+    runs = sorted((Path(env["ROBOT_STATE_DIR"]) / "missions").iterdir())
+    sent = (runs[-1] / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
+    check("the model received the mission built from the closed format, never other words",
+          json.loads(sent[1])["content"] == 'You drive a small robot on a mat with the robot tools. Find out whether '
+          'the card "barbecue" is on the mat, and on which cell.', sent[1])
+
+    sent = wire_count(sim, "MOVE") + wire_count(sim, "TURN")
+    for args, what in ((["reach_card:picnic"], "a card the camera does not know"),
+                       (["dance:barbecue"], "a step that is not on the list"),
+                       (["set_light:purple"], "a colour that is not on the list"),
+                       (["reach_card:barbecue", "--personality", "reckless"], "a personality that does not exist")):
+        done = mission(env, *args, "--model", "fake")
+        check(f"mission refused, nothing sent: {what}", done.returncode != 0 and "refused" in done.stderr + done.stdout
+              and wire_count(sim, "MOVE") + wire_count(sim, "TURN") == sent, (done.stdout, done.stderr[-300:]))
+
+    sim.act(do="load_world", mat=big, world=world)
+    mission(env, "find_card:barbecue", "--model", "fake", "--personality", "cautious")
+    runs = sorted((Path(env["ROBOT_STATE_DIR"]) / "missions").iterdir())
+    kept = json.loads((runs[-1] / "mission.json").read_text(encoding="utf-8"))
+    system = json.loads((runs[-1] / "transcript.jsonl").read_text(encoding="utf-8").splitlines()[0])["content"]
+    check("personality cautious: a brick of the Pilot (2 cells at most) and the instructions to the model",
+          kept["settings"]["max_leg"] == 2 and kept["settings"]["careful_balls"] is True
+          and "call `look_around` before every `go_to_cell`" in system, (kept["settings"], system[-400:]))
+
+    sim.act(do="load_world", mat=big, world=world)
+    running = mission(env, "find_card:barbecue", "--model", "fake", wait=False)
+    time.sleep(1.5)
+    mission(env, "stop")
+    out, err = running.communicate(timeout=60)
+    report = json.loads(out or "{}")
+    check("mission stopped by the Interpreter: the loop ends it without asking the model",
+          report.get("outcome") == "stopped" and report.get("turns", 9) < 4, (report, err[-300:]))
+
+    journal = [json.loads(line) for line in
+               (Path(env["ROBOT_STATE_DIR"]) / "referee.jsonl").read_text(encoding="utf-8").splitlines()]
+    check("the Referee's journal: every command it sent or refused, with the rule",
+          any(e["decision"] == "sent" for e in journal) and any(e["decision"] == "refused" and e.get("rule")
+                                                                 for e in journal), journal[-3:])
 
 
 if __name__ == "__main__":

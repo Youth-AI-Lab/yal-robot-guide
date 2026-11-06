@@ -1,0 +1,9 @@
+{
+  "_about": "The rules of the Referee: written by the adults before the session, shown to the young people as the frame of their experiment, never changed during the session, never by a personality. The Referee applies them to every command, with caution (a cell that could hold a card counts as holding one). The number of moves of a session and the time a move may take are in mat.json, with the mat. Values of the simulator; on the real robot TO BE COMPLETED.",
+  "max_cells_per_move": 4,
+  "never_onto_a_card": true,
+  "blind_only_into_cells_seen_free_for_s": 120,
+  "never_into_a_ball_lane_when_blind": true,
+  "ball_seen_recently_s": 10,
+  "one_command_at_a_time": true
+}

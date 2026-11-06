@@ -10,4 +10,5 @@ folder where you start the agent. The robot keeps its own safety rules; these on
    sideways or backwards only where its sensor has seen the way free, and never into a ball's lane.
 3. Cross the path of a moving ball only when you have seen it moving away from the robot. If it comes
    closer, wait (`wait_for_event`) and look again.
-4. When the robot waits for an adult, stop and wait too: never try to move it.
+4. When the robot waits for an adult, wait for the adult with `wait_for_event`, never try to move it, then go on
+   with the mission once the adult has put it back.

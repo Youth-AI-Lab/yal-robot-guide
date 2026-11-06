@@ -15,13 +15,13 @@
 <main>
   <section class="mat">
     <canvas id="mat" aria-label="The mat seen from above"></canvas>
-    <p class="legend">Shaded fan: what the camera can see. Dots: where the camera thinks the cards it sees are. Dashed circles: what the gateway believes it saw (what the agent is told).</p>
-    <p class="hint" id="hint">Drag the boxes, the cards and the ball. Double-click a box to remove it. The robot moves only through the gateway: the Drive buttons, the terminal, or an agent.</p>
+    <p class="legend">Shaded fan: what the camera can see. Dots: where the camera thinks the cards it sees are. Dashed circles: where the Cartographer places the cards the camera saw (what the Pilot and the Strategist are told).</p>
+    <p class="hint" id="hint">Drag the boxes, the cards and the ball. Double-click a box to remove it. The robot moves only through the stack, whose only door to it is the Referee: the Drive buttons, the terminal, the Strategist, or an agent.</p>
     <div class="status" id="status"></div>
   </section>
   <aside>
     <section>
-      <h2>Drive <small>through the gateway, like an agent</small></h2>
+      <h2>Drive <small>through the stack, like the Strategist</small></h2>
       <p class="sub">Go towards a side of the mat (keyboard arrows): the robot turns, then moves one cell.</p>
       <div class="buttons">
         <button id="g-north" title="Go north (↑)">↑ North</button>
