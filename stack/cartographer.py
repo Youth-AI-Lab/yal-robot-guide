@@ -111,6 +111,7 @@ class Cartographer:
             self.placed = saved.get("placed", {})
             self.presses = saved.get("presses", 0)
             self.looked = saved.get("looked", {})
+            self.stood = saved.get("stood", {})
             self.blocked = {c: v for c, v in saved.get("blocked", {}).items() if isinstance(v, list)}
             self.covered_said = saved.get("covered_said", False)
         except (OSError, ValueError, KeyError):
@@ -130,6 +131,7 @@ class Cartographer:
             self.placed = {}  # cell -> when a card was last placed there for sure (kept when a box hides it)
             self.presses = 0  # the robot's count of Resume presses, at its last answer
             self.looked = {}  # cell -> when the camera last looked at it, or the robot stood on it (time.time())
+            self.stood = {}  # cell -> when the robot last stood on it or went through it: nothing stands there
             self.blocked = {}  # cell -> [first, last] time the distance sensor met something there (a box, a ball)
             self.covered_said = False  # the caller was told the camera has looked at every cell it can
 
@@ -138,7 +140,8 @@ class Cartographer:
         saved = {"col": self.col, "row": self.row, "facing": self.facing, "sure": self.sure, "back": self.back,
                  "resumes_at_stop": self.resumes_at_stop, "poses": self.poses, "seen": self.seen, "ball": self.ball,
                  "free": self.free, "lanes": self.lanes, "way": self.way, "back_fixed": self.back_fixed,
-                 "placed": self.placed, "presses": self.presses, "looked": self.looked, "blocked": self.blocked,
+                 "placed": self.placed, "presses": self.presses, "looked": self.looked, "stood": self.stood,
+                 "blocked": self.blocked,
                  "covered_said": self.covered_said}
         (STATE_DIR / "terrain.json").write_text(json.dumps(saved) + "\n", encoding="utf-8")
 
@@ -298,12 +301,14 @@ class Cartographer:
 
     def note_looked(self, dist):
         """The robot stands still and the camera's view is believed: a cell whose centre is in the camera's cone
-        counts as looked at, unless the line to it crosses a cell where the distance sensor met something (a box would
-        hide it), or it is straight ahead beyond what the sensor met. What met the sensor is on a cell: something
-        stands there, until the sensor sees it free. A box the sensor never met can still hide a cell (seen_cards says
-        so). Replayed on nine runs of the absent mission (2026-11-06): one cell in nine runs counted although a box hid
-        it; asking every crossed cell to have been seen free instead left 38 cells to look at that the camera had seen,
-        against 21 with this rule, and also counted one hidden cell."""
+        counts as looked at only when every cell the line to it crosses is known free (the distance sensor saw it free,
+        or the robot stood on it or went through it), and the line crosses no cell where the sensor met something; never
+        straight ahead beyond what the sensor met. What met the sensor is on a cell: something stands there, until the
+        sensor sees it free. A box the sensor never met can hide a cell: such a cell is not counted, since nothing says
+        the way to it is free (decision of 2026-11-06). Replayed on the 18 runs of the absent mission of 2026-11-06
+        (facilitator/workshops/measures/2026-11-06-robot-hidden-cells/): the former rule (only cells where the sensor
+        met something stop the view) counted 5 cells a box hid; this one counts none, and leaves about 6 cells per run
+        to look at that the camera had seen."""
         now = time.time()
         cell_cm = self.mat["cell_cm"]
         self.went(self.col, self.row)
@@ -326,7 +331,8 @@ class Cartographer:
                     continue
                 if abs(angle) < 1 and hit is not None and d - cell_cm / 2 > hit:
                     continue  # straight ahead, behind what the sensor met
-                if not any(c in self.blocked for c in self.between((self.col, self.row), (col, row))):
+                crossed = self.between((self.col, self.row), (col, row))
+                if not any(c in self.blocked for c in crossed) and all(c in self.free or c in self.stood for c in crossed):
                     self.looked[cell_name(col, row)] = now
 
     def between(self, a, b):
@@ -344,7 +350,7 @@ class Cartographer:
     def went(self, col, row):
         """The robot stood on this cell, or went through it: nothing stands there, no card is there."""
         now = time.time()
-        self.looked[cell_name(col, row)] = now
+        self.looked[cell_name(col, row)] = self.stood[cell_name(col, row)] = now
         self.blocked.pop(cell_name(col, row), None)
 
     def coverage(self):
@@ -352,15 +358,15 @@ class Cartographer:
         stands (met by the distance sensor at two moments STANDS_FOR_S apart, not seen free since) is left out: there
         is nothing there for the camera to look at. The note gives no advice: "a last look at a cell next to a box
         costs little" sent a model round a rock for 25 calls, sure the card was under it (DeepSeek v4 Flash behind
-        Hermes, 2026-11-06). A box the distance sensor never met can still hide a cell: the Cartographer cannot know
-        it, and the caller is not asked to guess."""
+        Hermes, 2026-11-06). A cell counts only when the way to it is known free (note_looked): a box the distance
+        sensor never met cannot make it count."""
         cells = [cell_name(c, r) for r in range(self.mat["rows"]) for c in range(self.mat["cols"])]
         stands = [c for c in cells if c in self.blocked and self.blocked[c][1] - self.blocked[c][0] >= STANDS_FOR_S]
         left = [c for c in cells if c not in self.looked and c not in stands]
         return {"cells_looked_at": len(cells) - len(left) - len(stands), "cells_on_the_mat": len(cells),
                 "not_looked_at_yet": left, "something_stands_there": stands,
-                "note": "A cell counts once the robot stood still with it in the camera's cone, or stood on it; a "
-                        "cell where something stands has nothing to look at. Cards do not move: a cell looked at "
+                "note": "A cell counts once the robot stood still with it in the camera's cone and every cell between "
+                        "was seen free, or once it stood on it; a cell where something stands has nothing to look at. Cards do not move: a cell looked at "
                         "stays looked at. When no cell is left, a card that is not in cards_seen is not on the mat."}
 
     # The Referee's questions about the terrain ----------------------------------------------------------------

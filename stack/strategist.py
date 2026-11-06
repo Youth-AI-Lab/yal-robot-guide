@@ -43,7 +43,7 @@ MODELS = {"qwen-flash": "qwen/qwen3.8-flash", "deepseek": "deepseek/deepseek-v4-
 MAX_TURNS, TIMEOUT_S, RUN_CAP_USD, MAX_TOKENS = 60, 1800, 0.25, 16384  # 4096 cut Qwen's reasoning (bench, 11:30)
 FAILED_CALL_USD = 0.01  # a call that failed may have been billed: counted at least this
 STEPS = {"reach_card": "card", "set_light": "color", "find_card": "card", "survey": "card"}
-WHY = ["", "not on the mat", "no moves left", "no way there", "the robot waits for an adult", "other"]
+WHY = ["", "not on the mat", "not seen yet", "no moves left", "no way there", "the robot waits for an adult", "other"]
 RULES = """# Rules for the Strategist, the part of the robot that chooses what to do next
 
 The robot keeps its own safety rules: the Reflex and the Referee. These only guide you.
@@ -250,7 +250,9 @@ def without_model(mission):
         if do in ("find_card", "survey"):
             cards += [{"card": step["card"], "cell": c} for c in result.get("cards_seen", {}).get(step["card"], [])]
             if not cards:
-                outcome, why = "impossible", "not on the mat"
+                # "Not on the mat" only when the camera has looked at every cell it can: else, not seen yet.
+                left = pilot.cards().get("camera_coverage", {}).get("not_looked_at_yet", [None])
+                outcome, why = "impossible", "not seen yet" if left else "not on the mat"
         elif do == "reach_card" and result.get("result") == "done":
             col, row = common.cell_xy(result["cell"])
             dc, dr = pilot.STEP[result["facing"]]
