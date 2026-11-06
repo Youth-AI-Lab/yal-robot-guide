@@ -955,6 +955,64 @@ async def scenarios(sim, env):
         cards = (await a.call("seen_cards"))["cards_seen"]
         check("two like cards side by side stay two", len(cards) == 2, cards)
 
+    # What the camera has looked at: cells in its cone, unless what the distance sensor met stands between.
+    sim.fresh()
+    await asyncio.sleep(0.6)
+    async with agent(env) as a:
+        await a.call("robot_state")
+        cover = (await a.call("seen_cards"))["camera_coverage"]
+        left = set(cover["not_looked_at_yet"])
+        check("coverage, from C5 facing north: C1 to C4, B2, B3, D2, D3 (in the cone); not B4 (45 degrees)",
+              not left & {"C1", "C2", "C3", "C4", "C5", "B2", "B3", "D2", "D3"} and "B4" in left
+              and cover["cells_on_the_mat"] == 25 and cover["cells_looked_at"] == 9, cover)
+        await a.call("look_around")
+        cover = (await a.call("seen_cards"))["camera_coverage"]
+        left = set(cover["not_looked_at_yet"])
+        check("coverage after look_around: the row of C5 too", not left & {"A5", "B5", "D5", "E5"}, cover)
+        await a.call("step_forward")
+        await asyncio.sleep(0.6)
+        state = await a.call("robot_state")
+        cover = (await a.call("seen_cards"))["camera_coverage"]
+        await a.call("face", direction="east")
+        await asyncio.sleep(0.6)
+        state = await a.call("robot_state")
+        cover = (await a.call("seen_cards"))["camera_coverage"]
+        check("coverage grows as the robot goes (C4 facing east: D4, E4, E3), and robot_state counts what is left",
+              not set(cover["not_looked_at_yet"]) & {"D4", "E4", "E3"}
+              and state["cells_not_looked_at_yet"] == len(cover["not_looked_at_yet"]), (state, cover))
+
+    sim.fresh(boxes=[{"x": 65, "y": 65, "w": 20, "h": 20, "name": "box"}])
+    await asyncio.sleep(0.6)
+    async with agent(env) as a:
+        await a.call("robot_state")
+        cover = (await a.call("seen_cards"))["camera_coverage"]
+        check("coverage: a box in C3 hides C2, C1 and B2 (the line to B2 crosses C3)",
+              {"C2", "C1", "B2", "D2"} <= set(cover["not_looked_at_yet"]) and "C3" not in cover["not_looked_at_yet"]
+              and "B3" not in cover["not_looked_at_yet"], cover)
+
+    # Every cell looked at: the agent hears it once, with the cards seen.
+    state_file = Path(env["ROBOT_STATE_DIR"]) / "gateway.json"
+    sim.fresh(cards=[{"cell": "C3", "label": "water-point"}])
+    await asyncio.sleep(0.6)
+    async with agent(env) as a:
+        await a.call("robot_state")
+        saved = json.loads(state_file.read_text())
+        saved["looked"] = {chr(65 + c) + str(r + 1): saved["looked"]["C5"] for c in range(5) for r in range(5)
+                           if (c, r) != (2, 2)}
+        state_file.write_text(json.dumps(saved))
+        first = await a.call("robot_state")
+        again = await a.call("robot_state")
+        heard = [e["event"] for e in first.get("since_last_call", [])]
+        check("every cell looked at: said once, with the cards seen",
+              any("every cell" in e and "water-point" in e for e in heard)
+              and not any("every cell" in e["event"] for e in again.get("since_last_call", []))
+              and first["cells_not_looked_at_yet"] == 0, (first, again))
+    sim.fresh()
+    await asyncio.sleep(0.6)
+    async with agent(env) as a:
+        cover = (await a.call("seen_cards"))["camera_coverage"]
+        check("put back on its start cell: the coverage starts again", cover["cells_looked_at"] <= 9, cover)
+
     # A moving ball in the camera's view: which way it goes, and whether it comes closer.
     sim.fresh(cards=[{"cell": "C2", "label": "barbecue"}],
               balls=[{"from": [75, 15], "to": [75, 95], "radius": 7, "speed_cm_s": 10}])

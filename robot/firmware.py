@@ -15,6 +15,7 @@ it at any time, without asking the computer. Nothing else is understood.
                        warning=<0|1> resumes=<number of presses on Resume since the robot started>
                        pose=<number of the robot's place: +1 after each cell, stop or Resume>
                        slid=<cells reached in the last move: MOVE F 0 or 1, MOVE <d> <n> 0 to n, a turn 0>
+                       looked=<1 when it stands still and the camera's view of where it stands is believed>
                        (an adult puts the robot back on the last cell it reached, even when the
                        computer missed an EVT CELL)
     MOVE F         ->  OK MOVE F, then EVT DONE F, EVT STOP <reason> (stopped on the way: an adult must
@@ -530,7 +531,7 @@ class Firmware:
     def state_line(self):
         distance = self.hal.distance_cm()
         card = self.card_in_front()
-        return "OK STATE dist=%s card=%s battery=%d estop=%d wait_adult=%d moving=%d last_stop=%s bumper=%d warning=%d resumes=%d pose=%d slid=%d" % (
+        return "OK STATE dist=%s card=%s battery=%d estop=%d wait_adult=%d moving=%d last_stop=%s bumper=%d warning=%d resumes=%d pose=%d slid=%d looked=%d" % (
             "none" if distance is None else str(int(distance)),
             card or "none",
             int(self.hal.battery()),
@@ -543,4 +544,5 @@ class Firmware:
             self.resumes,
             self.pose,
             self.slid,
+            1 if self.motion is None and self.view_key is not None else 0,
         )

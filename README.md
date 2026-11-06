@@ -175,7 +175,7 @@ The gateway is an MCP server. Its nine tools:
 | `face(direction)` | turn on the spot towards `north`, `east`, `south` or `west`. One move, or none if it already faces it | no |
 | `set_light(color)` | `off`, `red`, `orange`, `green` or `blue` | no |
 | `wait_for_event(seconds)` | watch the robot for 1 to 30 seconds; answers as soon as something happens to it | yes |
-| `seen_cards()` | the cards the camera recognised, with the cell of each, where it was seen from, and when | yes |
+| `seen_cards()` | the cards the camera recognised, with the cell of each, where it was seen from, and when; the cells the camera has not looked at yet | yes |
 
 `look_around` and `face` count as one move each, so that an agent spends its moves on going
 somewhere, not on counting quarter turns. Tried on 5 November 2026 with Hermes: with these two
@@ -209,7 +209,11 @@ error**). The robot only believes it while it stands still. Each card that comes
 event (in `since_last_call`), and the gateway turns it into a cell, with the other cells it could be
 in: "probably F3 (could also be F2, G3)". Seen again from closer, the estimate gets better.
 `seen_cards` keeps that record, so it does not depend on the agent's memory; a card moved by hand
-leaves it when the robot sees it gone. The camera also sees the ball: twice a second, the robot
+leaves it when the robot sees it gone. It also keeps which cells the camera has looked at
+(`camera_coverage`): a cell counts once the robot stood still with it in the camera's cone, unless the
+line to it crosses a cell where the distance sensor met something, and a cell the robot stood on
+counts too. When none is left, the agent hears it once. The gateway knows boxes only through the
+distance sensor: a box it never met can still hide a cell. The camera also sees the ball: twice a second, the robot
 compares two sightings and tells when it starts coming closer, going away, or leaves its sight, and
 the gateway says where it is and which way it goes ("probably E3, moving south, getting closer to
 the robot"); `robot_state` gives the last sighting. On the page, the shaded fan is what the camera can see, the

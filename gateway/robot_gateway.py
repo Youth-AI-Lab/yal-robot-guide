@@ -11,7 +11,8 @@ It is an MCP server with nine tools, and nothing else reaches the robot:
   - face(direction)      turn on the spot towards north, east, south or west (one move)
   - set_light(color)     the light of the robot, from a short list
   - wait_for_event(s)    watch the robot for up to s seconds, until something happens (read only)
-  - seen_cards()         the cards the camera recognised, with the cell where each one is (read only)
+  - seen_cards()         the cards the camera recognised, with the cell where each one is, and the cells
+                         the camera has looked at (read only)
 Every answer also carries "since_last_call": what happened to the robot since this caller's last
 call (a bump, a warning, a stop, Resume), from the robot's own memory of its last events.
 
@@ -97,6 +98,13 @@ LANE_FOR_S = 600
 # reflex.STOP_DISTANCE_CM). The beam is narrower than the robot (5 degrees each side in the simulator,
 # TO BE COMPLETED on the robot): a free reading only says the line in front of it is clear.
 STOP_MARGIN_CM = 8
+# What the camera has looked at (seen_cards): the cells whose centre is in its cone from where the robot stood
+# still. The simulator's cone and the simulator's robot (its distance sensor this far in front of its centre);
+# the OpenMV N6's field of view and range, and the real robot's, are TO BE COMPLETED. Cards do not move during a
+# mission: what the camera looked at stays looked at, until the robot is put back on its start cell.
+CAMERA_HALF_ANGLE_DEG = 30
+CAMERA_RANGE_CM = 120
+SENSOR_FROM_CENTRE_CM = 10
 STOP_IF = {"card_ahead": "CARD", "ball_seen": "BALL", "new_card": "NEW"}
 WHY_DONE = {
     "all": "it moved all the cells asked",
@@ -159,6 +167,9 @@ class Gateway:
             self.back_fixed = saved.get("back_fixed", False)
             self.placed = saved.get("placed", {})
             self.presses = saved.get("presses", 0)
+            self.looked = saved.get("looked", {})
+            self.blocked = saved.get("blocked", {})
+            self.covered_said = saved.get("covered_said", False)
         except (OSError, ValueError, KeyError):
             start = self.mat["start"]
             self.col, self.row = ord(start["cell"][0].upper()) - ord("A"), int(start["cell"][1:]) - 1
@@ -177,6 +188,9 @@ class Gateway:
             self.back_fixed = False  # True once the cell given to the adult is final
             self.placed = {}  # cell -> when a card was last placed there for sure (kept when a box hides it)
             self.presses = 0  # the robot's count of Resume presses, at its last answer
+            self.looked = {}  # cell -> when the camera last looked at it, or the robot stood on it (time.time())
+            self.blocked = {}  # cell -> when the distance sensor last met something there (a box, a ball)
+            self.covered_said = False  # the agent was told the camera has looked at every cell it can
 
     def save_state(self):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -184,7 +198,8 @@ class Gateway:
                  "back": self.back, "moves": self.moves, "resumes_at_stop": self.resumes_at_stop,
                  "cursors": self.cursors, "poses": self.poses, "seen": self.seen,
                  "ball": self.ball, "free": self.free, "lanes": self.lanes, "way": self.way, "back_fixed": self.back_fixed,
-                 "placed": self.placed, "presses": self.presses}
+                 "placed": self.placed, "presses": self.presses, "looked": self.looked, "blocked": self.blocked,
+                 "covered_said": self.covered_said}
         (STATE_DIR / "gateway.json").write_text(json.dumps(saved) + "\n", encoding="utf-8")
 
     # The serial link -------------------------------------------------------------------------
@@ -405,7 +420,7 @@ class Gateway:
     def seen_cards(self):
         keys = ("card", "means", "cell", "could_also_be", "distance_cm", "seen_from", "at")
         cards = [{k: s[k] for k in keys} for s in sorted(self.seen, key=lambda s: s["at"])]
-        return {"cards_seen": cards,
+        return {"cards_seen": cards, "camera_coverage": self.coverage(),
                 "note": "The camera sees up to 120 cm ahead, wider when farther, and guesses the distance: the "
                         "farther the card, the less sure its cell (could_also_be). Seen again from closer, the "
                         "estimate gets better. The robot's own cell comes from counting its moves, not from a measure."}
@@ -425,6 +440,8 @@ class Gateway:
         if (self.sure and fields.get("moving") == "0" and fields.get("wait_adult") == "0"
                 and fields.get("estop") == "0" and fields.get("dist", "none") != "none"):
             self.note_free(int(fields["dist"]))
+        if self.sure and fields.get("looked") == "1":
+            self.note_looked(None if fields.get("dist", "none") == "none" else int(fields["dist"]))
         return fields
 
     def note_free(self, dist):
@@ -439,10 +456,74 @@ class Gateway:
                 break
             if k * self.mat["cell_cm"] + STOP_MARGIN_CM <= dist:
                 self.free[cell_name(col, row)] = now
+                self.blocked.pop(cell_name(col, row), None)
             else:
                 # Something is there, or behind it the sensor cannot tell: an older "free" no longer holds.
                 self.free.pop(cell_name(col, row), None)
             k += 1
+
+    def note_looked(self, dist):
+        """The robot stands still and the camera's view is believed: a cell whose centre is in the camera's cone
+        counts as looked at, unless the line to it crosses a cell where the distance sensor met something (a
+        box would hide it), or it is straight ahead beyond what the sensor met. What met the sensor is on a
+        cell: something stands there, until the sensor sees it free. A box the sensor never met can still hide
+        a cell (seen_cards says so). Replayed on nine runs of the absent mission (2026-11-06): one cell in nine
+        runs counted although a box hid it; asking every crossed cell to have been seen free instead left 38
+        cells to look at that the camera had seen, against 21 with this rule, and also counted one hidden cell."""
+        now = time.time()
+        cell_cm = self.mat["cell_cm"]
+        self.went(self.col, self.row)
+        heading = self.facing * 90
+        hit = None if dist is None else dist + SENSOR_FROM_CENTRE_CM  # from the robot's centre
+        if hit is not None:
+            dc, dr = FACING_STEP[self.facing]
+            k = round(hit / cell_cm)
+            col, row = self.col + dc * k, self.row + dr * k
+            if k >= 1 and 0 <= col < self.mat["cols"] and 0 <= row < self.mat["rows"]:
+                self.blocked[cell_name(col, row)] = now
+        for col in range(self.mat["cols"]):
+            for row in range(self.mat["rows"]):
+                dx, dy = (col - self.col) * cell_cm, (row - self.row) * cell_cm
+                d = math.hypot(dx, dy)
+                if d == 0 or d > CAMERA_RANGE_CM:
+                    continue
+                angle = (math.degrees(math.atan2(dx, -dy)) - heading + 540) % 360 - 180
+                if abs(angle) > CAMERA_HALF_ANGLE_DEG:
+                    continue
+                if abs(angle) < 1 and hit is not None and d - cell_cm / 2 > hit:
+                    continue  # straight ahead, behind what the sensor met
+                if not any(c in self.blocked for c in self.between((self.col, self.row), (col, row))):
+                    self.looked[cell_name(col, row)] = now
+
+    def between(self, a, b):
+        """The cells the straight line from the centre of cell a to the centre of cell b crosses, a and b left out."""
+        steps = 4 * max(abs(b[0] - a[0]), abs(b[1] - a[1]))
+        out = set()
+        for i in range(1, steps):
+            x = a[0] + 0.5 + (b[0] - a[0]) * i / steps
+            y = a[1] + 0.5 + (b[1] - a[1]) * i / steps
+            for col in {math.floor(x - 1e-6), math.floor(x + 1e-6)}:
+                for row in {math.floor(y - 1e-6), math.floor(y + 1e-6)}:
+                    out.add((col, row))  # on a corner: both sides
+        return {cell_name(*c) for c in out if c != tuple(a) and c != tuple(b)}
+
+    def went(self, col, row):
+        """The robot stood on this cell, or went through it: nothing stands there, no card is there."""
+        now = time.time()
+        self.looked[cell_name(col, row)] = now
+        self.blocked.pop(cell_name(col, row), None)
+
+    def coverage(self):
+        """What the camera has looked at, for the agent: a count, and the cells it has not looked at yet."""
+        cells = [cell_name(c, r) for r in range(self.mat["rows"]) for c in range(self.mat["cols"])]
+        blocked = [c for c in cells if c in self.blocked and c not in self.looked]
+        left = [c for c in cells if c not in self.looked and c not in self.blocked]
+        return {"cells_looked_at": len(cells) - len(left) - len(blocked), "cells_on_the_mat": len(cells),
+                "not_looked_at_yet": left, "something_stands_there": blocked,
+                "note": "As far as the gateway can tell: a cell counts once the robot stood still with it in the "
+                        "camera's cone, or stood on it. A box the distance sensor never met can hide a cell: when "
+                        "a card you look for is missing, a last look at a cell next to a box costs little. Cards "
+                        "do not move: a cell looked at stays looked at."}
 
     def on_lane(self, col, row):
         """A cell on the lane of a ball seen in the last LANE_FOR_S (its row or column, or the cell)."""
@@ -585,6 +666,7 @@ class Gateway:
             "warning_light_on": fields.get("warning") == "1",
             "ball_last_seen": self.ball,
             "on_a_ball_lane": self.on_lane(self.col, self.row) if self.sure else None,
+            "cells_not_looked_at_yet": len(self.coverage()["not_looked_at_yet"]),
             "last_stop": "none" if fields.get("last_stop", "none") == "none"
                          else REASONS.get(fields["last_stop"], fields["last_stop"]),
             "moves_left": self.mat["max_moves"] - self.moves,
@@ -633,6 +715,7 @@ class Gateway:
                 if kind == "F":
                     self.free[cell_name(self.col, self.row)] = self.free[cell_name(*target)] = time.time()
                     self.col, self.row = target
+                    self.went(self.col, self.row)
                 else:
                     self.facing = (self.facing + (1 if kind == "R" else -1)) % 4
                 self.ended()
@@ -732,6 +815,7 @@ class Gateway:
                 before = cell_name(self.col, self.row)
                 self.col, self.row = way[done - 1]
                 self.free[before] = self.free[cell_name(self.col, self.row)] = time.time()  # it went through them
+                self.went(self.col, self.row)
                 self.poses[pose] = [self.col, self.row, self.facing]
                 if not self.on_lane(self.col, self.row):
                     start = (self.col, self.row, self.facing)  # an adult would put it back here
@@ -770,6 +854,7 @@ class Gateway:
                 result["looked_before_it_stopped"] = looked
                 return result
             time.sleep(0.5)  # the camera names a card after 200 ms standing still
+            self.fields()  # what the camera looked at, facing this way (seen_cards)
             looked.append({"facing": FACING[self.facing], "card_ahead": result["state"]["card_ahead"],
                            "distance_ahead_cm": result["state"]["distance_ahead_cm"],
                            "what_the_camera_saw": [e["event"] for e in self.new_events()]})
@@ -832,6 +917,15 @@ class Gateway:
                     events += self.new_events()
                 except RobotNotConnected:
                     pass  # the robot does not answer now: the events wait for the next call
+                left = self.coverage()["not_looked_at_yet"]
+                if not left and not self.covered_said:
+                    self.covered_said = True
+                    names = sorted({c["card"] for c in self.seen})
+                    events.append({"event": "the camera has now looked at every cell it can reach, as far as the "
+                                   "gateway can tell (seen_cards: camera_coverage); cards seen: "
+                                   + (", ".join(names) if names else "none")})
+                elif left:
+                    self.covered_said = False
                 if events:
                     result["since_last_call"] = events
             except RobotNotConnected as e:
@@ -990,7 +1084,9 @@ def seen_cards() -> str:
     names the card in front. Call it to review the whole record, for example after a long pause. The
     camera names cards from a short list, up to 120 cm ahead in a cone that widens with distance, only
     while the robot stands still; the farther a card, the less sure its cell ("could_also_be"), and
-    seeing it again from closer makes the estimate better."""
+    seeing it again from closer makes the estimate better. "camera_coverage" lists the cells the camera
+    has not looked at yet: when a card you look for is not in "cards_seen" and no cell is left, it is
+    not on the cells the camera could reach."""
     return GATEWAY.run("seen_cards", {}, GATEWAY.seen_cards)
 
 
