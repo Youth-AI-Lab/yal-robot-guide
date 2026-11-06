@@ -185,16 +185,18 @@ tools, the models that wandered most found the card more often.
 backwards or to a side without turning, and its camera keeps looking the way it faces. One `move`
 counts as one move, however many cells (1 to 4). The robot itself checks the conditions, on each
 cell it reaches, and stops there: the agent answers seconds later (6 s between two calls, median of
-the bench of 5 November), when a ball has already rolled more than a cell. `card_ahead` is also
-checked before a slide forwards starts, so `move(..., stop_if=["card_ahead"])` forwards never drives
-onto a card (it looks the way the robot faces: it does not watch a slide sideways). Its distance
-sensor and camera only look forwards: backwards or sideways, the gateway lets it slide only into
-cells the sensor saw free in the last two minutes (`face` that way once, or `look_around`), never
-near a ball seen in the last 10 seconds, and the robot goes slower there. The sensor's beam is
-narrower than the robot (TO BE COMPLETED on the real one): a small thing near the side of a cell can
-be missed, and then the bumper stops the robot. How true a sideways slide
-is on the real wheels is TO BE COMPLETED (mecanum wheels slip more sideways). Not yet tried with a
-model.
+the bench of 5 November), when a ball has already rolled more than a cell. The robot never drives onto
+a card: forwards it always stops in front of one, and every slide stops before a cell where the
+gateway has placed a card for sure; `step_forward` refuses a cell with a card. Its distance sensor and
+camera only look forwards: backwards or sideways, the gateway lets it slide only into cells the
+sensor saw free in the last two minutes (`face` that way once, or `look_around`; the cells it has just
+been through count too), never into the lane of a ball (the row or column where one was seen
+rolling), never near a ball seen in the last 10 seconds, and the robot goes slower there. The sensor's
+beam is narrower than the robot (TO BE COMPLETED on the real one): a small thing near the side of a
+cell can be missed, and then the bumper stops the robot. How true a sideways slide is on the real
+wheels is TO BE COMPLETED (mecanum wheels slip more sideways). Tried on 6 November with Hermes and
+three cheap models: 27 missions out of 30, against 20 without `move`; the rules about cards, lanes
+and waiting came after that bench.
 
 **What the camera saw.** The camera names cards from a short list, never sends an image, and sees
 in a cone in front of the robot (30 degrees each side, up to 120 cm: the simulator's values, TO BE
@@ -282,8 +284,8 @@ such way: they read `since_last_call`.
 ```
 
 About five minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
-would, and reads in the simulator what really happened: 111 checks, all passed in the image
-2026.10.45 on 5 November 2026 (container with 2 processors, no network).
+would, and reads in the simulator what really happened: 116 checks, all passed in the image
+2026.10.45 on 6 November 2026 (container with 2 processors, no network).
 
 ---
 

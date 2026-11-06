@@ -370,12 +370,12 @@ async def scenarios(sim, env):
               and (reply["state"]["card_ahead"] or {}).get("card") == "barbecue"
               and reply["state"]["moves_left"] == MAT["max_moves"] - 1 and wire_count(sim, "MOVE") == sent + 1, (reply, r))
         reply = await a.call("move", direction="north", cells=2, stop_if=["card_ahead"])
-        check("move with a card already in front: it does not drive onto it",
-              reply.get("cells_moved") == 0 and "card" in reply.get("stopped_because", "")
-              and sim.state()["robot"]["cell"] == "C3", reply)
+        check("move with a card on the next cell: refused, nothing sent, it never drives onto a card",
+              reply.get("result") == "refused" and "never drives onto a card" in reply.get("why", "")
+              and wire_count(sim, "MOVE") == sent + 1 and sim.state()["robot"]["cell"] == "C3", reply)
         reply = await a.call("move", direction="east", cells=2)
         check("sideways into cells the sensor never saw: refused, nothing sent",
-              reply.get("result") == "refused" and "saw free" in reply.get("why", "") and wire_count(sim, "MOVE") == sent + 2,
+              reply.get("result") == "refused" and "saw free" in reply.get("why", "") and wire_count(sim, "MOVE") == sent + 1,
               reply)
         await a.call("face", direction="east")
         await a.call("face", direction="north")
@@ -387,7 +387,7 @@ async def scenarios(sim, env):
         reply = await a.call("move", direction="east")
         check("move off the mat: refused, nothing sent",
               reply.get("result") == "refused" and "outside the mat" in reply.get("why", "")
-              and wire_count(sim, "MOVE") == sent + 3, reply)
+              and wire_count(sim, "MOVE") == sent + 2, reply)
 
     sim.fresh(boxes=[{"x": 95, "y": 125, "w": 20, "h": 20, "name": "box"}])
     async with agent(env) as a:
@@ -400,19 +400,20 @@ async def scenarios(sim, env):
 
     sim.fresh()
     async with agent(env) as a:
-        await a.call("step_forward")
-        reply = await a.call("move", direction="south")
-        check("backwards into a cell the sensor never saw: refused", reply.get("result") == "refused", reply)
+        await a.call("face", direction="west")
+        reply = await a.call("move", direction="east")
+        check("backwards into a cell the sensor never saw (D5, facing west): refused", reply.get("result") == "refused",
+              reply)
         await a.call("look_around")
-        reply = await a.call("move", direction="south")
+        reply = await a.call("move", direction="east")
         r = sim.state()["robot"]
-        check("backwards after look_around: back on C5, still facing north",
-              reply.get("result") == "done" and r["cell"] == "C5" and near(r["heading"] % 360, 0, 2), (reply, r))
+        check("backwards after look_around: on D5, still facing west",
+              reply.get("result") == "done" and r["cell"] == "D5" and near(r["heading"] % 360, 270, 2), (reply, r))
 
-    sim.fresh(balls=[{"from": [75, 45], "to": [75, 45], "radius": 7, "speed_cm_s": 0}])
+    sim.fresh(balls=[{"from": [105, 15], "to": [105, 15], "radius": 7, "speed_cm_s": 0}])
     async with agent(env) as a:
-        reply = await a.call("move", direction="north", cells=3, stop_if=["ball_seen"])
-        check("move until the camera sees a ball: it stops on the first cell it reaches (C4)",
+        reply = await a.call("move", direction="north", cells=2, stop_if=["ball_seen"])
+        check("move until the camera sees a ball (D1, out of sight from C5): it stops on C4, where it sees it",
               reply.get("cells_moved") == 1 and "ball" in reply.get("stopped_because", "")
               and sim.state()["robot"]["cell"] == "C4", reply)
 
@@ -494,6 +495,49 @@ async def scenarios(sim, env):
             check(f"move with cells={bad}: refused, nothing sent, no move counted",
                   reply.get("result") == "refused" and wire_count(sim, "MOVE") == sent
                   and (await a.call("robot_state"))["moves_left"] == left, reply)
+
+    # Never onto a card: step_forward, a slide forwards without stop_if, a slide sideways past a known card.
+    sim.fresh(cards=[{"cell": "C4", "label": "barbecue"}])
+    async with agent(env) as a:
+        sent = wire_count(sim, "MOVE")
+        reply = await a.call("step_forward")
+        check("step_forward with a card on the next cell: refused, nothing sent",
+              reply.get("result") == "refused" and "never drives onto a card" in reply.get("why", "")
+              and wire_count(sim, "MOVE") == sent and sim.state()["robot"]["cell"] == "C5", reply)
+    sim.fresh(cards=[{"cell": "C2", "label": "barbecue"}])
+    async with agent(env) as a:
+        reply = await a.call("move", direction="north", cells=3)
+        check("a slide forwards without stop_if stops in front of the card (C3), not on it",
+              reply.get("cells_moved") == 2 and sim.state()["robot"]["cell"] == "C3"
+              and "card" in reply.get("stopped_because", ""), reply)
+    sim.fresh(cards=[{"cell": "E5", "label": "water-point"}])
+    async with agent(env) as a:
+        await a.call("face", direction="east")
+        await asyncio.sleep(0.6)
+        await a.call("face", direction="north")
+        reply = await a.call("move", direction="east", cells=2)
+        check("a slide sideways stops before a card the gateway placed (E5): one cell, on D5",
+              reply.get("cells_moved") == 1 and sim.state()["robot"]["cell"] == "D5"
+              and "E5" in reply.get("stopped_because", ""), reply)
+    sim.fresh()
+    async with agent(env) as a:
+        await a.call("move", direction="north")
+        reply = await a.call("move", direction="south")
+        check("back to the cell it just left: known free, the slide backwards goes, no look needed",
+              reply.get("result") == "done" and sim.state()["robot"]["cell"] == "C5", reply)
+
+    # A ball's lane: seen rolling north and south in column D, the robot never slides into it sideways.
+    sim.fresh(balls=[{"from": [105, 15], "to": [105, 75], "radius": 7, "speed_cm_s": 8}])
+    async with agent(env) as a:
+        await asyncio.sleep(3.0)
+        await a.call("robot_state")
+        await a.call("face", direction="east")
+        await a.call("face", direction="north")
+        sent = wire_count(sim, "MOVE")
+        reply = await a.call("move", direction="east")
+        check("sideways into a ball's lane (column D): refused, nothing sent",
+              reply.get("result") == "refused" and "lane" in reply.get("why", "") and wire_count(sim, "MOVE") == sent,
+              reply)
 
     # A slide interrupted on a loose cable: the gateway, the adult and the robot agree on the cell.
     sim.fresh()
@@ -721,9 +765,10 @@ async def scenarios(sim, env):
     async with agent(env) as a:
         reply = await a.call("wait_for_event", seconds=5)
         before = [e for e in reply.get("events", []) if "bumper" in e["event"]]
-        check("wait_for_event: an event from before the wait is marked so, with the real wait",
-              before and before[0].get("before_you_started_waiting") is True and reply.get("waited_seconds", 9) < 1,
-              reply)
+        check("wait_for_event: an event from before the wait is given, marked, and does not end the wait",
+              before and before[0].get("before_you_started_waiting") is True
+              and (reply.get("waited_seconds", 0) >= 4.5 or any(not e.get("before_you_started_waiting")
+                                                                  for e in reply.get("events", []))), reply)
     sim.fresh()
     async with agent(env) as a:
         await a.call("robot_state")
