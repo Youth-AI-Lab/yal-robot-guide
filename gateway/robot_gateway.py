@@ -456,15 +456,22 @@ class Gateway:
                 return True
         return False
 
-    def ball_near(self, cells):
-        """The first of these cells next to where a ball was seen less than BALL_RECENT_S ago, or None."""
+    def ball_near(self, cells, forward=False):
+        """The first of these cells where a ball seen less than BALL_RECENT_S ago could be in the way, or None.
+        Sideways or backwards (the camera does not look there): on a cell where it was seen or next to one.
+        Forwards (the camera looks, and the robot stops by itself in front of it): only on a cell where it
+        was seen, or next to one when it was coming closer. Refusing forwards near any ball seen just before
+        kept the robot from crossing at all (0 out of 3 in the mission without a card, 6 November)."""
         ball = self.ball or {}
         if not ball.get("cell") or time.time() - ball.get("t", 0) >= BALL_RECENT_S:
             return None
-        near = set()
+        seen, near = set(), set()
         for name in [ball["cell"]] + ball.get("could_also_be", []):
             c, r = ord(name[0]) - ord("A"), int(name[1:]) - 1
+            seen.add((c, r))
             near |= {(c, r), (c + 1, r), (c - 1, r), (c, r + 1), (c, r - 1)}
+        if forward and not ball.get("how", "").startswith("getting closer"):
+            near = seen
         for col, row in cells:
             if (col, row) in near:
                 return cell_name(col, row)
@@ -603,7 +610,7 @@ class Gateway:
             if self.fields().get("card", "none") != "none" or cell_name(*target) in self.card_cells():
                 return self.refused(f"a card is on the next cell ({cell_name(*target)}): the robot never drives onto a "
                                     "card", what_to_do="stop here if it is the one you look for, or go round it")
-            near = self.ball_near([target])
+            near = self.ball_near([target], forward=True)
             if near:
                 return self.refused(f"a ball was seen near {near} less than {BALL_RECENT_S} s ago",
                                     what_to_do="watch it go away (wait_for_event), then try again")
@@ -677,7 +684,7 @@ class Gateway:
             return self.refused(f"a card was seen on the next cell that way ({card_stop}): the robot never drives "
                                 "onto a card", what_to_do="stop here if it is the one you look for, or go round it")
         if kind == "F":
-            near = self.ball_near(way)
+            near = self.ball_near(way, forward=True)
             if near:
                 return self.refused(f"a ball was seen near {near} less than {BALL_RECENT_S} s ago",
                                     what_to_do="watch it go away (wait_for_event), then try again")
@@ -921,8 +928,8 @@ def robot_state() -> str:
 
 def step_forward() -> str:
     """Move the robot one cell forwards, then stop. The robot refuses when something is in front,
-    and stops by itself if something appears. Never off the mat, never onto a card, never near a ball
-    seen in the last 10 seconds. If the result is "stopped",
+    and stops by itself if something appears. Never off the mat, never onto a card, never onto a cell where
+    a ball was seen in the last 10 seconds (nor next to one that was coming closer). If the result is "stopped",
     do what "what_to_do" says before anything else. The answer gives the new state, with the card in
     front ("card_ahead") and what happened meanwhile ("since_last_call"), cards seen included."""
     return GATEWAY.run("step_forward", {}, lambda: GATEWAY.move("MOVE F", "F"), move=True)
@@ -944,8 +951,8 @@ def move(direction: Literal["north", "east", "south", "west"], cells: int = 1,
     way it faces: in any other direction it slides only into cells the sensor saw free in the last two
     minutes (face that way once, or look_around; the cells it has just been through count too), never into
     the lane of a ball (the row or column where one was seen rolling) and never near a ball seen just
-    before (from far, a lane may cover two rows or columns); forwards too, never near a ball seen just
-    before. The sensor's beam
+    before (from far, a lane may cover two rows or columns); forwards, never onto a cell where a ball was
+    seen just before, nor next to one that was coming closer. The sensor's beam
     is narrow, so a small thing near the side of a cell can be missed, and then the bumper stops the
     robot. The answer says how many cells it moved and why it stopped; "stopped" means an adult must
     come, as for step_forward."""
