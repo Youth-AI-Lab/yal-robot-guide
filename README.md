@@ -443,7 +443,8 @@ network). A real Open WebUI (0.12.4) with a fake model, then with Albert's `gemm
 Interpreter, was tried apart, not in these checks.
 
 [ci/probe_tiers.py](ci/probe_tiers.py) goes further, one tier at a time (`--tier reflex`, `referee`,
-`cartographer`, `pilot`, `strategist`): a generator that only knows the tier's language (random, or a small local
+`cartographer`, `pilot`, `strategist`, `interpreter`; for the Interpreter, a model plays it with
+[interpreter/feurisson.md](interpreter/feurisson.md), and the group is a bank of sentences, a small model, or both): a generator that only knows the tier's language (random, or a small local
 model through Ollama, with `--examples` for good and bad examples) writes its inputs, many times over, while fakes
 below it draw the world (touches, delays, sensor failures, refusals, a robot driven by hand); rules are checked after
 every call, and a run that breaks one is kept, to replay without the model. `--mutants` checks the probe itself:

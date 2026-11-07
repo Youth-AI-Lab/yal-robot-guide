@@ -482,7 +482,11 @@ def check_mutants(runs, steps):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--tier", default="reflex", choices=["reflex", "referee", "cartographer", "pilot", "strategist"])
+    parser.add_argument("--tier", default="reflex",
+                        choices=["reflex", "referee", "cartographer", "pilot", "strategist", "interpreter"])
+    parser.add_argument("--interpreter-model", default="ollama:qwen3:8b",
+                        help="interpreter tier: the model that plays it, ollama:<model> or albert:<model> (key on stdin)")
+    parser.add_argument("--lang", default="both", choices=["fr", "en", "both"], help="interpreter tier: the group's")
     parser.add_argument("--generator", default="random", help="random, or ollama:<model>")
     parser.add_argument("--persona", default="careful", choices=sorted(PERSONAS))
     parser.add_argument("--runs", type=int, default=10)
@@ -497,8 +501,9 @@ def main():
     if args.tier != "reflex":
         sys.path.insert(0, str(Path(__file__).resolve().parent))
         sys.exit(importlib.import_module("probe_" + args.tier).main(args))
-    if args.generator != "random" and not (args.generator.startswith("ollama:") and len(args.generator) > 7):
-        parser.error("--generator is random, or ollama:<model>")
+    if args.generator != "random" and not (args.generator.startswith(("ollama:", "mixed:ollama:"))
+                                          and not args.generator.endswith(":")):
+        parser.error("--generator is random, ollama:<model>, or (interpreter) mixed:ollama:<model>")
     if args.mutants:
         caught = check_mutants(args.runs, args.steps)
         print(json.dumps({"runs_per_mutant": args.runs, "runs_that_caught_it": caught,
