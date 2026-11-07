@@ -57,6 +57,26 @@ BLIND = min(TOP, FIRMWARE.HARD_BLIND_SPEED_CM_S)
 MAX_AGE = min(getattr(REFLEX, "DISTANCE_MAX_AGE_MS", FIRMWARE.HARD_DISTANCE_MAX_AGE_MS),
               FIRMWARE.HARD_DISTANCE_MAX_AGE_MS)
 
+# Examples added to the language with --examples, built from the commonest mistakes of the small models
+# (facilitator/workshops/measures/2026-11-07-robot-probe-reflex/): each wrong line with what to write instead.
+EXAMPLES = """Examples of commands (each is one whole line you send):
+    HELLO
+    STATE
+    MOVE F
+    MOVE R 2
+    MOVE F 3 UNTIL CARD,BALL
+    TURN L
+    LED green
+    HOLD
+Lines that are NOT commands, and what to send instead:
+    OK MOVE F            this is the robot's answer, never yours: send MOVE F
+    OK PONG              the robot's answer: send PING
+    MOVE <d> <n>         a pattern, not a command: send MOVE L 2 (a real direction, a real number)
+    MOVE F 1000          at most 4 cells: send MOVE F 4
+    MOVE F 2 UNTIL CARD, BALL   no space after the comma: send MOVE F 2 UNTIL CARD,BALL
+    EVT SEEN:dry-grass:3:37:1   the robot says EVT lines, never you: send STATE
+Send only a command, never an answer of the robot."""
+
 PERSONAS = {
     "careful": "You are the Referee of a small robot: the computer that sends it one command per line. Send commands "
                "that drive it around safely and read its state. Follow the protocol exactly.",
@@ -273,7 +293,7 @@ def random_line(rng, persona):
     return rng.choice(JUNK if persona == "careless" and rng.random() < 0.5 else WORDS)
 
 
-def ollama_line(model, persona, history, seed):
+def ollama_line(model, persona, history, seed, system=None, examples=False):
     """One line from a small local model: the protocol, then the exchanges as turns of a conversation (what it sent,
     what the robot answered), and "your next command". A first try gave the exchanges as one text with > and <: the
     model copied the robot's answers (qwen3:1.7b, 134 lines in 150 were "OK MOVE F")."""
@@ -281,7 +301,8 @@ def ollama_line(model, persona, history, seed):
     window = history[-40:]
     while window and not window[0].startswith("> "):
         window = window[1:]  # start the window on a command of the caller
-    messages = [{"role": "system", "content": PERSONAS[persona] + "\n\nThe protocol:\n\n" + LANGUAGE}]
+    messages = [{"role": "system", "content": system or PERSONAS[persona] + "\n\nThe protocol:\n\n" + LANGUAGE
+                 + ("\n\n" + EXAMPLES if examples else "")}]
     first = "The robot is on. Your first command." if len(history) <= 40 else \
         "Earlier exchanges are left out. Your next command."
     turn = []
@@ -303,7 +324,7 @@ def ollama_line(model, persona, history, seed):
         messages.append({"role": "user", "content": ("The robot answered:\n" + "\n".join(turn) if turn else
                                                      "The robot answered nothing.") + end})
     body = {"model": model, "stream": False, "think": False,
-            "options": {"seed": seed, "temperature": 0.8, "num_predict": 40}, "messages": messages}
+            "options": {"seed": seed, "temperature": 0.8, "num_predict": 120}, "messages": messages}
     request = urllib.request.Request(url, data=json.dumps(body).encode(), headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(request, timeout=120) as r:
         text = json.loads(r.read())["message"]["content"]
@@ -312,7 +333,7 @@ def ollama_line(model, persona, history, seed):
 
 
 # --- one run ------------------------------------------------------------------------------------------------------------
-def run(seed, generator, persona, steps, replay=None, firmware=FIRMWARE, reflex=REFLEX):
+def run(seed, generator, persona, steps, replay=None, firmware=FIRMWARE, reflex=REFLEX, examples=False):
     rng = random.Random(seed)  # the lines of the random generator
     pace = random.Random(seed * 31 + 7)  # how long the robot lives between two lines, and the heartbeat
     board = Board(random.Random(seed * 7919 + 1))
@@ -329,7 +350,7 @@ def run(seed, generator, persona, steps, replay=None, firmware=FIRMWARE, reflex=
             line = random_line(rng, persona)
         else:
             try:
-                line = ollama_line(generator[len("ollama:"):], persona, history, seed * 1000 + n)
+                line = ollama_line(generator[len("ollama:"):], persona, history, seed * 1000 + n, examples=examples)
             except (OSError, ValueError, KeyError) as e:
                 error = f"model: {type(e).__name__}: {e}"
                 break
@@ -362,6 +383,28 @@ def run(seed, generator, persona, steps, replay=None, firmware=FIRMWARE, reflex=
             "error": error}
 
 
+def example_lines(text):
+    """The lines of an EXAMPLES text a model could copy as they are: each example, and each correction after "send"."""
+    out = set()
+    for line in text.splitlines():
+        parts = re.split(r"\s{2,}", line.strip())
+        if not parts[0] or parts[0].endswith(":") or parts[0].startswith("Send only"):
+            continue
+        out.add(parts[0])
+        found = re.search(r"(?:send|:)\s+(.+?)(?:\s\(.*\))?$", parts[-1]) if len(parts) > 1 else None
+        if found:
+            out.add(found.group(1).strip())
+    return out
+
+
+def variety(lines, examples_text):
+    """How varied the lines are (distinct ones), and how many are an example copied as it is: examples make a small
+    model write valid lines, but it may then only copy them (qwen3:1.7b on the Referee: 2 distinct lines in 150)."""
+    copies = example_lines(examples_text)
+    return {"distinct_share": round(len(set(lines)) / len(lines), 3) if lines else None,
+            "copied_from_examples_share": round(sum(1 for l in lines if l in copies) / len(lines), 3) if lines else None}
+
+
 def summary(results, generator, persona):
     lines = [l for r in results for l in r["sent"]]
     answers = [a for r in results for a in r["answers"]]
@@ -377,7 +420,7 @@ def summary(results, generator, persona):
     mistakes = collections.Counter(l for r in results for l, a in zip(r["sent"], r["answers"])
                                    if a and a.startswith("ERR unknown"))
     return {"generator": generator, "persona": persona, "runs": len(results), "lines_sent": len(lines),
-            "empty_lines": sum(1 for l in lines if not l.strip()), "answers": dict(words),
+            "empty_lines": sum(1 for l in lines if not l.strip()), **variety(lines, EXAMPLES), "answers": dict(words),
             "accepted_share": round(words["OK"] / len(lines), 3) if lines else None,
             "not_understood_share": round(words["ERR unknown"] / len(lines), 3) if lines else None,
             "commonest_not_understood": mistakes.most_common(8),
@@ -439,7 +482,7 @@ def check_mutants(runs, steps):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
-    parser.add_argument("--tier", default="reflex", choices=["reflex"])
+    parser.add_argument("--tier", default="reflex", choices=["reflex", "referee", "cartographer", "pilot", "strategist"])
     parser.add_argument("--generator", default="random", help="random, or ollama:<model>")
     parser.add_argument("--persona", default="careful", choices=sorted(PERSONAS))
     parser.add_argument("--runs", type=int, default=10)
@@ -448,7 +491,12 @@ def main():
     parser.add_argument("--out")
     parser.add_argument("--replay", help="a violation file: the same lines and the same world, no model")
     parser.add_argument("--mutants", action="store_true", help="check the probe: it must catch each mutant")
+    parser.add_argument("--examples", action="store_true",
+                        help="add good and bad examples to the language the model reads (from its commonest mistakes)")
     args = parser.parse_args()
+    if args.tier != "reflex":
+        sys.path.insert(0, str(Path(__file__).resolve().parent))
+        sys.exit(importlib.import_module("probe_" + args.tier).main(args))
     if args.generator != "random" and not (args.generator.startswith("ollama:") and len(args.generator) > 7):
         parser.error("--generator is random, or ollama:<model>")
     if args.mutants:
@@ -466,12 +514,12 @@ def main():
     out.mkdir(parents=True, exist_ok=True)
     results = []
     for k in range(args.runs):
-        result = run(args.seed + k, args.generator, args.persona, args.steps)
+        result = run(args.seed + k, args.generator, args.persona, args.steps, examples=args.examples)
         results.append(result)
         if result["broken"]:
             (out / f"violation-{result['seed']}.json").write_text(json.dumps(dict(result, persona=args.persona),
                                                                               indent=1) + "\n", encoding="utf-8")
-    report = summary(results, args.generator, args.persona)
+    report = dict(summary(results, args.generator, args.persona), examples=args.examples, first_seed=args.seed)
     (out / "summary.json").write_text(json.dumps(report, indent=1) + "\n", encoding="utf-8")
     (out / "runs.jsonl").write_text("".join(json.dumps({k: r[k] for k in ("seed", "sent", "answers", "error")}) + "\n"
                                             for r in results), encoding="utf-8")

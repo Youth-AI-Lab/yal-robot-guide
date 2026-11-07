@@ -370,12 +370,15 @@ class Cartographer:
             return out
 
         def line(key):
+            """The lane in the new frame; a ball's cell that falls off it is forgotten, like the cells, else the next
+            frame would meet an empty name."""
             kind, _, value = key.partition(":")
             if kind == "cell":
-                return "cell:" + (cell(value) or "")
+                return "cell:" + cell(value) if cell(value) else None
             a = (0, int(value)) if kind == "row" else (int(value), 0)
             b = (1, int(value)) if kind == "row" else (int(value), 1)
             (ac, ar, _), (bc, br, _) = pose(*a), pose(*b)
+            # A row or column outside the frame is kept: it comes back on the mat when the place is found again.
             return f"row:{ar}" if ar == br else f"col:{ac}"
 
         self.col, self.row, self.facing = pose(self.col, self.row, self.facing)
@@ -385,7 +388,7 @@ class Cartographer:
         self.free, self.looked, self.placed, self.blocked = (cells(self.free), cells(self.looked), cells(self.placed),
                                                              cells(self.blocked))
         self.boxes = cells(self.boxes)
-        self.lanes = {line(k): v for k, v in self.lanes.items()}
+        self.lanes = {line(k): v for k, v in self.lanes.items() if line(k)}
         if self.ball and self.ball.get("from"):
             b = dict(self.ball, **{"from": list(pose(*self.ball["from"]))})
             if b.get("cell"):
@@ -958,7 +961,7 @@ class Cartographer:
             "waiting_for_adult": fields.get("wait_adult") == "1" or not self.sure,
             "bumper_touched": fields.get("bumper") == "1",
             "warning_light_on": fields.get("warning") == "1",
-            "ball_last_seen": self.ball,
+            "ball_last_seen": self.ball_seen(),
             "on_a_ball_lane": self.on_lane((self.col, self.row)) if known else None,
             "cells_not_looked_at_yet": None if self.frame else len(self.coverage()["not_looked_at_yet"]),
             "last_stop": "none" if fields.get("last_stop", "none") == "none"
@@ -979,6 +982,14 @@ class Cartographer:
                                        "rules, once the camera sees it, settles it), then step_forward where the way is "
                                        "free")
         return state
+
+    def ball_seen(self):
+        """The last sighting of a ball, for the caller: in a frame relative to the start, no cell and no side of the
+        mat (they would name places of that frame), only how long ago, how it moved and where it was seen from."""
+        if not self.frame or not self.ball:
+            return self.ball
+        return dict(self.ball, cell=None, could_also_be=[], moving=None,
+                    where="not known yet: the Cartographer does not know yet where the robot is on the mat")
 
     def seen_cards(self):
         keys = ("card", "means", "cell", "could_also_be", "distance_cm", "seen_from", "at")
@@ -1009,8 +1020,9 @@ class Cartographer:
     def step_forward(self):
         if not self.sure:
             return self.refused("wait_adult", what_to_do=self.adult_instruction())
-        target = self.ahead()
         fields = self.fields()
+        # After the reading: it can settle or lose the place, and the cells change frame.
+        target = self.ahead()
         card_ahead = fields.get("card", "none") != "none"
         start = (self.col, self.row)
         if self.frame:
@@ -1096,8 +1108,12 @@ class Cartographer:
         if self.frame:
             return self.say({"result": "refused", "rule": "position_unknown"})
         turns = (FACING.index(direction) - self.facing) % 4
-        result = {"result": "done", "state": self.robot_state()}
-        for n, kind in enumerate({0: "", 1: "R", 2: "RR", 3: "L"}[turns]):
+        if not turns:
+            return {"result": "done", "state": self.robot_state()}
+        # No reading between the plan and the first turn: a reading can lose the place, and the turns with it.
+        for n, kind in enumerate({1: "R", 2: "RR", 3: "L"}[turns]):
+            if n > 0 and self.frame:
+                return result  # the last turn lost the place: no second turn towards a side of the mat
             if n > 0 and self.hold_wanted():
                 return {"result": "paused", "why": "the mission was paused or stopped: the robot stopped turning",
                         "state": self.robot_state()}

@@ -93,10 +93,15 @@ class Pilot:
 
     def configure(self, settings):
         """The settings of a new mission: the defaults, then the personality's bricks (a setting not given goes back to
-        its default: a mission never keeps the bricks of the one before)."""
+        its default: a mission never keeps the bricks of the one before). What it knows of the mat stays; the robot's
+        state is read again at its next move, even when a setting is refused (no setting changes then)."""
+        # Between two missions someone may drive the robot by hand, and the Referee counts the moves of each mission
+        # from zero: the state read before is not the robot's any more.
+        self.state = {}
+        self.moves_left = (RULES.get("limits") or {}).get("moves")
         for key, value in (settings or {}).items():
             if key not in SETTINGS:
-                raise ValueError(f"no setting {key} for the Pilot")  # checked first: nothing changed
+                raise ValueError(f"no setting {key} for the Pilot")  # checked first: no setting changed
             if not isinstance(value, type(SETTINGS[key]["default"])) or isinstance(value, bool) != isinstance(
                     SETTINGS[key]["default"], bool):
                 raise ValueError(f"the setting {key} is a {type(SETTINGS[key]['default']).__name__}")
@@ -179,7 +184,9 @@ class Pilot:
 
     def here(self):
         if not self.state.get("position_known"):
-            self.read(command("robot_state"))
+            answer = self.read(command("robot_state"))
+            if not self.state:  # the robot did not answer, and nothing was read since the mission began: never move
+                raise Stuck(f"the robot could not find where it is on the mat: {answer.get('why', 'no state')}")
         if self.state.get("waiting_for_adult"):
             self.wait_for_adult()
         if not self.state.get("position_known"):
@@ -227,7 +234,7 @@ class Pilot:
         answer = command("seen_cards")
         if "cards_seen" not in answer:
             raise Stuck(f"the Cartographer did not give the cards seen: {answer.get('why', answer.get('result'))}")
-        return answer["cards_seen"]
+        return [s for s in answer["cards_seen"] if s.get("cell")]  # no cell while the place on the mat is unknown
 
     def cards(self):
         """{card: [(cell, sure)]} from the Cartographer's record."""
@@ -248,18 +255,20 @@ class Pilot:
 
     def face(self, direction):
         if self.state.get("facing") != direction:
-            self.check(self.read(command("face", direction)))
+            answer = self.read(command("face", direction))
+            if not self.check(answer) and "state" not in answer:
+                self.read(command("robot_state"))  # a refusal carries no state, and a first quarter turn may be done
         return self.state.get("facing") == direction
 
     def leg(self, direction, cells):
         """Face the way, then go forwards: the distance sensor and the camera watch the way."""
         dc, dr = STEP[direction]
+        start = self.state.get("cell")
         for _ in range(BALL_WAITS):
             if self.short(1):
                 raise Stuck("no moves left")
-            if not self.face(direction):
-                self.here()
-                continue
+            if not self.face(direction) or self.state.get("cell") != start:
+                return 0  # plan again: finding its place or an adult's help may move the robot first
             ball = self.state.get("ball_last_seen") or {}
             if self.settings["careful_balls"] and self.ball_recent() and "closer" in ball.get("how", ""):
                 command("wait_for_event", 5)  # cross only when the ball goes away
@@ -315,15 +324,17 @@ class Pilot:
             (c, r), _ = self.here()
             if (c, r) in goals:
                 return True
-            way = self.path(goals, self.card_cells() - goals)
+            if self.settings["look_each_leg"]:
+                self.look_around()  # before the plan: what it sees changes the way, and leaving a ball's lane moves it
+                (c, r), _ = self.here()
+                if (c, r) in goals:
+                    return True
+            cards = self.card_cells()
+            way = self.path(goals - cards, cards)  # a card seen on the way may lie on a goal
             if way is None:
                 return False
             dc, dr = way[0][0] - c, way[0][1] - r
             direction = next(d for d, s in STEP.items() if s == (dc, dr))
-            if self.settings["look_each_leg"]:
-                self.look_around()
-                if self.is_blocked(way[0]) or way[0] in self.card_cells():
-                    continue  # what it just saw changes the way
             n = 1
             while n < len(way) and n < self.settings["max_leg"] and \
                     (way[n][0] - way[n - 1][0], way[n][1] - way[n - 1][1]) == (dc, dr):
@@ -364,7 +375,8 @@ class Pilot:
         if looked:
             self.covered.add((c, r))
             self.looked_from.add((c, r))
-        self.check(answer)
+        if not self.check(answer) and "state" not in answer:
+            self.read(command("robot_state"))  # refused after a first quarter turn: the robot faces another way
         return answer
 
     def next_vantage(self):
@@ -528,9 +540,13 @@ def go_to_cell(cell):
     if not (len(cell) >= 2 and cell[0] in "ABCDEFGH"[:COLS] and cell[1:].isdigit() and 1 <= int(cell[1:]) <= ROWS):
         return {"result": "refused", "why": f"{cell} is not a cell of the mat"}
     target = cell_xy(cell)
+    refused = {"result": "refused", "why": f"a card is on {cell}: the robot never drives onto a card; go to a cell next "
+                                           "to it and face it"}
     if target in PILOT.card_cells():
-        return {"result": "refused", "why": f"a card is on {cell}: the robot never drives onto a card; go to a cell "
-                                            "next to it and face it"}
+        return refused
+    PILOT.here()  # the cells of the record mean something once the robot knows where it is on the mat
+    if target in PILOT.card_cells():
+        return refused
     there = PILOT.travel({target})
     (c, r), facing = PILOT.here()
     answer = {"result": "done" if there else "not there", "cell": cell_name(c, r), "facing": facing, "state": PILOT.state}

@@ -79,9 +79,11 @@ def personality(spec):
         if not spec.replace("-", "").replace("_", "").isalnum() or spec == "bricks" or not path.exists():
             raise Refused(f"no personality {spec!r} in stack/personality/")
         spec = common.load_json(path)["bricks"]
+    elif spec is not None and not isinstance(spec, list):
+        raise Refused(f"a personality is a name of stack/personality/ or a list of bricks: {spec!r}")
     settings, texts = {}, []
     for name in spec or []:
-        brick = library.get(name)
+        brick = library.get(name) if isinstance(name, str) else None
         if brick is None:
             raise Refused(f"no brick {name!r} in the library")
         if brick["kind"] == "pilot":
@@ -99,12 +101,12 @@ def task(mission):
     words = []
     for step in mission["steps"]:
         do = step.get("do") if isinstance(step, dict) else None
-        if do not in STEPS or set(step) != {"do", STEPS[do]}:
+        if not isinstance(do, str) or do not in STEPS or set(step) != {"do", STEPS[do]}:
             raise Refused(f"a step is one of {', '.join(STEPS)}, with one argument: {step!r}")
         value = step[STEPS[do]]
-        if STEPS[do] == "card" and value not in cards:
+        if STEPS[do] == "card" and (not isinstance(value, str) or value not in cards):
             raise Refused(f"no card {value!r} on the list of cards the camera knows (mat.json)")
-        if STEPS[do] == "color" and value not in COLORS:
+        if STEPS[do] == "color" and (not isinstance(value, str) or value not in COLORS):
             raise Refused(f"no colour {value!r}")
         words.append({
             "reach_card": f'Go to the card "{value}": stop right in front of it, facing it.',
@@ -254,12 +256,16 @@ def without_model(mission):
         else:
             result = pilot.operate(pilot.explore, look_for=step["card"] if do == "find_card" else None)
         if do in ("find_card", "survey"):
-            found = [{"card": step["card"], "cell": c} for c in result.get("cards_seen", {}).get(step["card"], [])]
+            seen = result.get("cards_seen", {}).get(step["card"], [])
+            # Only a cell of the mat: in a frame relative to the start, the Cartographer has no cell to give.
+            found = [{"card": step["card"], "cell": c} for c in seen if c in pilot.CELLS]
             cards += found
             if not found:
                 # "Not on the mat" only when the camera has looked at every cell it can: else, not seen yet.
                 left = pilot.cards().get("camera_coverage", {}).get("not_looked_at_yet", [None])
-                outcome, why = "impossible", "not seen yet" if left else "not on the mat"
+                # left is None while the place on the mat is unknown: nothing is counted, nothing can be concluded.
+                outcome, why = "impossible", ("the robot does not know where it is" if seen or left is None
+                                              else "not seen yet" if left else "not on the mat")
         elif do == "reach_card" and result.get("result") == "done":
             col, row = common.cell_xy(result["cell"])
             dc, dr = pilot.STEP[result["facing"]]
@@ -281,8 +287,8 @@ def without_model(mission):
 
 def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_USD):
     """One mission, in a new conversation. Returns the report."""
+    words = task(mission)  # first: it refuses a mission that is not an object
     settings, texts = personality(mission.get("personality"))
-    words = task(mission)
     pilot.PILOT.configure(settings)
     pilot.OBEY_MISSION_CONTROL = True
     common.mission_begins()

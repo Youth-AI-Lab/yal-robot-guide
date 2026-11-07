@@ -1516,6 +1516,133 @@ def stack_scenarios(sim, env):
           and (state.get("counts") or {}).get("limits_per_mission") == {"commands": 2}
           and (state.get("counts") or {}).get("cells") == 2, (third, state))
 
+    # Found by the tier probes (ci/probe_tiers.py, 2026-11-07): each check fails on the stack before the fix.
+    # A step whose own reading settles the place: the cell ahead is taken after that reading, on the mat.
+    script = ("import json, sys; sys.path.insert(0, 'stack'); import cartographer; "
+              f"mat = {MAT!r}; rules = dict(json.load(open('stack/rules.json')), start='unknown'); "
+              "c = cartographer.Cartographer(mat, rules); sent = []; "
+              "c.fields = lambda: (c.frame and c.settle([2, 4, 0], 'a test'), {'card': 'none', 'dist': '200'})[1]; "
+              "c.referee.step = lambda t, target, card: sent.append(list(target)) or {'result': 'refused', 'rule': 'off_mat'}; "
+              "c.referee.step_blind = lambda t, target, *a: sent.append(['blind'] + list(target)) or {'result': 'refused', 'rule': 'off_mat'}; "
+              "c.step_forward(); print(json.dumps(sent))")
+    fresh = Path(tempfile.mkdtemp(dir=env["ROBOT_STATE_DIR"]))  # a Cartographer of its own: no terrain.json yet
+    done = subprocess.run([PYTHON, "-I", "-c", script], env=dict(env, ROBOT_STATE_DIR=str(fresh)), cwd=GUIDE,
+                          capture_output=True, text=True, timeout=60)
+    sent = json.loads(done.stdout or "null")
+    check("a step whose own reading settles the place: the Referee judges the cell ahead on the mat (C4), not a cell "
+          "of the frame relative to the start", sent == [[2, 3]], (sent, done.stderr[-300:]))
+
+    # A ball's lane on a cell that falls off the mat when the place is found: forgotten, never 'cell:'.
+    script = ("import json, sys, time; sys.path.insert(0, 'stack'); import cartographer; "
+              f"mat = {MAT!r}; rules = dict(json.load(open('stack/rules.json')), start='unknown'); "
+              "c = cartographer.Cartographer(mat, rules); now = time.time(); "
+              "c.lanes = {'cell:A1': now, 'col:0': now, 'row:2': now}; "
+              "c.settle([2, 4, 0], 'a test'); found = dict(c.lanes); "
+              "c.unsettle(None, 1); print(json.dumps([sorted(found), sorted(c.lanes)]))")
+    fresh = Path(tempfile.mkdtemp(dir=env["ROBOT_STATE_DIR"]))  # a Cartographer of its own: no terrain.json yet
+    done = subprocess.run([PYTHON, "-I", "-c", script], env=dict(env, ROBOT_STATE_DIR=str(fresh)), cwd=GUIDE,
+                          capture_output=True, text=True, timeout=60)
+    lanes = json.loads(done.stdout or "null")
+    check("a ball's lane on a cell that falls off the mat when the place is found is forgotten (never an empty name), "
+          "the row kept, and the place can be lost again", lanes is not None and "cell:" not in lanes[0] + lanes[1]
+          and "cell:A1" not in lanes[0] and "row:2" in lanes[0], (lanes, done.stderr[-300:]))
+
+    # Place unknown: the last ball seen is given without a cell (a cell of the frame relative to the start means nothing).
+    script = ("import json, sys, time; sys.path.insert(0, 'stack'); import cartographer; "
+              f"mat = {MAT!r}; rules = dict(json.load(open('stack/rules.json')), start='unknown'); "
+              "c = cartographer.Cartographer(mat, rules); "
+              "c.ball = {'cell': 'E3', 'could_also_be': ['E2'], 'moving': 'south', 'how': 'getting closer to the robot', "
+              "'seen_from': 'where it started, facing the way it faced at the start', 'from': [4, 4, 0], 'at': '12:00:00', "
+              "'t': time.time()}; "
+              "c.fields_looked = lambda: {'card': 'none', 'dist': 'none'}; "
+              "print(json.dumps(c.robot_state()['ball_last_seen']))")
+    fresh = Path(tempfile.mkdtemp(dir=env["ROBOT_STATE_DIR"]))  # a Cartographer of its own: no terrain.json yet
+    done = subprocess.run([PYTHON, "-I", "-c", script], env=dict(env, ROBOT_STATE_DIR=str(fresh)), cwd=GUIDE,
+                          capture_output=True, text=True, timeout=60)
+    ball = json.loads(done.stdout or "null") or {}
+    check("place unknown: the last ball seen has no cell and no side of the mat, only how it moved and when",
+          ball.get("cell") is None and ball.get("could_also_be") == [] and ball.get("moving") is None
+          and ball.get("how") == "getting closer to the robot" and ball.get("t"), (ball, done.stderr[-300:]))
+
+    # Two missions in one process (the Interpreter's link): between them the robot is driven back by hand, and the
+    # Pilot's count of the first mission is used up. The second mission reads the robot's state again.
+    six = with_rules("six-moves", limits={"moves": 6})
+    sim.act(do="load_world", mat=big, world=world)
+    script = ("import json, sys; sys.path.insert(0, 'stack'); import pilot, strategist; "
+              "one = {'steps': [{'do': 'reach_card', 'card': 'barbecue'}]}; first = strategist.run(one, model='none'); "
+              "pilot.OBEY_MISSION_CONTROL = False; pilot.move('south', 2); pilot.PILOT.moves_left = 0; "
+              "print(json.dumps([first, strategist.run(one, model='none')]))")
+    done = subprocess.run([PYTHON, "-I", "-c", script], env=six, cwd=GUIDE, capture_output=True, text=True, timeout=120)
+    first, second = (json.loads(done.stdout) if done.stdout else [{}, {}])
+    r = sim.state()["robot"]
+    check("two missions in one process, the robot moved back by hand between them: the second starts from where the "
+          "robot is, with the moves of a new mission, and stops in front of the barbecue again",
+          first.get("outcome") == "done" and second.get("outcome") == "done" and "no moves left" not in str(second)
+          and r["cell"] == "C3" and r["collisions"] == 0, (first, second, r, done.stderr[-400:]))
+
+    # A card seen while the place on the mat is unknown has no cell in the record yet: the Pilot finds its place first,
+    # then refuses a cell that holds a card.
+    unknown = with_rules("unknown", start="unknown")
+    sim.act(do="load_world", mat=big, world={"cards": [{"cell": "C3", "label": "barbecue"}], "boxes": [], "balls": []})
+    time.sleep(0.6)
+    script = ("import json, sys; sys.path.insert(0, 'stack'); import pilot; pilot.robot_state(); "
+              "print(json.dumps([pilot.cards(), pilot.go_to_cell('C3')]))")
+    done = subprocess.run([PYTHON, "-I", "-c", script], env=unknown, cwd=GUIDE, capture_output=True, text=True, timeout=120)
+    record, reply = (json.loads(done.stdout) if done.stdout else [{}, {}])
+    r = sim.state()["robot"]
+    check("start unknown, a card seen before the place is found (no cell in the record): go_to_cell finds its place, "
+          "then refuses the card's cell, no error", any(s.get("cell") is None for s in record.get("cards_seen", []))
+          and reply.get("result") == "refused" and "a card is on C3" in reply.get("why", "") and r["cell"] == "C5"
+          and r["collisions"] == 0, (record, reply, r, done.stderr[-400:]))
+
+    # The second quarter turn of a face refused (the adults allow one command): the refusal carries no state, the
+    # Pilot reads it again and says where the robot really faces.
+    one = with_rules("one-command", limits={"commands": 1})
+    sim.act(do="load_world", mat=big, world={"cards": [], "boxes": [], "balls": []})
+    script = ("import json, sys; sys.path.insert(0, 'stack'); import common, pilot; common.mission_begins(); "
+              "pilot.state(); print(json.dumps(pilot.face_towards('south')))")
+    done = subprocess.run([PYTHON, "-I", "-c", script], env=one, cwd=GUIDE, capture_output=True, text=True, timeout=60)
+    reply = json.loads(done.stdout or "{}")
+    r = sim.state()["robot"]
+    check("face south with one command allowed: the second quarter turn is refused, the Pilot answers not done with "
+          "the state read again, facing east as the robot does", reply.get("result") == "not done"
+          and (reply.get("state") or {}).get("facing") == "east" and near(r["heading"] % 360, 90, 2),
+          (reply, r, done.stderr[-400:]))
+
+    # A mission file of the wrong shape, straight to strategist.py: the closed refusal, never a traceback.
+    missions_dir = Path(env["ROBOT_STATE_DIR"]) / "missions"
+    bad_file = Path(env["ROBOT_STATE_DIR"]) / "bad-mission.json"
+    light = [{"do": "set_light", "color": "green"}]
+    for bad, what in ((light, "a JSON array, not an object"),
+                      ({"steps": [{"do": ["reach_card"], "card": "barbecue"}]}, "a step whose do is a list"),
+                      ({"steps": [{"do": "reach_card", "card": ["barbecue"]}]}, "a step whose card is a list"),
+                      ({"steps": light, "personality": True}, "a personality true"),
+                      ({"steps": light, "personality": 5}, "a personality 5"),
+                      ({"steps": light, "personality": [["short_legs"]]}, "a list inside the list of bricks"),
+                      ({"steps": light, "personality": {"short_legs": 1}}, "a personality that is an object")):
+        bad_file.write_text(json.dumps(bad), encoding="utf-8")
+        before = set(missions_dir.iterdir()) if missions_dir.exists() else set()
+        done = subprocess.run([PYTHON, "-I", str(GUIDE / "stack" / "strategist.py"), str(bad_file)], env=env,
+                              stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=60)
+        check(f"mission file refused, no traceback, nothing written: {what}",
+              done.returncode != 0 and done.stderr.startswith("refused: ") and "Traceback" not in done.stderr
+              and (set(missions_dir.iterdir()) if missions_dir.exists() else set()) == before,
+              (done.stdout, done.stderr[-300:]))
+
+    # Without a model, with no landmark and no compass: the cards of the report always have a cell of the mat.
+    lost = with_rules("lost", start="unknown", mat_north_up=False)
+    sim.act(do="load_world", mat=big, world={"cards": [{"cell": "C2", "label": "barbecue"}], "boxes": [], "balls": []})
+    done = subprocess.run([PYTHON, "-I", str(GUIDE / "stack" / "mission.py"), "survey:barbecue", "--model", "none"],
+                          env=lost, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300)
+    report = json.loads(done.stdout or "{}")
+    cells = [f"{c}{r}" for r in range(1, MAT["rows"] + 1) for c in "ABCDEFGHIJ"[:MAT["cols"]]]
+    check("start unknown, no landmark, no compass, a survey without a model: no card without a cell of the mat in the "
+          "report, and an impossible survey says why",
+          all(isinstance(c.get("cell"), str) and c["cell"] in cells for c in report.get("cards", []))
+          and (report.get("outcome") != "impossible" or report.get("why") in (
+              "the robot does not know where it is", "not seen yet", "not on the mat", "no moves left", "no way there")),
+          (report, done.stderr[-400:]))
+
     unknown = with_rules("unknown", start="unknown")
     sim.act(do="load_world", mat=big, world={"cards": [], "boxes": [], "balls": []})
     first = drive(unknown, "state")
