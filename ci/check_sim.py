@@ -957,18 +957,16 @@ async def scenarios(sim, env):
         cards = (await a.call("seen_cards"))["cards_seen"]
         check("two like cards side by side stay two", len(cards) == 2, cards)
 
-    # What the camera has looked at: cells in its cone, when every cell between was seen free by the distance sensor or
-    # walked through (a box the sensor never met cannot make a hidden cell count).
+    # What the camera has looked at: cells in its cone, unless what the distance sensor met stands between.
     sim.fresh()
     await asyncio.sleep(0.6)
     async with agent(env) as a:
         await a.call("robot_state")
         cover = (await a.call("seen_cards"))["camera_coverage"]
         left = set(cover["not_looked_at_yet"])
-        check("coverage, from C5 facing north: C1 to C4 (the sensor saw them free); not B2, B3, D2, D3 (in the cone, "
-              "but the way to them crosses B4 or D4, which nobody saw free); not B4 (45 degrees)",
-              not left & {"C1", "C2", "C3", "C4", "C5"} and {"B2", "B3", "D2", "D3", "B4"} <= left
-              and cover["cells_on_the_mat"] == 25 and cover["cells_looked_at"] == 5, cover)
+        check("coverage, from C5 facing north: C1 to C4, B2, B3, D2, D3 (in the cone); not B4 (45 degrees)",
+              not left & {"C1", "C2", "C3", "C4", "C5", "B2", "B3", "D2", "D3"} and "B4" in left
+              and cover["cells_on_the_mat"] == 25 and cover["cells_looked_at"] == 9, cover)
         await a.call("look_around")
         cover = (await a.call("seen_cards"))["camera_coverage"]
         left = set(cover["not_looked_at_yet"])
@@ -981,8 +979,8 @@ async def scenarios(sim, env):
         await asyncio.sleep(0.6)
         state = await a.call("robot_state")
         cover = (await a.call("seen_cards"))["camera_coverage"]
-        check("coverage grows as the robot goes (C4 facing east: D4, E4, seen free), and robot_state counts what is left",
-              not set(cover["not_looked_at_yet"]) & {"D4", "E4"}
+        check("coverage grows as the robot goes (C4 facing east: D4, E4, E3), and robot_state counts what is left",
+              not set(cover["not_looked_at_yet"]) & {"D4", "E4", "E3"}
               and state["cells_not_looked_at_yet"] == len(cover["not_looked_at_yet"]), (state, cover))
 
     sim.fresh(boxes=[{"x": 65, "y": 65, "w": 20, "h": 20, "name": "box"}])
@@ -990,9 +988,9 @@ async def scenarios(sim, env):
     async with agent(env) as a:
         await a.call("robot_state")
         cover = (await a.call("seen_cards"))["camera_coverage"]
-        check("coverage: a box in C3 hides C2, C1 and B2 (the line to B2 crosses C3); C3 itself counts",
-              {"C2", "C1", "B2", "D2"} <= set(cover["not_looked_at_yet"]) and "C3" not in cover["not_looked_at_yet"],
-              cover)
+        check("coverage: a box in C3 hides C2, C1 and B2 (the line to B2 crosses C3)",
+              {"C2", "C1", "B2", "D2"} <= set(cover["not_looked_at_yet"]) and "C3" not in cover["not_looked_at_yet"]
+              and "B3" not in cover["not_looked_at_yet"], cover)
         check("coverage: met once, the box is not yet said to stand there (a ball rolls on)",
               cover["something_stands_there"] == [], cover)
         await asyncio.sleep(10.5)
