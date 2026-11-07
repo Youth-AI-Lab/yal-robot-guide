@@ -33,7 +33,7 @@ says which):
 | Cartographer | the map of the terrain (where the robot probably is, the cards, the balls, the cells seen free), and the translation of "go east" into "slide to the right" | [stack/cartographer.py](stack/cartographer.py) |
 | Pilot | code without a model: how to reach the goal (the way, exploring, waiting for an adult) | [stack/pilot.py](stack/pilot.py) |
 | Strategist | a loop and a model: which tool next, following the group's personality; ends each mission with a closed report | [stack/strategist.py](stack/strategist.py) |
-| Interpreter | the chatbot that turns the group's words into a mission, and the report back into words: TO BE COMPLETED; [stack/mission.py](stack/mission.py) stands in for it | |
+| Interpreter | the chatbot that turns the group's words into a mission, and the report back into words (Open WebUI, part 6); [stack/mission.py](stack/mission.py) stands in for it in a terminal | [interpreter/feurisson.md](interpreter/feurisson.md), [stack/interpreter_link.py](stack/interpreter_link.py) |
 
 Three rules hold the design together:
 
@@ -208,9 +208,13 @@ into a mission) is written, [stack/mission.py](stack/mission.py) stands in for i
    read -rs KEY && printf %s "$KEY" | python3 -I stack/mission.py find_card:barbecue --model qwen-flash --cap 0.10; unset KEY
    ```
 
+   French public servants (teachers included) can use Albert API of the DINUM instead, with their
+   Albert key: `--model albert:deepseek-v4-flash` (or another of its models). No price; the content
+   is not kept; hosted in France.
+
    > [!WARNING]
-   > Each call sends the mission and the robot's state to the company that runs the model. Nothing
-   > about a person must go there.
+   > Each call sends the mission and the robot's state to the company or the administration that runs
+   > the model. Nothing about a person must go there.
 
 4. A personality: `--personality cautious` or `--personality adventurous`, two compositions of
    bricks from [stack/personality/bricks.json](stack/personality/bricks.json). A brick is either a
@@ -228,14 +232,66 @@ refused, with the rule).
 
 The Strategist offers its model one size of tools: the route tools by default (`go_to_cell`,
 `look_around`, `face`, `wait_for_event`, `seen_cards`, `set_light`, `robot_state`), `--tools goal`
-(`explore`, `go_to_card`) or `--tools step` (the nine tools of part 6). On 6 November 2026, with the
+(`explore`, `go_to_card`) or `--tools step` (the nine tools of part 7). On 6 November 2026, with the
 loop this one comes from, one run per mission with Qwen3.8 Flash and DeepSeek v4 Flash: with the route
 tools, the adventurous card looked 0.20 to 0.28 times per cell and the cautious one 0.64 to 0.68, and
 the cautious one failed twice in ten runs, for lack of moves. Not yet run with this stack.
 
 ---
 
-## Part 6 - Connect an agent of your own (not tested with a real model)
+## Part 6 - Talk to it: the Interpreter (not tried with a group)
+
+The Interpreter is a chatbot: Feurisson, the voice of the robot. It talks with the group in the
+group's words, turns their request into a mission in the closed format, says it back, and starts it
+only after the group says yes. It reaches the stack through one door,
+[stack/interpreter_link.py](stack/interpreter_link.py): an MCP server over HTTP with a token, six
+tools (the closed lists, start, pause, resume, stop, the mission's state and report), none of which
+drives the robot. Its instructions are [interpreter/feurisson.md](interpreter/feurisson.md).
+
+1. With the simulator running, in a second terminal, start the link. The token is a secret of at
+   least 32 characters; keep it for Open WebUI:
+
+   ```bash
+   export MCP_TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(24))")
+   /opt/workshop/venv/bin/python -I stack/interpreter_link.py --model none --allowed-host 127.0.0.1:8790
+   ```
+
+   You should see `READY robot-mission: http://127.0.0.1:8790/mcp, Strategist none with the route
+   tools`. `--model` is the Strategist's model, as in part 5 (`none`, `fake`, `albert:<model>`, a
+   model of OpenRouter; a key on stdin).
+
+2. In Open WebUI, declare the link as a tool server of type MCP (Streamable HTTP), its address
+   ending in `/mcp`, authentication "bearer" with the token. From the environment, as the checks of
+   this guide do:
+
+   ```json
+   TOOL_SERVER_CONNECTIONS=[{"type": "mcp", "url": "http://<this computer>:8790/mcp", "path": "",
+     "auth_type": "bearer", "key": "<the token>", "config": {"enable": true},
+     "info": {"id": "robot-mission", "name": "Robot mission"}}]
+   ```
+
+   Where to do it on screen: TO BE COMPLETED (not looked at for this guide).
+
+3. Make a chatbot: the text of [interpreter/feurisson.md](interpreter/feurisson.md) as its System
+   Prompt, the tool server "Robot mission" switched on, **Function Calling: Native**.
+
+4. Its model, through an OpenAI-compatible connection of Open WebUI:
+   - **Albert API**, for French public servants (teachers included, through ProConnect): address
+     `https://albert.api.etalab.gouv.fr/v1`, your Albert key. No price; the content of the messages is
+     not kept (the date, the account, the model, the number of tokens and the IP address are, for 24
+     months); hosted in France. On 7 November 2026, `deepseek-v4-flash`, `gemma-4-31b-it`,
+     `gpt-oss-120b`, `mistral-small-3-2-24b-instruct-2506` and `ministral-3-8b-instruct-2512` all
+     called a tool correctly; the list changes (two of them leave on 1 December 2026).
+   - **OpenRouter**, for the partners, as in the workshops.
+
+> [!WARNING]
+> Everything the group types goes to the company or the administration that runs the Interpreter's
+> model. Nothing about a person must go there, and nothing of this is ready for a group of young
+> people.
+
+---
+
+## Part 7 - Connect an agent of your own (not tested with a real model)
 
 [stack/drive.py](stack/drive.py) is an MCP server: the Pilot's nine step tools, which go down the
 whole stack, for an agent of your own instead of the Strategist:
@@ -368,10 +424,12 @@ such way: they read `since_last_call`.
 /opt/workshop/venv/bin/python -I ci/check_sim.py
 ```
 
-About seven minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
-would, then gives missions to the Strategist with no model or a scripted one, and reads in the
-simulator what really happened: 141 checks, all passed in the image 2026.10.45 on 6 November 2026
-(container with 2 processors, no network).
+About eight minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
+would, then gives missions to the Strategist with no model or a scripted one, then through the
+Interpreter's link over HTTP, as Open WebUI would, and reads in the simulator what really happened:
+152 checks, all passed in the image 2026.10.45 on 7 November 2026 (container with 2 processors, no
+network). A real Open WebUI (0.12.4) with a fake model, then with Albert's `gemma-4-31b-it` as the
+Interpreter, was tried apart, not in these checks.
 
 ---
 

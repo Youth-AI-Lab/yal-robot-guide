@@ -37,3 +37,11 @@ def log(tool, arguments, result, caller=None):
              "arguments": arguments, "result": result}
     with (STATE_DIR / "context.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+
+
+def mission_control():
+    """What the Interpreter asks of the mission running: "go", "pause" or "stop" (.robot-sim/control.json)."""
+    try:
+        return load_json(STATE_DIR / "control.json").get("do", "go")
+    except (OSError, ValueError, AttributeError):
+        return "go"

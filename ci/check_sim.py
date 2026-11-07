@@ -197,6 +197,7 @@ async def main():
         try:
             await scenarios(sim, env)
             stack_scenarios(sim, env)
+            await interpreter_scenarios(sim, env)
         finally:
             sim.stop()
         check(f"only text reached the agent, never an image ({len(CALLS)} answers)",
@@ -1126,6 +1127,116 @@ def stack_scenarios(sim, env):
     check("the Referee's journal: every command it sent or refused, with the rule",
           any(e["decision"] == "sent" for e in journal) and any(e["decision"] == "refused" and e.get("rule")
                                                                  for e in journal), journal[-3:])
+
+
+async def interpreter_scenarios(sim, env):
+    """The link from the Interpreter to the Strategist (stack/interpreter_link.py): MCP over HTTP with a token, as Open
+    WebUI would use it. The Strategist with no model: no network, no key."""
+    import secrets
+    from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
+
+    token, port = secrets.token_hex(24), 18790
+    big = dict(MAT, max_moves=40)
+    sim.act(do="load_world", mat=big, world={"cards": [{"cell": "C2", "label": "barbecue"}], "boxes": [], "balls": []})
+    link = subprocess.Popen([PYTHON, "-I", str(GUIDE / "stack" / "interpreter_link.py"), "--port", str(port),
+                             "--allowed-host", f"127.0.0.1:{port}", "--model", "none"],
+                            env=dict(env, MCP_TOKEN=token), stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    try:
+        ready = link.stdout.readline()
+        check("interpreter link: it starts, and says what it serves", ready.startswith("READY robot-mission"), ready)
+        import socket
+        for _ in range(50):  # READY comes just before the server listens
+            try:
+                socket.create_connection(("127.0.0.1", port), timeout=1).close()
+                break
+            except OSError:
+                time.sleep(0.2)
+        url = f"http://127.0.0.1:{port}/mcp"
+        for headers, what in (({}, "no token"), ({"Authorization": "Bearer " + "x" * 48}, "a wrong token")):
+            request = urllib.request.Request(url, data=b"{}", headers=dict(headers, **{"Content-Type": "application/json"}))
+            try:
+                urllib.request.urlopen(request, timeout=5)
+                status = 200
+            except urllib.error.HTTPError as e:
+                status = e.code
+            check(f"interpreter link: {what}, 401", status == 401, status)
+        bad_host = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        bad_host.request("POST", "/mcp", body=b"{}", headers={"Host": "evil.example:80", "Authorization": "Bearer " + token,
+                                                              "Content-Type": "application/json",
+                                                              "Accept": "application/json, text/event-stream"})
+        status = bad_host.getresponse().status
+        check("interpreter link: another Host header (DNS rebinding), refused", status in (400, 403, 421), status)
+
+        client = create_mcp_http_client(headers={"Authorization": "Bearer " + token})
+        async with streamable_http_client(url, http_client=client) as streams:
+            read, write = streams[0], streams[1]
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+
+                async def call(name, **arguments):
+                    result = await session.call_tool(name, arguments)
+                    return json.loads(result.content[0].text)
+
+                names = {t.name for t in (await session.list_tools()).tools}
+                check("interpreter link: six tools, none of them drives the robot",
+                      names == {"mission_options", "start_mission", "pause_mission", "resume_mission", "stop_mission",
+                                "mission_status"}, names)
+                options = await call("mission_options")
+                check("interpreter link: the closed lists (steps, cards, colours, personalities)",
+                      "barbecue" in options["cards"] and "reach_card" in options["steps"]
+                      and {"cautious", "adventurous"} <= set(options["personalities"]), options)
+                sent = wire_count(sim, "MOVE") + wire_count(sim, "TURN")
+                reply = await call("start_mission", steps=[{"do": "reach_card", "card": "picnic"}])
+                check("interpreter link: a card the camera does not know, refused, nothing sent",
+                      reply.get("result") == "refused" and wire_count(sim, "MOVE") + wire_count(sim, "TURN") == sent, reply)
+                reply = await call("start_mission", steps=[{"do": "reach_card", "card": "barbecue"}], personality="cautious")
+                again = await call("start_mission", steps=[{"do": "set_light", "color": "red"}])
+                check("interpreter link: a mission starts; a second one is refused while it runs",
+                      reply.get("result") == "started" and again.get("result") == "refused", (reply, again))
+                status = {}
+                for _ in range(120):
+                    status = await call("mission_status")
+                    if status["state"] not in ("running", "paused"):
+                        break
+                    await asyncio.sleep(1)
+                r = sim.state()["robot"]
+                check("interpreter link: the mission ends with its report, the barbecue in C2, the robot in front of it",
+                      status.get("state") == "ended" and status["report"]["outcome"] == "done"
+                      and {"card": "barbecue", "cell": "C2"} in status["report"]["cards"] and r["cell"] == "C3", (status, r))
+
+                sim.act(do="load_world", mat=big, world={"cards": [], "boxes": [], "balls": []})
+                reply = await call("start_mission", steps=[{"do": "survey", "card": "dry-grass"}])
+                await asyncio.sleep(2.0)
+                paused = await call("pause_mission")
+                # A move under way ends first (a look around finishes its four quarter turns): wait until the robot
+                # has sent nothing for 3 s, then watch 5 s more.
+                last, still = -1, 0
+                for _ in range(30):
+                    count = wire_count(sim, "MOVE") + wire_count(sim, "TURN")
+                    still = still + 1 if count == last else 0
+                    last = count
+                    if still >= 3:
+                        break
+                    await asyncio.sleep(1.0)
+                before = wire_count(sim, "MOVE") + wire_count(sim, "TURN")
+                await asyncio.sleep(5.0)
+                after = wire_count(sim, "MOVE") + wire_count(sim, "TURN")
+                status = await call("mission_status")
+                check("interpreter link: paused, the robot sends no new move", paused.get("result") == "paused"
+                      and status["state"] == "paused" and before == after, (paused, status, before, after))
+                await call("resume_mission")
+                await asyncio.sleep(2.0)
+                stopping = await call("stop_mission")
+                for _ in range(60):
+                    status = await call("mission_status")
+                    if status["state"] not in ("running", "paused"):
+                        break
+                    await asyncio.sleep(1)
+                check("interpreter link: stopped, the report says so", stopping.get("result") == "stopping"
+                      and status["state"] == "stopped" and status["report"]["outcome"] == "stopped", status)
+    finally:
+        link.terminate()
+        link.wait(timeout=10)
 
 
 if __name__ == "__main__":

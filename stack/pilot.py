@@ -42,9 +42,19 @@ SETTINGS = {
 }
 
 
+# True while the Strategist runs a mission: then the Pilot obeys the Interpreter's pause and stop before each move (a
+# move under way ends first: it stops on a cell). Never for stack/drive.py: a person or an agent drives by hand.
+OBEY_MISSION_CONTROL = False
+
+
 def command(name, *args):
     """One command of the mat, through the Cartographer (and the Referee's door)."""
     moves = {"step_forward", "move", "turn", "look_around", "face", "set_light"}
+    if OBEY_MISSION_CONTROL and name in moves:
+        while common.mission_control() == "pause":
+            time.sleep(0.5)
+        if common.mission_control() == "stop":
+            raise Stuck("the mission was stopped")
     if name == "wait_for_event":
         return CART.wait_for(*args)
     return CART.call(lambda: getattr(CART, name)(*args), is_move=name in moves)

@@ -16,14 +16,16 @@ A mission (from the Interpreter; today from stack/mission.py), JSON:
      "personality": "cautious"}                           a file of stack/personality/, or a list of bricks
 Its report (to the Interpreter): {"outcome": "done" | "impossible" | "no report", "cards": [{"card", "cell"}],
 "why": a reason from a closed list, "moves_left", "turns", "spent_usd"}.
-Pause: stack/mission.py pause|resume|stop writes .robot-sim/control.json; the loop reads it before each call of the
-model and each tool, without asking the model. During a move it takes effect when the move ends (TO BE COMPLETED:
-stop the move itself).
+Pause: the Interpreter (stack/interpreter_link.py, or stack/mission.py pause|resume|stop by hand) writes
+.robot-sim/control.json; the loop reads it before each call of the model and each tool, and the Pilot before each move,
+without asking the model. A move under way ends first: it stops on a cell.
 
 Models: "none" (no model: each step goes straight to the Pilot's goal tools), "fake" (a scripted model: checks the
-plumbing, no network), "ollama:<model>" (Ollama on this computer, no
-key), or a model of OpenRouter, "openrouter:<id>" or a short name of MODELS (the key on stdin, never in a file;
-data_collection: deny, which does not stop the provider from keeping what it receives).
+plumbing, no network), "ollama:<model>" (Ollama on this computer, no key), "albert:<model>" (Albert API of the DINUM,
+for French public servants: no price, content not kept, hosted in France; for example albert:deepseek-v4-flash,
+albert:gemma-4-31b-it, albert:mistral-small-3-2-24b-instruct-2506; GET /v1/models lists them, and they change), or a
+model of OpenRouter, "openrouter:<id>" or a short name of MODELS (data_collection: deny, which does not stop the
+provider from keeping what it receives). Any key on stdin, never on the command line, never in a file.
 """
 import json
 import sys
@@ -38,6 +40,7 @@ from common import COLORS, STATE_DIR, log  # noqa: E402
 import pilot  # noqa: E402
 
 HERE = Path(__file__).resolve().parent
+ALBERT_URL = "https://albert.api.etalab.gouv.fr/v1/chat/completions"
 MODELS = {"qwen-flash": "qwen/qwen3.8-flash", "deepseek": "deepseek/deepseek-v4-flash",
           "gemini-argon": "google/gemini-4-argon", "sonnet": "anthropic/claude-sonnet-5.5"}
 MAX_TURNS, TIMEOUT_S, RUN_CAP_USD, MAX_TOKENS = 60, 1800, 0.25, 16384  # 4096 cut Qwen's reasoning (bench, 11:30)
@@ -185,6 +188,11 @@ def api_model(model, messages, tools, key, usage, flush):
     if model.startswith("ollama:"):
         url, body = "http://127.0.0.1:11434/v1/chat/completions", {"model": model[7:]}
         headers = {"Content-Type": "application/json"}
+    elif model.startswith("albert:"):
+        # Albert API (DINUM), OpenAI-compatible: for French public servants (ProConnect). No price; the content is not
+        # kept (metadata are, 24 months); hosted in France. tool_choice "auto" is required by deepseek-v4-flash.
+        url, body = ALBERT_URL, {"model": model[7:]}
+        headers = {"Content-Type": "application/json", "Authorization": "Bearer " + key}
     else:
         name = model[11:] if model.startswith("openrouter:") else MODELS[model]
         url = "https://openrouter.ai/api/v1/chat/completions"
@@ -221,18 +229,11 @@ def api_model(model, messages, tools, key, usage, flush):
 
 
 # --- the loop -------------------------------------------------------------------------------------------------
-def control():
-    try:
-        return common.load_json(STATE_DIR / "control.json").get("do", "go")
-    except (OSError, ValueError, AttributeError):
-        return "go"
-
-
 def paused():
     """The pause, handled by the loop without the model: wait until resume or stop. True when stopped."""
-    while control() == "pause":
+    while common.mission_control() == "pause":
         time.sleep(0.5)
-    return control() == "stop"
+    return common.mission_control() == "stop"
 
 
 def without_model(mission):
@@ -257,8 +258,14 @@ def without_model(mission):
             col, row = common.cell_xy(result["cell"])
             dc, dr = pilot.STEP[result["facing"]]
             cards.append({"card": step["card"], "cell": common.cell_name(col + dc, row + dr)})  # right in front
+        if common.mission_control() == "stop":
+            outcome, why = "stopped", ""
+            break
         if result.get("result") not in ("done", "found", "not found"):
-            outcome, why = "impossible", "no moves left" if "moves" in result.get("why", "") else "other"
+            said = result.get("why", "")
+            outcome = "impossible"
+            why = ("no moves left" if "moves" in said else "the robot waits for an adult" if "adult" in said
+                   else "no way there" if "find itself" in said or "way" in said else "other")
             break
     return {"outcome": outcome, "cards": cards, "why": why, "turns": 0,
             "seconds": round(time.monotonic() - start, 1), "spent_usd": 0.0}
@@ -269,18 +276,21 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
     settings, texts = personality(mission.get("personality"))
     words = task(mission)
     pilot.PILOT.configure(settings)
+    pilot.OBEY_MISSION_CONTROL = True
+    out = Path(out or STATE_DIR / "missions" / time.strftime("%Y%m%d-%H%M%S"))
+    out.mkdir(parents=True, exist_ok=True)
     if model == "none":
         common.CALLER = "strategist"
+        (out / "mission.json").write_text(json.dumps(dict(mission, task=words, settings=pilot.PILOT.settings), indent=1))
         report = without_model(mission)
         report["moves_left"] = pilot.robot_state().get("moves_left")
+        (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1) + "\n")
         return report
     toolset = pilot.TOOLSETS[tools]
     offered = [schema(name, fn, props, req) for name, (fn, _, props, req) in toolset.items()] + [REPORT]
     specs = {t["function"]["name"]: t["function"]["parameters"] for t in offered}
     system = RULES + ("\n## How you drive\n\n" + "\n".join(f"- {t}" for t in texts) + "\n" if texts else "")
     messages = [{"role": "system", "content": system}, {"role": "user", "content": words}]
-    out = Path(out or STATE_DIR / "missions" / time.strftime("%Y%m%d-%H%M%S"))
-    out.mkdir(parents=True, exist_ok=True)
     usage = {"prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "api_calls": 0, "failed_calls": 0,
              "dearest_call": 0.0}
 

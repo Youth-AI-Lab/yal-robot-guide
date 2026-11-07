@@ -7,8 +7,9 @@ Usage (the folder of the guide is the current folder):
     python3 -I stack/mission.py reach_card:barbecue [set_light:green ...] [--personality cautious] [--model fake]
                                 [--tools route|goal|step] [--cap 0.25]
     python3 -I stack/mission.py pause | resume | stop
-Steps: reach_card:<card>, set_light:<colour>, find_card:<card>, survey:<card>. A model of OpenRouter reads its key
-on stdin (never on the command line, never in a file of the guide).
+Steps: reach_card:<card>, set_light:<colour>, find_card:<card>, survey:<card>. Models: none, fake, ollama:<model>,
+albert:<model> (Albert API of the DINUM, for French public servants) or a model of OpenRouter; a key is read on stdin
+(never on the command line, never in a file of the guide).
 """
 import argparse
 import json
