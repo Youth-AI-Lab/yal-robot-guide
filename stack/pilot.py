@@ -42,17 +42,19 @@ SETTINGS = {
 }
 
 
-# True while the Strategist runs a mission: then the Pilot obeys the Interpreter's pause and stop before each move (a
-# move under way ends first: it stops on a cell). Never for stack/drive.py: a person or an agent drives by hand.
+# True while the Strategist runs a mission: then the Pilot obeys the Interpreter's pause and stop, and has the robot
+# stop on the next cell as soon as possible: before each move, and during one (the Cartographer asks hold_wanted
+# during a slide and between quarter turns; the Referee then sends HOLD to the Reflex). Never for stack/drive.py: a
+# person or an agent drives by hand.
 OBEY_MISSION_CONTROL = False
+CART.hold_wanted = lambda: OBEY_MISSION_CONTROL and common.mission_control() in ("pause", "stop")
 
 
 def command(name, *args):
     """One command of the mat, through the Cartographer (and the Referee's door)."""
     moves = {"step_forward", "move", "turn", "look_around", "face", "set_light"}
     if OBEY_MISSION_CONTROL and name in moves:
-        while common.mission_control() == "pause":
-            time.sleep(0.5)
+        hold_still()
         if common.mission_control() == "stop":
             raise Stuck("the mission was stopped")
     if name == "wait_for_event":
@@ -62,6 +64,17 @@ def command(name, *args):
 
 class Stuck(Exception):
     pass
+
+
+def hold_still():
+    """While the mission is paused, nothing moves: say so up the chain once (where the robot stands), then wait."""
+    if common.mission_control() != "pause":
+        return
+    common.say_held({"cell": cell_name(CART.col, CART.row) if CART.sure else None,
+                     "facing": FACING[CART.facing] if CART.sure else None, "since": time.strftime("%H:%M:%S")})
+    while common.mission_control() == "pause":
+        time.sleep(0.5)
+    common.say_held(None)
 
 
 class Pilot:

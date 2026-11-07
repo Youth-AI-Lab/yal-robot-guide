@@ -9,8 +9,8 @@ stack is reachable from it: never the robot, never the Pilot's tools.
   start_mission(steps, personality)
                                call only after the group said yes to the reformulation: starts the mission
   pause_mission(), resume_mission(), stop_mission()
-                               handled by the Strategist's loop and the Pilot without asking the model; a move under
-                               way ends first (it stops on a cell)
+                               handled by the Strategist's loop and the Pilot without asking the model; the robot
+                               stops on the next cell, as soon as possible (no adult needed)
   mission_status()             running, paused, done or stopped, and the report when it ends (closed fields)
 A mission that changes in nature is stopped, then the new one started; one that is only enriched too (the
 Strategist starts a new conversation for each mission; the map of the terrain stays).
@@ -46,6 +46,7 @@ RUN = {"thread": None, "id": None, "report": None, "error": None, "started": Non
 
 
 def say(do):
+    common.say_held(None)
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     (STATE_DIR / "control.json").write_text(json.dumps({"do": do}) + "\n", encoding="utf-8")
 
@@ -54,7 +55,9 @@ def state():
     if RUN["thread"] is None:
         return "no mission yet"
     if RUN["thread"].is_alive():
-        return "paused" if common.mission_control() == "pause" else "running"
+        if common.mission_control() == "pause":
+            return "paused" if common.held_where() else "pausing"
+        return "running"
     if RUN["error"]:
         return "failed"
     return "stopped" if (RUN["report"] or {}).get("outcome") == "stopped" else "ended"
@@ -113,35 +116,42 @@ def start_mission(steps: list[dict[str, str]], personality: str | None = None) -
 
 
 def pause_mission() -> str:
-    """Pause the mission: the robot stops at the end of its current move (on a cell; a look around first finishes its
-    turn) and waits. Use it while you clarify a new request with the group."""
-    if state() not in ("running", "paused"):
+    """Pause the mission: the robot stops on the next cell, as soon as possible, and waits. Use it while you clarify a
+    new request with the group."""
+    if state() not in ("running", "pausing", "paused"):
         return json.dumps({"result": "refused", "why": f"no mission running ({state()})"})
-    say("pause")
-    return json.dumps({"result": "paused", "mission": RUN["id"]})
+    if state() == "running":
+        say("pause")
+    return json.dumps({"result": state(), "mission": RUN["id"],
+                       "what_to_do": "call mission_status: it says paused, with the cell where the robot stopped, once "
+                                     "nothing moves; until then, the robot is still finishing its cell"})
 
 
 def resume_mission() -> str:
     """Resume the paused mission, unchanged."""
-    if state() != "paused":
+    if state() not in ("pausing", "paused"):
         return json.dumps({"result": "refused", "why": f"no mission paused ({state()})"})
     say("go")
     return json.dumps({"result": "running", "mission": RUN["id"]})
 
 
 def stop_mission() -> str:
-    """Stop the mission: the robot stops at the end of its current move. Then mission_status says when it stopped."""
-    if state() not in ("running", "paused"):
+    """Stop the mission: the robot stops on the next cell, as soon as possible. Then mission_status says when it
+    stopped."""
+    if state() not in ("running", "pausing", "paused"):
         return json.dumps({"result": "refused", "why": f"no mission running ({state()})"})
     say("stop")
     return json.dumps({"result": "stopping", "mission": RUN["id"]})
 
 
 def mission_status() -> str:
-    """Where the mission is: "running", "paused", "ended", "stopped", "failed" or "no mission yet"; when it ended, the
-    report: outcome (done, impossible, stopped…), the cards asked about with their cells, why, the moves left. Say the
-    report to the group in their words."""
+    """Where the mission is: "running", "pausing" (asked, the robot is finishing its cell), "paused" (nothing moves:
+    with the cell where it stands), "ended", "stopped", "failed" or "no mission yet"; when it ended, the report: outcome
+    (done, impossible, stopped…), the cards asked about with their cells, why, the moves left. Say the report to the
+    group in their words."""
     answer = {"mission": RUN["id"], "state": state(), "what_the_strategist_was_told": RUN["task"]}
+    if answer["state"] == "paused":
+        answer["robot_stands_on"] = common.held_where()
     if RUN["started"] is not None:
         answer["seconds"] = round(time.monotonic() - RUN["started"])
     if RUN["report"] is not None and state() in ("ended", "stopped"):

@@ -1122,6 +1122,21 @@ def stack_scenarios(sim, env):
     check("mission stopped by the Interpreter: the loop ends it without asking the model",
           report.get("outcome") == "stopped" and report.get("turns", 9) < 4, (report, err[-300:]))
 
+    # The pause during a long slide: the robot stops on the next cell, as soon as possible, no adult needed (HOLD).
+    sim.act(do="load_world", mat=big, world={"cards": [], "boxes": [], "balls": []})
+    script = ("import json, sys, threading; sys.path.insert(0, 'stack'); import common, pilot; "
+              "say = lambda do: (common.STATE_DIR / 'control.json').write_text(json.dumps({'do': do})); "
+              "say('go'); pilot.OBEY_MISSION_CONTROL = True; threading.Timer(2.0, say, ['pause']).start(); "
+              "print(json.dumps(pilot.move('north', 4)))")
+    done = subprocess.run([PYTHON, "-I", "-c", script], env=env, cwd=GUIDE, capture_output=True, text=True, timeout=60)
+    reply = json.loads(done.stdout or "{}")
+    r = sim.state()["robot"]
+    check("pause during a slide of 4 cells: HOLD, it stops on the next cell (C4), no adult needed",
+          reply.get("result") == "done" and reply.get("cells_moved") == 1 and "next cell" in reply.get("stopped_because", "")
+          and r["cell"] == "C4" and wire_count(sim, "HOLD") == 1 and not reply["state"]["waiting_for_adult"],
+          (reply, r, done.stderr[-400:]))
+    (Path(env["ROBOT_STATE_DIR"]) / "control.json").write_text(json.dumps({"do": "go"}))
+
     journal = [json.loads(line) for line in
                (Path(env["ROBOT_STATE_DIR"]) / "referee.jsonl").read_text(encoding="utf-8").splitlines()]
     check("the Referee's journal: every command it sent or refused, with the rule",
@@ -1222,8 +1237,10 @@ async def interpreter_scenarios(sim, env):
                 await asyncio.sleep(5.0)
                 after = wire_count(sim, "MOVE") + wire_count(sim, "TURN")
                 status = await call("mission_status")
-                check("interpreter link: paused, the robot sends no new move", paused.get("result") == "paused"
-                      and status["state"] == "paused" and before == after, (paused, status, before, after))
+                check("interpreter link: pausing, then paused once nothing moves, with the cell where the robot stands",
+                      paused.get("result") in ("pausing", "paused") and status["state"] == "paused"
+                      and (status.get("robot_stands_on") or {}).get("cell") and before == after,
+                      (paused, status, before, after))
                 await call("resume_mission")
                 await asyncio.sleep(2.0)
                 stopping = await call("stop_mission")

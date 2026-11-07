@@ -18,7 +18,8 @@ Its report (to the Interpreter): {"outcome": "done" | "impossible" | "no report"
 "why": a reason from a closed list, "moves_left", "turns", "spent_usd"}.
 Pause: the Interpreter (stack/interpreter_link.py, or stack/mission.py pause|resume|stop by hand) writes
 .robot-sim/control.json; the loop reads it before each call of the model and each tool, and the Pilot before each move,
-without asking the model. A move under way ends first: it stops on a cell.
+without asking the model; during a move, the Pilot has the robot stop on the next cell, as soon as possible (HOLD,
+through the Cartographer and the Referee), with no adult needed.
 
 Models: "none" (no model: each step goes straight to the Pilot's goal tools), "fake" (a scripted model: checks the
 plumbing, no network), "ollama:<model>" (Ollama on this computer, no key), "albert:<model>" (Albert API of the DINUM,
@@ -230,9 +231,9 @@ def api_model(model, messages, tools, key, usage, flush):
 
 # --- the loop -------------------------------------------------------------------------------------------------
 def paused():
-    """The pause, handled by the loop without the model: wait until resume or stop. True when stopped."""
-    while common.mission_control() == "pause":
-        time.sleep(0.5)
+    """The pause, handled by the loop without the model, between two tools (nothing moves): acknowledged up the chain
+    by the Pilot, then wait until resume or stop. True when stopped."""
+    pilot.hold_still()
     return common.mission_control() == "stop"
 
 

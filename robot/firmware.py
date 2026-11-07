@@ -38,6 +38,10 @@ it at any time, without asking the computer. Nothing else is understood.
     TURN L, TURN R ->  OK TURN L, then EVT DONE L, or EVT STOP <reason>
     LED <color>    ->  OK LED <color>
     STOP           ->  OK STOP
+    HOLD           ->  OK HOLD: stop on the next cell, as soon as possible. During MOVE <d> <n>, the robot finishes
+                       the cell it is driving to (or stops at once if it stands on a cell between two cells), then
+                       EVT DONE <d> <cells done> hold: no adult needed. MOVE F and a quarter turn end on a cell
+                       anyway; standing still, nothing happens.
     EVENTS <n>     ->  OK EVENTS now=<ms> next=<id> <id>:<ms>:<event> ...  (the remembered events after n)
     anything else  ->  ERR <reason>
 and, without being asked:
@@ -86,7 +90,7 @@ What the program needs from the board (hal):
     led(color)                         one of COLORS
 """
 
-PROTOCOL = 2
+PROTOCOL = 3
 
 # The length of one cell of the mat (centimetres): the same number as "cell_cm" in mat.json.
 CELL_CM = 30
@@ -127,6 +131,7 @@ class Firmware:
         # card names the camera showed since the move began], or None
         self.plan = None
         self.slid = 0  # cells reached in the last MOVE <d> <n> (STATE slid=)
+        self.hold = False  # HOLD received: the slide stops on the next cell
         self.paused_since = None  # while it waits for the way to clear
         self.estop = False
         self.wait_adult = False
@@ -398,6 +403,8 @@ class Firmware:
         self.say("EVT CELL %d %d" % (plan[2], self.pose))
         if plan[2] >= plan[1]:
             self.end_plan("all")
+        elif self.hold:
+            self.end_plan("hold")
         elif plan[3]:
             self.motion = ["P", self.hal.ticks_ms()]
             self.view, self.view_key, self.candidate = [], None, None
@@ -414,6 +421,7 @@ class Firmware:
 
     def end_plan(self, why):
         self.hal.drive(0, 0, 0)
+        self.hold = False
         plan = self.plan
         self.motion = None
         self.plan = None
@@ -421,6 +429,7 @@ class Firmware:
 
     def halt(self, why):
         self.hal.drive(0, 0, 0)
+        self.hold = False
         self.last_stop = why
         self.paused_since = None
         if self.motion is not None and self.motion[0] == "P":
@@ -471,6 +480,12 @@ class Firmware:
         elif word == "STOP" and len(parts) == 1:
             self.halt("command")
             self.say("OK STOP")
+        elif word == "HOLD" and len(parts) == 1:
+            self.say("OK HOLD")
+            if self.plan is not None and self.motion is not None and self.motion[0] == "P":
+                self.end_plan("hold")  # it stands on a cell between two cells: it stays there
+            elif self.plan is not None:
+                self.hold = True
         elif word == "LED" and len(parts) == 2 and parts[1] in COLORS:
             self.light = parts[1]
             if not self.warning:
@@ -521,6 +536,7 @@ class Firmware:
             if card != "ball" and card not in names:
                 names.append(card)
         self.slid = 0
+        self.hold = False
         self.plan = [kind, cells, 0, conditions, names]
         self.say("OK MOVE %s %d" % (kind, cells))
         if kind == "F" and "CARD" in conditions and self.card_in_front():

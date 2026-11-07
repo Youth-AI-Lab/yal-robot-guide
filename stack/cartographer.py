@@ -60,6 +60,7 @@ WHY_DONE = {
     "estop": "someone pressed the emergency stop button while it stood on a cell",
     "watchdog": "it heard nothing from the computer while it stood on a cell",
     "command": "the Referee stopped it on a cell",
+    "hold": "the mission was paused or stopped: it stopped on the next cell",
 }
 STOP_IF = {"card_ahead": "CARD", "ball_seen": "BALL", "new_card": "NEW"}
 # How sure the Cartographer is of a distance given by the camera: this share of the distance, plus a few
@@ -90,6 +91,9 @@ class Cartographer:
         self.rules = rules
         self.cards = mat["cards"]
         self.referee = Referee(mat, rules)
+        # Asked during a slide and between the quarter turns of look_around and face: should the robot stop on the
+        # next cell? The Pilot sets it while a mission runs (the Interpreter's pause or stop).
+        self.hold_wanted = lambda: False
         self.load()
 
     # The map of the terrain: kept in a file, so that it survives a new process (a terminal, the page). No file: the
@@ -612,7 +616,7 @@ class Cartographer:
             if not (0 <= col < self.mat["cols"] and 0 <= row < self.mat["rows"]):
                 break
             way.append((col, row))
-        answer = self.referee.slide(self, kind, way, [STOP_IF[c] for c in stop_if], cells)
+        answer = self.referee.slide(self, kind, way, [STOP_IF[c] for c in stop_if], cells, hold=self.hold_wanted)
         if answer["result"] == "stopped":
             result = self.interrupted(answer["why"])
             result["cells_moved"] = answer.get("cells_done", 0)
@@ -634,6 +638,9 @@ class Cartographer:
         """Four quarter turns to the right, a pause after each one for the camera: one move in all."""
         looked = []
         for n in range(4):
+            if n > 0 and self.hold_wanted():
+                return {"result": "paused", "why": "the mission was paused or stopped: the robot stopped turning",
+                        "looked_before_it_stopped": looked, "state": self.robot_state()}
             result = self.turn("right", counted=n == 0)
             if result.get("result") != "done":
                 result["looked_before_it_stopped"] = looked
@@ -652,6 +659,9 @@ class Cartographer:
         turns = (FACING.index(direction) - self.facing) % 4
         result = {"result": "done", "state": self.robot_state()}
         for n, kind in enumerate({0: "", 1: "R", 2: "RR", 3: "L"}[turns]):
+            if n > 0 and self.hold_wanted():
+                return {"result": "paused", "why": "the mission was paused or stopped: the robot stopped turning",
+                        "state": self.robot_state()}
             result = self.turn({"R": "right", "L": "left"}[kind], counted=n == 0)
             if result.get("result") != "done":
                 return result

@@ -39,6 +39,24 @@ def log(tool, arguments, result, caller=None):
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
 
+def say_held(where):
+    """The acknowledgement of a pause, up the chain: where the robot stands still, or None when it moves again
+    (.robot-sim/held.json). Written by the Pilot (or the Strategist's loop between two tools) once nothing moves."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    path = STATE_DIR / "held.json"
+    if where is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_text(json.dumps(where) + "\n", encoding="utf-8")
+
+
+def held_where():
+    try:
+        return load_json(STATE_DIR / "held.json")
+    except (OSError, ValueError):
+        return None
+
+
 def mission_control():
     """What the Interpreter asks of the mission running: "go", "pause" or "stop" (.robot-sim/control.json)."""
     try:

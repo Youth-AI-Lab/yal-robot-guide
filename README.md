@@ -223,8 +223,8 @@ into a mission) is written, [stack/mission.py](stack/mission.py) stands in for i
    loosen the Referee's rules.
 
 5. In another terminal, `python3 -I stack/mission.py pause`, then `resume`, or `stop`. The loop
-   handles it without asking the model. A move under way ends first (stopping the move itself is TO
-   BE COMPLETED).
+   handles it without asking the model: the robot stops on the next cell, as soon as possible (the
+   Pilot asks it, down to the Reflex: `HOLD` in the protocol), and no adult is needed.
 
 What to read afterwards, in `.robot-sim/`: `missions/<time>/` (the mission, every message the model
 received and sent, the report, what it cost) and `referee.jsonl` (every command the Referee sent or
@@ -427,7 +427,7 @@ such way: they read `since_last_call`.
 About eight minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
 would, then gives missions to the Strategist with no model or a scripted one, then through the
 Interpreter's link over HTTP, as Open WebUI would, and reads in the simulator what really happened:
-152 checks, all passed in the image 2026.10.45 on 7 November 2026 (container with 2 processors, no
+153 checks, all passed in the image 2026.10.45 on 7 November 2026 (container with 2 processors, no
 network). A real Open WebUI (0.12.4) with a fake model, then with Albert's `gemma-4-31b-it` as the
 Interpreter, was tried apart, not in these checks.
 

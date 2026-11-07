@@ -18,7 +18,7 @@ Its language, from the Cartographer (moves of the robot, never directions of the
     events(caller)                 the robot's events this caller has not heard yet
 Its answers: {"result": "done", ...}, {"result": "stopped", "why": <code>} (the robot stopped on the way: an adult
 must come), or {"result": "refused", "rule": <code>, ...}: the Cartographer says it in words.
-To the Reflex: the protocol of robot/firmware.py (protocol 2), one line per command.
+To the Reflex: the protocol of robot/firmware.py (protocol 3), one line per command.
 """
 import datetime
 import fcntl
@@ -205,7 +205,7 @@ class Referee:
         self.moves += 1 if counted else 0
         return self.watch("TURN " + way, way, terrain, counted=counted)
 
-    def slide(self, terrain, way, cells, until, asked):
+    def slide(self, terrain, way, cells, until, asked, hold=None):
         """Slide without turning: one move however many cells, stopping on a cell. A card on the way shortens it (the
         robot never drives onto a card it knows): forwards before any card placed for sure, sideways or backwards
         before any card the camera placed, even from far."""
@@ -238,14 +238,15 @@ class Referee:
         command = f"MOVE {way} {len(cells)}" + (" UNTIL " + ",".join(conditions) if conditions else "")
         terrain.moving(cells, counted=True)
         self.moves += 1
-        result = self.watch(command, way, terrain, counted=True, slide=cells, look=bool(conditions))
+        result = self.watch(command, way, terrain, counted=True, slide=cells, look=bool(conditions), hold=hold)
         if result["result"] == "done":
             result.update(card_stop=card_stop, edge=len(cells) < asked and card_stop is None)
         return result
 
-    def watch(self, command, kind, terrain, counted, slide=None, look=False):
+    def watch(self, command, kind, terrain, counted, slide=None, look=False, hold=None):
         """Send one command and watch it until it ends, sending PING meanwhile ("I am still here": without it, the
-        robot stops, its watchdog)."""
+        robot stops, its watchdog). hold: asked at each heartbeat during a slide; when it says yes (the mission is
+        paused or stopped), HOLD: the robot stops on the next cell, as soon as possible, with no adult needed."""
         reply = self.link.request(command)
         if reply.startswith("ERR "):
             self.moves -= 1 if counted else 0
@@ -256,13 +257,17 @@ class Referee:
         allowed = self.mat["move_timeout_s"] * (2 if slide is not None else 1) + (2.5 if look else 0)
         end = time.monotonic() + allowed
         next_ping = time.monotonic() + HEARTBEAT_S
-        done = 0
+        done, held = 0, False
         while time.monotonic() < end:
             line = self.link.read_line(max(0.0, min(end, next_ping) - time.monotonic()))
             if time.monotonic() >= next_ping:
                 self.link.send("PING")
                 next_ping = time.monotonic() + HEARTBEAT_S
-            if line is None or line == "OK PONG":
+                if slide is not None and hold is not None and not held and hold():
+                    self.link.send("HOLD")
+                    held = True
+                    self.journal(command, "hold: stop on the next cell")
+            if line is None or line in ("OK PONG", "OK HOLD"):
                 continue
             if slide is not None and line.startswith("EVT CELL "):
                 k, pose = line.split()[2:4]
