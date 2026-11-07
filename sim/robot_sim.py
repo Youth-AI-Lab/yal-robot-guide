@@ -49,6 +49,11 @@ BATTERY_PER_CM = 0.05
 # (found on 2026-11-03: an agent concluded the cells of the edge were blocked).
 FENCE_CM = 10
 BUTTON_PRESS_S = 0.2
+# When the sensors give their measures (milliseconds): the distance sensor measures every
+# distance_period_ms, the camera takes an image every camera_period_ms and gives it camera_delay_ms later.
+# The simulator's values; the real ones are TO BE COMPLETED (VL53L1X: 20 to 100 ms; the camera answers 1 to
+# 2 s late according to RobotIA). The page and the checks change them ("timing").
+TIMING = {"distance_period_ms": 30, "camera_period_ms": 50, "camera_delay_ms": 0}
 STATIC_FILES = {"/": ("index.html", "text/html"), "/sim.js": ("sim.js", "text/javascript"),
                 "/sim.css": ("sim.css", "text/css")}
 
@@ -147,12 +152,17 @@ class World:
         # camera_distance: the camera's distance error, as a share of the distance (an estimate from the
         # size of the card in the image grows worse with distance).
         self.noise = {"distance_cm": 0.0, "slip": 0.0, "camera_miss": 0.0, "camera_distance": 0.1, "compass_deg": 0.0}
+        self.timing = dict(TIMING)
+        self.crash = None  # an error of the simulator itself, or of the firmware outside its own guard
         self.reflex_error = None
         self.load(mat, world)
 
     # The world ------------------------------------------------------------------------------
     def load(self, mat, world):
         with self.lock:
+            # The robot's program first: if it does not load, nothing of the world changes (the error is raised).
+            firmware_module = load_module("firmware", GUIDE / "robot" / "firmware.py")
+            reflex = load_module("reflex", GUIDE / "robot" / "reflex.py")
             self.mat, self.world = mat, world
             self.cell = mat["cell_cm"]
             self.width, self.height = mat["cols"] * self.cell, mat["rows"] * self.cell
@@ -170,6 +180,14 @@ class World:
             self.battery_level = 100.0
             self.led_color = "off"
             self.buttons = {}
+            self.presses = {"stop": 0, "resume": 0}
+            # The board's interrupts: each touch of the bumper is counted, and cuts the motors until release().
+            self.bump_count, self.contact, self.motors_cut = 0, False, False
+            self.distance_working = True
+            self.dist_reading, self.next_dist = (None, 0), 0.0
+            self.frames, self.next_frame, self.frame_number = collections.deque(), 0.0, 0
+            self.stall_until = 0.0
+            self.crash = None
             self.collisions, self.touching = 0, False
             self.bumps, self.ball_contact = 0, False
             self.move_start = None
@@ -178,8 +196,7 @@ class World:
             self.link.received.clear()
             self.stops = []
             self.last_command_at = None
-            self.firmware_module = load_module("firmware", GUIDE / "robot" / "firmware.py")
-            self.reflex = load_module("reflex", GUIDE / "robot" / "reflex.py")
+            self.firmware_module, self.reflex = firmware_module, reflex
             self.firmware = self.firmware_module.Firmware(Hal(self), self.reflex)
             # The robot is back on its start cell: a new session. The Cartographer counts from there again,
             # the Referee counts the moves from zero.
@@ -297,10 +314,45 @@ class World:
         return [{k: s.get(k) for k in ("card", "x", "y", "u", "cell")} for s in seen if isinstance(s, dict)]
 
     # One step of time ------------------------------------------------------------------------
+    def sense(self):
+        """The sensors measure at their own pace, whatever the firmware does: the distance sensor every
+        distance_period_ms (not when it is broken), the camera an image every camera_period_ms."""
+        now_ms = int(self.time * 1000)
+        if self.time >= self.next_dist:
+            # While it turns, distance() says nothing in range: the reading keeps its age instead of a false "free".
+            if self.distance_working and self.turn == 0:
+                self.dist_reading = (self.distance(), now_ms)
+            self.next_dist = self.time + self.timing["distance_period_ms"] / 1000
+        if self.time >= self.next_frame:
+            self.frame_number += 1
+            self.frames.append((self.frame_number, now_ms, self.camera_view()))
+            self.next_frame = self.time + max(1, self.timing["camera_period_ms"]) / 1000
+        # Keep only the images not given yet, and the newest one given: whatever the delay and the period.
+        ready = now_ms - self.timing["camera_delay_ms"]
+        while len(self.frames) > 1 and self.frames[1][1] <= ready:
+            self.frames.popleft()
+
+    def newest_frame(self):
+        """The newest image the camera has given by now: (number, when it was taken in ms, view)."""
+        ready = int(self.time * 1000) - self.timing["camera_delay_ms"]
+        for frame in reversed(self.frames):
+            if frame[1] <= ready:
+                return frame
+        return None, None, []
+
+    def touched(self):
+        """What the board's interrupt does on a touch of the bumper: count it, cut the motors at once."""
+        self.bump_count += 1
+        self.motors_cut = True
+        self.speed, self.strafe, self.turn = 0.0, 0.0, 0.0
+
     def step(self, dt):
         with self.lock:
             self.time += dt
-            self.firmware.tick()
+            self.sense()
+            # A stalled program (injected by the page or the checks): no tick, the wheels keep their last order.
+            if self.time >= self.stall_until:
+                self.firmware.tick()
             motion = self.firmware.motion
             moving = motion is not None
             # Where each move starts, and each cell of a slide (a new list for each): an adult puts the
@@ -314,6 +366,10 @@ class World:
                     ball["t"] += dt
             self.move(dt)
             self.ball_hits()
+            contact = self.touching or self.ball_contact
+            if contact and not self.contact:
+                self.touched()
+            self.contact = contact
 
     def ball_hits(self):
         """A ball that touches the robot presses its bumper and bounces back."""
@@ -366,15 +422,18 @@ class World:
         with self.lock:
             fw = self.firmware
             return {
-                "time": round(self.time, 2), "mode": self.mode, "noise": self.noise,
+                "time": round(self.time, 2), "mode": self.mode, "noise": self.noise, "timing": self.timing,
+                "crash": self.crash,
                 "mat": {"cols": self.mat["cols"], "rows": self.mat["rows"], "cell_cm": self.cell},
                 "robot": {"x": round(self.x, 2), "y": round(self.y, 2), "heading": round(self.heading, 2),
                           "radius": ROBOT_RADIUS_CM, "led": self.led_color,
                           "moving": fw.motion is not None, "estop": fw.estop, "wait_adult": fw.wait_adult,
                           "last_stop": fw.last_stop, "battery": round(self.battery_level, 1),
                           "collisions": self.collisions, "cell": self.cell_of(self.x, self.y),
-                          "bumper": fw.bumped, "bumps": self.bumps, "warning": fw.warning},
-                "sensors": {"distance_cm": self.rounded(self.distance()), "card_ahead": fw.card_in_front(),
+                          "bumper": fw.bumped, "bumps": self.bumps, "warning": fw.warning,
+                          "fault": fw.fault, "fault_text": fw.fault_text, "motors_cut": self.motors_cut,
+                          "touches": self.bump_count},
+                "sensors": {"distance_cm": self.rounded(self.believed_distance()), "card_ahead": fw.card_in_front(),
                             "camera": fw.view if fw.motion is None else [],
                             "cone": {"half_angle": CAMERA_HALF_ANGLE_DEG, "range": CAMERA_RANGE_CM}},
                 "beliefs": self.beliefs(),
@@ -394,6 +453,14 @@ class World:
                 "wire": list(self.wire)[-60:],
                 "context": list(self.context)[-30:],
             }
+
+    def believed_distance(self):
+        """What the robot believes of the distance in front: its last reading, if recent enough (the page shows that,
+        not the truth, and never draws on the simulation's random numbers from the page's thread)."""
+        value, at = self.dist_reading
+        if int(self.time * 1000) - at > self.firmware_module.HARD_DISTANCE_MAX_AGE_MS:
+            return None
+        return value
 
     @staticmethod
     def rounded(value):
@@ -456,7 +523,7 @@ class World:
             elif do == "button":
                 if data["name"] not in ("stop", "resume"):
                     return {"error": "unknown button"}
-                self.buttons[data["name"]] = self.time + BUTTON_PRESS_S
+                self.press(data["name"])
             elif do == "adult_resume":
                 # An adult does what the Cartographer asks ("put the robot back on cell …, facing …"), then
                 # presses Resume. Without such a request: back on the cell where the interrupted move
@@ -477,7 +544,19 @@ class World:
                     self.x = (int(x // self.cell) + 0.5) * self.cell
                     self.y = (int(y // self.cell) + 0.5) * self.cell
                     self.heading = (round(h / 90) * 90) % 360
-                self.buttons["resume"] = self.time + BUTTON_PRESS_S
+                self.press("resume")
+            elif do == "tap_bumper":
+                # A touch shorter than a tick (a ball that bounces off at once): only the board's counter sees it.
+                self.touched()
+            elif do == "stall":
+                # The program is late (garbage collection, a sensor that makes it wait): no tick for this long.
+                self.stall_until = self.time + max(0.0, float(data["ms"])) / 1000
+            elif do == "distance_sensor":
+                self.distance_working = bool(data["working"])
+            elif do == "timing":
+                for key in self.timing:
+                    if key in data:
+                        self.timing[key] = max(0, int(data[key]))
             elif do == "cable":
                 self.link.plugged = bool(data["plugged"])
                 self.unplugged_at = None if self.link.plugged else self.time
@@ -496,6 +575,14 @@ class World:
             else:
                 return {"error": "unknown action"}
         return {"ok": True}
+
+    def press(self, name):
+        """A press on a button of the robot: held BUTTON_PRESS_S, counted by the board; "stop" cuts the motors."""
+        self.buttons[name] = self.time + BUTTON_PRESS_S
+        self.presses[name] += 1
+        if name == "stop":
+            self.motors_cut = True
+            self.speed, self.strafe, self.turn = 0.0, 0.0, 0.0
 
     def on_mat(self, x, y, w, h):
         return min(max(0.0, x), self.width - w), min(max(0.0, y), self.height - h)
@@ -528,13 +615,19 @@ class Hal:
                                  "unplugged_at": self.w.unplugged_at})
 
     def drive(self, forward_cm_s, right_cm_s, turn_deg_s):
+        if self.w.motors_cut:
+            return  # the board cut the motors (a touch, the stop button): the wheels stay stopped until release()
         self.w.speed, self.w.strafe, self.w.turn = float(forward_cm_s), float(right_cm_s), float(turn_deg_s)
+
+    def release(self, bumps):
+        if bumps == self.w.bump_count and not self.button("stop"):
+            self.w.motors_cut = False
 
     def odometry(self):
         return self.w.odo_cm, self.w.odo_deg
 
     def distance_cm(self):
-        return self.w.distance()
+        return self.w.dist_reading
 
     def battery(self):
         return self.w.battery_level
@@ -542,8 +635,14 @@ class Hal:
     def button(self, name):
         return self.w.buttons.get(name, -1) > self.w.time
 
+    def presses(self, name):
+        return self.w.presses[name]
+
+    def bumps(self):
+        return self.w.bump_count
+
     def camera_view(self):
-        return self.w.camera_view()
+        return self.w.newest_frame()
 
     def compass(self):
         """The magnetometer: the way the robot faces, in degrees from north (the mat lies with north at the top)."""
@@ -579,7 +678,12 @@ def tail_context(world, path, stop):
 def physics(world, stop):
     next_tick = time.monotonic()
     while not stop.is_set():
-        world.step(TICK_S)
+        try:
+            world.step(TICK_S)
+        except Exception as e:  # never a dead thread with the wheels turning: the page shows the error
+            with world.lock:
+                world.speed, world.strafe, world.turn = 0.0, 0.0, 0.0
+                world.crash = f"{type(e).__name__}: {e}"
         next_tick += TICK_S
         delay = next_tick - time.monotonic()
         if delay > 0:
@@ -706,6 +810,8 @@ def make_handler(world):
                 return self.send(200, world.action(data))
             except (ValueError, KeyError, TypeError) as e:
                 return self.send(400, {"error": f"{type(e).__name__}: {e}"})
+            except Exception as e:  # firmware.py that does not load, for example: the page says so
+                return self.send(500, {"error": f"{type(e).__name__}: {e}"})
 
     return Handler
 

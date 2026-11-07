@@ -38,6 +38,9 @@ REASONS = {
     "bump": "something touched the robot's bumper",
     "command": "the Referee stopped the robot",
     "timeout": "the move took too long: the Referee stopped the robot",
+    "late": "the robot's program was late (nothing watched the way for a moment): the robot stopped by itself",
+    "sensor": "the distance sensor gave no recent reading: the robot does not drive forwards without it",
+    "fault": "the robot's program had an error (in reflex.py, or elsewhere): it stopped its wheels",
     "unknown": "the robot did not understand the command",
 }
 EVENTS = {
@@ -49,6 +52,7 @@ EVENTS = {
     "SEEN": "the camera recognised a card in front: ",
     "PAUSE": "something was in the robot's way: it stopped its motors and waited",
     "GO_ON": "the way was clear again: the robot went on with its move",
+    "FAULT": "the robot's program had an error, and stopped its wheels: ",
 }
 WHY_DONE = {
     "all": "it moved all the cells asked",
@@ -61,8 +65,21 @@ WHY_DONE = {
     "watchdog": "it heard nothing from the computer while it stood on a cell",
     "command": "the Referee stopped it on a cell",
     "hold": "the mission was paused or stopped: it stopped on the next cell",
+    "sensor": "the distance sensor gave no recent reading: it stayed on the last cell it reached",
+    "camera": "the camera gave no image after it stopped: it stayed on that cell rather than go on without looking",
+    "fault": "the robot's program had an error while it stood on a cell: it stays there",
 }
+FAULTS = {"reflex": "in reflex.py", "error": "outside reflex.py"}
+FAULT_TO_DO = ("Stop and ask an adult: the robot's program had an error. The adult looks at reflex.py (the "
+               "simulator shows the error), then presses Resume on the robot. Do not try to move it before.")
 STOP_IF = {"card_ahead": "CARD", "ball_seen": "BALL", "new_card": "NEW"}
+# Once the robot stands still, the Cartographer waits at most this long for its camera to look (looked=1 in STATE)
+# before it says what is ahead: the camera's delay plus the time its view needs to be believed, with a margin. The
+# simulator's camera needs about 0.3 s; the real one's delay is TO BE COMPLETED (1 to 2 s according to RobotIA).
+LOOK_WAIT_S = 3.0
+# In look_around, after each quarter turn, a little longer than the camera needs to believe its view: the robot
+# compares two sightings of a ball 0.5 s of images apart, and the next turn would forget the first.
+BALL_SECOND_LOOK_S = 0.4
 # How sure the Cartographer is of a distance given by the camera: this share of the distance, plus a few
 # centimetres. The simulator's camera errs by 10 % by default; the OpenMV N6's is TO BE COMPLETED.
 CAMERA_ERROR = 0.15
@@ -431,6 +448,8 @@ class Cartographer:
                 text = EVENTS.get(kind, kind + (":" + reason if reason else ""))
                 if kind == "STOP":
                     text += REASONS.get(reason, reason)
+                elif kind == "FAULT":
+                    text = EVENTS["FAULT"] + FAULTS.get(reason, reason)
             # "seconds_ago" alone was read by a real model (DeepSeek v4 Flash behind Hermes, 2026-11-03) as a time
             # since the start of a wait: the name says what it counts from.
             events.append({"seconds_before_this_answer": round(age / 1000, 1), "event": text})
@@ -765,7 +784,12 @@ class Cartographer:
         if rule == "robot":
             if answer.get("moved") is False:
                 self.ended()  # a move the robot refused: it never left its cell
-            extra = {"waited": "the robot waited for the way to clear, then gave up"} if answer.get("waited") else {}
+            extra = {}
+            if answer.get("waited"):
+                extra["waited"] = ("the robot waited for a new reading of its distance sensor, then gave up"
+                                   if answer["why"] == "sensor" else "the robot waited for the way to clear, then gave up")
+            if answer["why"] == "fault":
+                extra["what_to_do"] = FAULT_TO_DO
             return self.refused(answer["why"], **extra)
         if rule == "no_moves":
             return self.refused(f"no moves left in this session ({answer['max']})")
@@ -812,8 +836,19 @@ class Cartographer:
         return self.refused(rule)
 
     # The Pilot's commands: the mat -> the robot -------------------------------------------------------------
-    def robot_state(self):
+    def fields_looked(self):
+        """The robot's state, once its camera has looked, if it stands still and may look: never what the camera
+        showed before it stopped."""
         fields = self.fields()
+        end = time.monotonic() + LOOK_WAIT_S
+        while (fields.get("looked") == "0" and fields.get("moving") == "0" and fields.get("wait_adult") == "0"
+               and fields.get("estop") == "0" and fields.get("fault", "none") == "none" and time.monotonic() < end):
+            time.sleep(0.1)
+            fields = self.fields()
+        return fields
+
+    def robot_state(self):
+        fields = self.fields_looked()
         card = fields.get("card", "none")
         known = self.sure and not self.frame
         places = self.places()
@@ -837,6 +872,8 @@ class Cartographer:
             "mat": f"{self.mat['cols']} columns (A to {cell_name(self.mat['cols'] - 1, 0)[0]}), "
                    f"{self.mat['rows']} rows (1 at the top to {self.mat['rows']})",
         }
+        if fields.get("fault", "none") != "none":
+            state["program_error"] = f"{FAULTS.get(fields['fault'], fields['fault'])}: {FAULT_TO_DO}"
         if self.frame and self.sure:
             state["position"] = "probable" if len(places) <= 6 else "unknown"
             state["since_start"] = self.pose_text(self.col, self.row, self.facing)
@@ -948,8 +985,9 @@ class Cartographer:
             if result.get("result") != "done":
                 result["looked_before_it_stopped"] = looked
                 return result
-            time.sleep(0.5)  # the camera names a card after 200 ms standing still
-            self.fields()  # what the camera looked at, facing this way (seen_cards)
+            # result["state"] waited for the camera to look, facing this way (seen_cards counts it); a ball needs a
+            # second sighting
+            time.sleep(BALL_SECOND_LOOK_S)
             looked.append({"facing": FACING[self.facing], "card_ahead": result["state"]["card_ahead"],
                            "distance_ahead_cm": result["state"]["distance_ahead_cm"],
                            "what_the_camera_saw": [e["event"] for e in self.new_events()]})

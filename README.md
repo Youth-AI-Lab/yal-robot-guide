@@ -154,7 +154,9 @@ Things to try:
 and `warn()` while it stands still (the colour of its light when something comes close; only a
 colour, the robot never moves by itself). Change `STOP_DISTANCE_CM`, `MAX_SPEED_CM_S` or
 `WARN_DISTANCE_CM`, or the functions, save, and press **Reload reflex.py** on the page. If the file has a mistake, the page says so and the old
-reflexes keep running.
+reflexes keep running. If a function fails only later, while the robot runs (a division by zero, a
+name written wrong inside it), the robot stops its wheels at once and says so (`EVT FAULT:reflex`);
+it then refuses to move until an adult presses **Resume**. Mend the file and reload it first.
 
 The program of the robot keeps its own limits ([robot/firmware.py](robot/firmware.py),
 `HARD_MAX_SPEED_CM_S`, `HARD_MIN_DISTANCE_CM`, and the bumper all around it, which stops every move):
@@ -434,7 +436,7 @@ such way: they read `since_last_call`.
 About eight minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
 would, then gives missions to the Strategist with no model or a scripted one, then through the
 Interpreter's link over HTTP, as Open WebUI would, and reads in the simulator what really happened:
-164 checks, all passed in the image 2026.10.45 on 7 November 2026 (container with 2 processors, no
+186 checks, all passed in the image 2026.10.45 on 7 November 2026 (container with 2 processors, no
 network). A real Open WebUI (0.12.4) with a fake model, then with Albert's `gemma-4-31b-it` as the
 Interpreter, was tried apart, not in these checks.
 
@@ -448,13 +450,22 @@ or sideways without turning (more slowly: its distance sensor and camera look fo
 cells at most per command, and always stops on a cell. After a move interrupted between two cells it
 waits for an adult: the computer cannot release it.
 
+The robot's program is one loop, every 10 ms, that reads all its sensors at the start of each turn
+and then decides. What is brief (a touch on the bumper, a press on a button) is counted by the board
+itself, which also cuts the motors at once on a touch: a touch shorter than a turn of the loop is never
+missed. The distance and the camera come with the time they were measured: the robot does not believe
+a distance older than 300 ms, nor an image taken before it stopped (the real camera answers late). Any
+error in the program stops the wheels, and so does a loop that ran late while they turned. The head
+of [robot/firmware.py](robot/firmware.py) says what the board must give the program.
+
 ---
 
 ## Limits to know
 
 - **Simulator values.** Cells of 30 cm, 10 cm/s, a one-second watchdog, a sensor that sees a fence
-  10 cm outside the mat (any closer, and the robot could not enter the cells of the edge): the real
-  numbers are TO BE COMPLETED on the robot.
+  10 cm outside the mat (any closer, and the robot could not enter the cells of the edge), a distance
+  every 30 ms, an image every 50 ms with no delay (the real camera answers 1 to 2 s late, to be
+  measured), a loop every 10 ms: the real numbers are TO BE COMPLETED on the robot.
 - **What the simulator cannot tell you**: how the real motors, wheels and sensors behave, the
   battery, the camera's real mistakes, the radio range, and whether children are safe around the
   robot.

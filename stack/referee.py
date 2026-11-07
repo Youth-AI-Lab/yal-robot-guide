@@ -18,7 +18,7 @@ Its language, from the Cartographer (moves of the robot, never directions of the
     events(caller)                 the robot's events this caller has not heard yet
 Its answers: {"result": "done", ...}, {"result": "stopped", "why": <code>} (the robot stopped on the way: an adult
 must come), or {"result": "refused", "rule": <code>, ...}: the Cartographer says it in words.
-To the Reflex: the protocol of robot/firmware.py (protocol 3), one line per command.
+To the Reflex: the protocol of robot/firmware.py (protocol 5), one line per command.
 """
 import datetime
 import fcntl

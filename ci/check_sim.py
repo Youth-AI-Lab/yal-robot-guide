@@ -12,6 +12,7 @@ It takes about five minutes. It needs the `mcp` package, which is in /opt/worksh
 import ast
 import asyncio
 import contextlib
+import importlib.util
 import http.client
 import json
 import math
@@ -179,8 +180,289 @@ def micropython_subset():
         check(f"{path.name} keeps to MicroPython's part of Python", not bad, ", ".join(bad))
 
 
+class FakeHal:
+    """The board, as the firmware sees it, written by hand: the Reflex alone, one tick at a time, no simulator."""
+
+    def __init__(self):
+        self.t, self.out, self.inbox, self.speeds, self.cut = 0, [], [], (0, 0, 0), False
+        self.dist, self.frame, self.bump_n, self.press_n = (100, 0), (None, None, []), 0, {"stop": 0, "resume": 0}
+        self.touch, self.held, self.odo, self.fail_distance, self.fresh = False, set(), [0.0, 0.0], False, True
+        self.fail_write = 0
+
+    def ticks_ms(self): return self.t
+    def ticks_diff(self, new, old): return new - old
+    def read_lines(self):
+        lines, self.inbox = self.inbox, []
+        return lines
+    def write_line(self, text):
+        if self.fail_write:
+            self.fail_write -= 1
+            raise OSError("serial write would block")
+        self.out.append(text)
+    def drive(self, forward, right, turn):
+        if not self.cut:
+            self.speeds = (forward, right, turn)
+    def release(self, bumps):
+        if bumps == self.bump_n and "stop" not in self.held:
+            self.cut = False
+    def odometry(self): return tuple(self.odo)
+    def distance_cm(self):
+        if self.fail_distance:
+            raise OSError("VL53L1X data ready timeout")
+        return self.dist
+    def battery(self): return 100
+    def button(self, name): return name in self.held
+    def presses(self, name): return self.press_n[name]
+    def bumper(self): return self.touch
+    def bumps(self): return self.bump_n
+    def camera_view(self): return self.frame
+    def led(self, color): pass
+
+    def touched(self):
+        """The board's interrupt: count the touch, cut the motors."""
+        self.bump_n += 1
+        self.cut, self.speeds = True, (0, 0, 0)
+
+
+class Reflex:
+    STOP_DISTANCE_CM, MAX_SPEED_CM_S, WATCHDOG_MS, MIN_BATTERY, OBSTACLE_WAIT_MS = 8, 10, 100000, 20, 3000
+    broken = ""  # "must_stop" or "warn": that function raises, as a mistake in reflex.py would
+
+    def must_stop(self, distance_cm, battery):
+        if self.broken == "must_stop":
+            return 1 / 0
+        return "obstacle" if distance_cm is not None and distance_cm < 8 else None
+
+    def warn(self, distance_cm):
+        if self.broken == "warn":
+            return [][0]
+        return None
+
+
+def reflex_unit():
+    """The Reflex alone (robot/firmware.py with a hand-made board): what protects, tick by tick."""
+    spec = importlib.util.spec_from_file_location("firmware_alone", GUIDE / "robot" / "firmware.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    def robot(**changes):
+        hal, reflex = FakeHal(), Reflex()
+        for k, v in changes.items():
+            setattr(reflex, k, v)
+        return module.Firmware(hal, reflex), hal, reflex
+
+    def run(fw, hal, ms, *lines):
+        hal.inbox.extend(lines)
+        for _ in range(ms // 10):
+            hal.t += 10
+            hal.odo[0] += abs(hal.speeds[0]) * 0.01 + abs(hal.speeds[1]) * 0.01
+            hal.odo[1] += abs(hal.speeds[2]) * 0.01
+            if hal.fresh:
+                hal.dist = (100, hal.t)
+            fw.tick()
+
+    fw, hal, reflex = robot(broken="must_stop")
+    run(fw, hal, 20, "MOVE F")
+    refused = "ERR fault" in hal.out and "EVT FAULT:reflex" in hal.out and hal.speeds == (0, 0, 0)
+    run(fw, hal, 20, "MOVE F", "STATE")
+    state = [line for line in hal.out if line.startswith("OK STATE")][-1]
+    check("Reflex alone: an error in reflex.py answers ERR fault, says EVT FAULT:reflex once, the wheels stay "
+          "stopped, STATE fault=reflex", refused and hal.out.count("ERR fault") == 2
+          and hal.out.count("EVT FAULT:reflex") == 1 and "fault=reflex" in state, hal.out)
+    reflex.broken = ""
+    hal.press_n["resume"] += 1
+    run(fw, hal, 20)
+    run(fw, hal, 20, "MOVE F")
+    check("Reflex alone: after Resume (reflex.py mended), it moves again", "OK MOVE F" in hal.out
+          and hal.speeds[0] > 0, hal.out[-4:])
+
+    fw, hal, reflex = robot()
+    run(fw, hal, 300, "MOVE F")
+    driving = hal.speeds[0] > 0
+    hal.fail_distance = True
+    run(fw, hal, 10)
+    check("Reflex alone: a sensor that raises while it drives: the wheels stop in that tick, EVT FAULT:error, "
+          "EVT STOP fault", driving and hal.speeds == (0, 0, 0) and "EVT FAULT:error" in hal.out
+          and "EVT STOP fault" in hal.out, (driving, hal.speeds, hal.out))
+
+    fw, hal, reflex = robot(broken="warn")
+    run(fw, hal, 1000)
+    check("Reflex alone: warn() broken while it stands still: one FAULT, not one per tick",
+          hal.out.count("EVT FAULT:reflex") == 1, hal.out)
+
+    fw, hal, reflex = robot()
+    run(fw, hal, 200, "MOVE F")
+    hal.t += 120  # the program was late: two ticks 130 ms apart while the wheels turn
+    run(fw, hal, 10)
+    late = hal.speeds == (0, 0, 0) and "EVT STOP late" in hal.out
+    hal.press_n["resume"] += 1
+    run(fw, hal, 20)
+    hal.t += 500  # late while it stands still: nothing watched, nothing moved
+    run(fw, hal, 10, "STATE")
+    state = [line for line in hal.out if line.startswith("OK STATE")][-1]
+    check("Reflex alone: a late tick while the wheels turn stops it (EVT STOP late); standing still, a late tick "
+          "changes nothing but tick_max", late and hal.out.count("EVT STOP late") == 1 and "tick_max=510" in state,
+          (hal.out, state))
+    run(fw, hal, 10, "STATE")
+    state = [line for line in hal.out if line.startswith("OK STATE")][-1]
+    check("Reflex alone: tick_max counts since the last STATE", "tick_max=10" in state and "fault=none" in state, state)
+
+    fw, hal, reflex = robot()
+    run(fw, hal, 300, "MOVE F")
+    hal.touched()  # a touch shorter than a tick: the bumper is already free again when the tick comes
+    run(fw, hal, 10)
+    check("Reflex alone: a touch shorter than a tick, counted by the board: EVT BUMP, EVT STOP bump, the motors "
+          "released once dealt with", "EVT BUMP" in hal.out and "EVT STOP bump" in hal.out and not hal.cut
+          and hal.speeds == (0, 0, 0), (hal.out, hal.cut))
+
+    fw, hal, reflex = robot()
+    run(fw, hal, 300, "MOVE F")
+    hal.fresh = False  # the distance sensor stops giving readings
+    run(fw, hal, 400)
+    stale = hal.speeds == (0, 0, 0)
+    run(fw, hal, 1200, "STATE")
+    state = [line for line in hal.out if line.startswith("OK STATE")][-1]
+    check("Reflex alone: no recent distance forwards: the motors stop, it waits, then EVT STOP sensor; STATE "
+          "dist=none", stale and "EVT STOP sensor" in hal.out and "dist=none" in state, (hal.out, state))
+    fw, hal, reflex = robot()
+    hal.fresh = False
+    run(fw, hal, 400)  # its last reading is now older than 300 ms
+    run(fw, hal, 1500, "MOVE F")
+    check("Reflex alone: no recent distance before it starts: EVT REFUSED sensor, it never moved",
+          "EVT REFUSED sensor" in hal.out and hal.odo[0] == 0, hal.out)
+
+    fw, hal, reflex = robot()
+    run(fw, hal, 100)
+    hal.frame = (1, -500, [["barbecue", 0, 30]])  # an image taken before it stopped (the camera answers late)
+    run(fw, hal, 500, "STATE")
+    before = [line for line in hal.out if line.startswith("OK STATE")][-1]
+    n = 1
+    for _ in range(40):
+        n += 1
+        hal.frame = (n, hal.t, [["barbecue", 0, 30]])
+        run(fw, hal, 10)
+    run(fw, hal, 10, "STATE")
+    after = [line for line in hal.out if line.startswith("OK STATE")][-1]
+    check("Reflex alone: an image taken before it stopped is not believed; images taken after are, once stable",
+          "looked=0" in before and "card=none" in before and "looked=1" in after and "card=barbecue" in after
+          and any(line.startswith("EVT SEEN:barbecue") for line in hal.out), (before, after))
+
+    fw, hal, reflex = robot()
+    hal.frame = (1, -500, [])
+    run(fw, hal, 2500, "MOVE F 2 UNTIL CARD")
+    check("Reflex alone: a slide that must look, with no image since it stopped: EVT DONE F 0 camera, it never "
+          "moved", "EVT DONE F 0 camera" in hal.out and hal.odo[0] == 0, hal.out)
+
+
+    # Found by the review of protocol 5 (2026-11-07).
+    fw, hal, reflex = robot()
+    run(fw, hal, 300, "MOVE F")
+    hal.touched()
+    run(fw, hal, 10)
+    stopped_at = hal.t
+    hal.frame = (5, hal.t + 500, [])  # taken at the old place, after the stop, given late
+    run(fw, hal, 1000)
+    hal.press_n["resume"] += 1  # the adult put it back in front of a card
+    run(fw, hal, 20)
+    run(fw, hal, 2500, "MOVE F 2 UNTIL CARD")
+    check("Reflex alone: after Resume, an image taken before (at the old place) is not believed: the slide stops on "
+          "its cell (camera), it never drives", "EVT DONE F 0 camera" in hal.out and hal.speeds == (0, 0, 0)
+          and stopped_at < 2000, hal.out[-4:])
+
+    fw, hal, reflex = robot()
+    run(fw, hal, 300, "MOVE F")
+    hal.bump_n += 1
+    hal.cut = True  # a board whose motor driver keeps its last order while the motors are cut
+    run(fw, hal, 10)
+    check("Reflex alone: once a touch is dealt with, the motors are released with the order stop, never an older one",
+          not hal.cut and hal.speeds == (0, 0, 0), (hal.cut, hal.speeds))
+
+    fw, hal, reflex = robot()
+    run(fw, hal, 300, "MOVE F 3")
+    reflex.broken, hal.fail_write = "must_stop", 3
+    run(fw, hal, 10)
+    reflex.broken = ""
+    run(fw, hal, 200)
+    check("Reflex alone: an error while saying the error (the cable's writes fail): nothing moves any more, fault set",
+          hal.speeds == (0, 0, 0) and fw.motion is None and fw.fault == "reflex", (hal.speeds, fw.motion, fw.fault))
+
+    fw, hal, reflex = robot()
+    run(fw, hal, 100)
+    hal.t += 60  # late while it stands still, and the command comes in that tick
+    run(fw, hal, 300, "MOVE F")
+    check("Reflex alone: a late tick before a move starts is not a late tick of a move: it drives",
+          "EVT STOP late" not in hal.out and hal.speeds[0] > 0, hal.out)
+
+    fw, hal, reflex = robot()
+    hal.fail_distance = True
+    run(fw, hal, 100, "STATE")
+    hal.fail_distance = False
+    hal.press_n["resume"] += 1
+    run(fw, hal, 100, "STATE")
+    states = [line for line in hal.out if line.startswith("OK STATE")]
+    check("Reflex alone: a sensor that fails at every tick does not make the robot deaf: STATE answers fault=error, "
+          "Resume is heard", len(states) == 2 and "fault=error" in states[0] and "fault=none" in states[1]
+          and hal.out.count("EVT FAULT:error") == 1 and "EVT RESUMED" in hal.out, hal.out)
+
+    fw, hal, reflex = robot(MAX_SPEED_CM_S="fast")
+    run(fw, hal, 100, "MOVE F")
+    check("Reflex alone: a constant of reflex.py that is not a number: FAULT:reflex, the wheels stay stopped",
+          "EVT FAULT:reflex" in hal.out and hal.speeds == (0, 0, 0) and "MAX_SPEED_CM_S" in (fw.fault_text or ""),
+          (hal.out, fw.fault_text))
+
+
+async def timing_scenarios(sim, env):
+    """The board's side, in the simulator: a touch shorter than a tick, a late program, a dead distance sensor,
+    a camera that answers late."""
+    sim.fresh()
+    async with agent(env) as a:
+        tap = asyncio.create_task(later(0.8, sim.act, do="tap_bumper"))
+        reply = await a.call("step_forward")
+        await tap
+        r1 = sim.state()["robot"]
+        await asyncio.sleep(0.3)
+        r2 = sim.state()["robot"]
+        check("a touch shorter than a tick during a move (counted by the board): the robot stops, the motors were cut",
+              reply.get("result") == "stopped" and "bumper" in reply.get("why", "") and not r2["moving"]
+              and near(r1["y"], r2["y"], 0.01) and r2["touches"] == 1, (reply, r1, r2))
+        sim.act(do="adult_resume")
+        await asyncio.sleep(0.5)
+
+    sim.fresh()
+    async with agent(env) as a:
+        stall = asyncio.create_task(later(0.8, sim.act, do="stall", ms=150))
+        reply = await a.call("step_forward")
+        await stall
+        check("the program late during a move (no tick for 150 ms): the robot stops by itself",
+              reply.get("result") == "stopped" and "late" in reply.get("why", "") and not sim.state()["robot"]["moving"],
+              reply)
+        sim.act(do="adult_resume")
+        await asyncio.sleep(0.5)
+
+    sim.fresh()
+    sim.act(do="distance_sensor", working=False)
+    async with agent(env) as a:
+        reply = await a.call("step_forward")
+        r = sim.state()["robot"]
+        check("a distance sensor that gives no reading: step_forward refused after waiting for one, the robot never moved",
+              reply.get("result") == "refused" and "distance sensor" in reply.get("why", "")
+              and "new reading" in reply.get("waited", "") and r["cell"] == "C5" and near(r["y"], 135), (reply, r))
+    sim.act(do="distance_sensor", working=True)
+
+    sim.act(do="timing", camera_delay_ms=1500)
+    sim.fresh(cards=[{"cell": "C2", "label": "barbecue"}])
+    async with agent(env) as a:
+        reply = await a.call("move", direction="north", cells=3, stop_if=["card_ahead"])
+        r = sim.state()["robot"]
+        check("a camera 1.5 s late: move north until a card is ahead still stops on C3, in front of the card",
+              reply.get("result") == "done" and r["cell"] == "C3"
+              and (reply["state"]["card_ahead"] or {}).get("card") == "barbecue", (reply, r))
+    sim.act(do="timing", camera_delay_ms=0)
+
+
 async def main():
     micropython_subset()
+    reflex_unit()
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp)
         mat_path = state_dir / "mat.json"
@@ -196,6 +478,7 @@ async def main():
         sim = Sim(state_dir, mat_path)
         try:
             await scenarios(sim, env)
+            await timing_scenarios(sim, env)
             stack_scenarios(sim, env)
             await interpreter_scenarios(sim, env)
         finally:
@@ -332,6 +615,14 @@ async def scenarios(sim, env):
         reply = await a.call("turn", direction="right")
         check("no more moves than allowed", reply.get("result") == "refused" and "no moves left" in reply.get("why", ""),
               reply)
+
+    # look_around: a ball in view on one side is said, once the camera has seen it twice.
+    sim.fresh(balls=[{"from": [135, 135], "to": [135, 135], "radius": 7, "speed_cm_s": 0}])
+    async with agent(env) as a:
+        reply = await a.call("look_around")
+        east = (reply.get("looked") or [{}])[0]
+        check("look_around: a ball standing east (E5) is said while the robot faces east",
+              east.get("facing") == "east" and any("ball" in e for e in east.get("what_the_camera_saw", [])), reply)
 
     # look_around and face: several quarter turns, one move.
     sim.fresh(cards=[{"cell": "C4", "label": "barbecue"}])
@@ -884,10 +1175,11 @@ async def scenarios(sim, env):
     sim.fresh(cards=[{"cell": "C3", "label": "water-point"}])
     sim.act(do="noise", camera_distance=0.05)
     async with agent(env) as a:
-        await a.call("step_forward")
+        step = await a.call("step_forward")
         await asyncio.sleep(0.6)
         reply = await a.call("robot_state")
-        heard = [e["event"] for e in reply.get("since_last_call", [])]
+        # The answer of the step already waited for the camera to look: the card may come with it.
+        heard = [e["event"] for e in step.get("since_last_call", []) + reply.get("since_last_call", [])]
         check("the camera's card reaches the agent, with where it was seen from, its distance and cell",
               any("water-point" in e and "seen from C4 facing north" in e and "cm away" in e and "C3" in e for e in heard),
               heard)

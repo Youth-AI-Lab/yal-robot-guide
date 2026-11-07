@@ -199,10 +199,15 @@ function panels() {
 
   const reflex = document.getElementById("reflex");
   reflex.replaceChildren(Object.entries(state.reflex).map(([k, v]) => k + " = " + v).join("\n"));
-  if (state.reflex_error) {
+  const errors = [];
+  if (state.reflex_error) errors.push("reflex.py has a mistake, the old reflexes still run: " + state.reflex_error);
+  if (r.fault) errors.push("The robot's program had an error (" + (r.fault === "reflex" ? "in reflex.py" : "outside reflex.py")
+    + "), it stopped its wheels and waits for Resume: " + (r.fault_text || ""));
+  if (state.crash) errors.push("The simulator itself had an error, the wheels are stopped: " + state.crash);
+  for (const text of errors) {
     const e = document.createElement("div");
     e.className = "error";
-    e.textContent = "reflex.py has a mistake, the old reflexes still run: " + state.reflex_error;
+    e.textContent = text;
     reflex.append(e);
   }
 
