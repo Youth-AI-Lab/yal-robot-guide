@@ -830,6 +830,18 @@ class Cartographer:
         return (f"Stop and ask an adult to put the robot back on cell {cell_name(col, row)}, facing "
                 f"{FACING[facing]}, then to press Resume on the robot. Do not try to move it before.")
 
+    def counts(self):
+        """The counters, since the mission began (or the session, without a mission), and the adults' limits."""
+        both = common.counts()
+        part = both["this_mission"] or both["session"]
+        out = {"since": "the mission began" if both["this_mission"] is not None else "the session began"}
+        out.update({k: part[k] for k in common.COUNTS if k != "missions"})
+        out["model_usd"] = round(out["model_usd"], 4)
+        limits = self.referee.limits()
+        if limits:
+            out["limits_per_mission"] = limits
+        return out
+
     # The Referee's answers, in words ----------------------------------------------------------------------------
     def refused(self, why, **extra):
         return dict({"result": "refused", "why": REASONS.get(why, why)}, **extra)
@@ -852,7 +864,10 @@ class Cartographer:
                 extra["what_to_do"] = FAULT_TO_DO
             return self.refused(answer["why"], **extra)
         if rule == "no_moves":
-            return self.refused(f"no moves left in this session ({answer['max']})")
+            return self.refused(f"no moves left: the adults allow {answer['max']} moves per mission")
+        if rule == "limit":
+            return self.refused(f"no {answer['counter']} left: the adults allow {answer['max']} {answer['counter']} per "
+                                "mission")
         if rule == "off_mat":
             return self.refused("the next cell is outside the mat")
         if rule == "card":
@@ -929,6 +944,7 @@ class Cartographer:
             "last_stop": "none" if fields.get("last_stop", "none") == "none"
                          else REASONS.get(fields["last_stop"], fields["last_stop"]),
             "moves_left": self.referee.moves_left(),
+            "counts": self.counts(),
             "mat": f"{self.mat['cols']} columns (A to {cell_name(self.mat['cols'] - 1, 0)[0]}), "
                    f"{self.mat['rows']} rows (1 at the top to {self.mat['rows']})",
         }

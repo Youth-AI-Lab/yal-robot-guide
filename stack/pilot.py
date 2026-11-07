@@ -88,7 +88,7 @@ class Pilot:
         self.leaving = False
         self.covered = set()   # cells the camera has looked at
         self.state = {}
-        self.moves_left = MAT["max_moves"]
+        self.moves_left = (RULES.get("limits") or {}).get("moves")  # None: the adults set no limit
         self.settings = {k: v["default"] for k, v in SETTINGS.items()}
 
     def configure(self, settings):
@@ -104,13 +104,17 @@ class Pilot:
         self.settings.update(settings or {})
         self.settings["max_leg"] = max(1, min(MAX_CELLS, self.settings["max_leg"]))
 
+    def short(self, n):
+        """n moves or fewer left under the adults' limit (never without a limit)."""
+        return self.moves_left is not None and self.moves_left <= n
+
     # --- what the Cartographer says ------------------------------------------------------------------------------
     def read(self, answer):
         state = answer.get("state") if isinstance(answer.get("state"), dict) else answer
         if "cell" in state and "position_known" in state:
             self.state = state
-            if isinstance(state.get("moves_left"), int):
-                self.moves_left = state["moves_left"]
+            if "moves_left" in state:
+                self.moves_left = state["moves_left"] if isinstance(state["moves_left"], int) else None
             if state.get("position_known") and state.get("cell") and state.get("facing"):
                 self.note_distance(cell_xy(state["cell"]), state["facing"], state.get("distance_ahead_cm"))
                 if state.get("on_a_ball_lane"):
@@ -205,7 +209,7 @@ class Pilot:
             if self.state.get("position_known"):
                 return
             now = len(self.state.get("could_be") or [None] * 99)
-            if self.moves_left <= 2 or now == places:
+            if self.short(2) or now == places:
                 break  # a whole round ruled nothing out: the border alone will not settle it
             places = now
             answer = self.read(command("step_forward"))
@@ -251,7 +255,7 @@ class Pilot:
         """Face the way, then go forwards: the distance sensor and the camera watch the way."""
         dc, dr = STEP[direction]
         for _ in range(BALL_WAITS):
-            if self.moves_left <= 1:
+            if self.short(1):
                 raise Stuck("no moves left")
             if not self.face(direction):
                 self.here()
@@ -385,7 +389,7 @@ class Pilot:
     def refine(self, only=None):
         """Look again, from at most two cells away, at the cards whose cell is not sure."""
         for _ in range(4):
-            if self.moves_left <= 3:
+            if self.short(3):
                 return
             unsure = [s for s in self.records() if s.get("could_also_be") and (only is None or s["card"] == only)]
             if not unsure:
@@ -450,7 +454,7 @@ def explore(look_for=None):
     if not PILOT.covered:
         PILOT.look_around()
     while not (look_for and look_for in PILOT.cards()):
-        if PILOT.moves_left <= 2:
+        if PILOT.short(2):
             break
         target = PILOT.next_vantage()
         if target is None:
@@ -487,7 +491,7 @@ def go_to_card(card):
                 if (card, cell) not in PILOT.ruled_out and not PILOT.is_blocked(cell_xy(cell)):
                     candidates[cell] = min(far, candidates.get(cell, 1e9))
         if not candidates:
-            if PILOT.moves_left <= 2:
+            if PILOT.short(2):
                 break
             explore(card)  # never seen, or every place ruled out: look again
             if not any(s["card"] == card for s in PILOT.records()):
@@ -690,3 +694,10 @@ TOOLSETS = {
     },
 }
 MOVES = {"step_forward", "move", "turn", "look_around", "face", "go_to_card", "explore", "go_to_cell"}
+
+
+def operate(fn, **arguments):
+    """One operation asked of the Pilot (a tool, whoever asks: the Strategist's model, the Strategist without a model,
+    an agent through stack/drive.py): counted, then done."""
+    common.count("operations")
+    return fn(**arguments)

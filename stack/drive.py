@@ -41,6 +41,7 @@ from cartographer import STOP_IF  # noqa: E402
 
 
 def answer(tool, arguments, result):
+    common.count("operations")  # an operation asked of the Pilot, through this door
     text = json.dumps(result, ensure_ascii=False)
     log(tool, arguments, text)
     return text
@@ -171,10 +172,10 @@ def by_hand(args):
         print(wait_for_event(int(args[1]) if len(args) == 2 else 10))
     elif args == ["reset"]:
         # Only for a person who has just put the robot on its start cell, facing the right way: a new session.
-        for name in ("terrain.json", "referee.json"):
+        for name in ("terrain.json", "referee.json", "counters.json"):
             (STATE_DIR / name).unlink(missing_ok=True)
         print("The Cartographer now counts from the start cell: " + MAT_START + "; the Referee counts the moves "
-              "from zero.")
+              "from zero, and the counters start again.")
     elif args[0] == "light" and len(args) == 2 and args[1] in COLORS:
         print(set_light(args[1]))
     else:

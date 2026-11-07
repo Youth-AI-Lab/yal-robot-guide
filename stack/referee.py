@@ -62,8 +62,19 @@ class Referee:
         with (STATE_DIR / "referee.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
 
+    def moved(self, n):
+        """A move counted (n = 1), or given back when the robot never moved (n = -1)."""
+        self.moves += n
+        common.count("moves", n)
+
+    def limits(self):
+        """The adults' optional limits ("limits" in rules.json): moves, commands, cells, per mission."""
+        return {k: v for k, v in (self.rules.get("limits") or {}).items() if isinstance(v, int) and not isinstance(v, bool)}
+
     def moves_left(self):
-        return self.mat["max_moves"] - self.moves
+        """Moves left under the adults' limit, or None when they set none."""
+        limit = self.limits().get("moves")
+        return None if limit is None else max(0, limit - common.used()["moves"])
 
     # One command at a time ------------------------------------------------------------------------------------
     def door(self, is_move, body):
@@ -135,15 +146,30 @@ class Referee:
         return out, restarted, lost
 
     def light(self, color):
+        common.count("commands")
         reply = self.link.request("LED " + color)
         self.journal(f"LED {color}", "sent")
         return {"result": "done"} if reply.startswith("OK") else {"result": "refused", "rule": "robot", "why": reply[4:]}
 
     # The rules ------------------------------------------------------------------------------------------------
     def budget(self, counted):
-        if counted and self.moves >= self.mat["max_moves"]:
-            return {"result": "refused", "rule": "no_moves", "max": self.mat["max_moves"]}
+        """A limit of the adults reached: {"rule": "no_moves", "max": n} for the moves (a counted move only), or
+        {"rule": "limit", "counter": "commands" | "cells", "max": n}; None when none is reached or set."""
+        limits, used = self.limits(), common.used()
+        if counted and "moves" in limits and used["moves"] >= limits["moves"]:
+            return {"rule": "no_moves", "max": limits["moves"]}
+        for counter in ("commands", "cells"):
+            if counter in limits and used[counter] >= limits[counter]:
+                return {"rule": "limit", "counter": counter, "max": limits[counter]}
         return None
+
+    def over(self, command, counted):
+        """The refusal of a move when a limit is reached, or None."""
+        reached = self.budget(counted)
+        if reached is None:
+            return None
+        rule = reached.pop("rule")
+        return self.refuse(command, rule, **reached)
 
     def ball_near(self, terrain, cells, forward=False):
         """The first of these cells where a ball seen less than ball_seen_recently_s ago could be in the way, or None.
@@ -183,9 +209,9 @@ class Referee:
     # The moves ------------------------------------------------------------------------------------------------
     def step(self, terrain, target, card_ahead):
         """One cell forwards."""
-        refused = self.budget(True)
+        refused = self.over("MOVE F", True)
         if refused:
-            return self.refuse("MOVE F", "no_moves", max=self.mat["max_moves"])
+            return refused
         if target is None:
             return self.refuse("MOVE F", "off_mat")
         if self.rules["never_onto_a_card"] and (card_ahead or cell_name(*target) in terrain.card_cells(caution=False)):
@@ -194,15 +220,16 @@ class Referee:
         if near:
             return self.refuse("MOVE F", "ball_forward", cell=cell_name(*near))
         terrain.moving([target], counted=True)
-        self.moves += 1
+        self.moved(1)
         return self.watch("MOVE F", "F", terrain, counted=True)
 
     def step_blind(self, terrain, target, card_ahead, dist, need_cm):
         """One cell forwards while the Cartographer does not know where the robot is on the mat: only when the distance
         sensor sees the way free beyond that cell (so it is on the mat, and nothing is in the way), never onto a card in
         front of the camera, never while a ball was seen a moment ago (where it is cannot be known)."""
-        if self.budget(True):
-            return self.refuse("MOVE F", "no_moves", max=self.mat["max_moves"])
+        refused = self.over("MOVE F", True)
+        if refused:
+            return refused
         if self.rules["never_onto_a_card"] and card_ahead:
             return self.refuse("MOVE F", "card", cell="ahead")
         ball = terrain.ball_sighting() or {}
@@ -211,23 +238,24 @@ class Referee:
         if dist is None or dist < need_cm:
             return self.refuse("MOVE F", "unknown_way", seen_cm=dist)
         terrain.moving([target], counted=True)
-        self.moves += 1
+        self.moved(1)
         return self.watch("MOVE F", "F", terrain, counted=True)
 
     def turn(self, terrain, way, counted):
-        refused = self.budget(counted)
+        refused = self.over("TURN " + way, counted)
         if refused:
-            return self.refuse("TURN " + way, "no_moves", max=self.mat["max_moves"])
+            return refused
         terrain.moving([], counted=counted)
-        self.moves += 1 if counted else 0
+        self.moved(1 if counted else 0)
         return self.watch("TURN " + way, way, terrain, counted=counted)
 
     def slide(self, terrain, way, cells, until, asked, hold=None):
         """Slide without turning: one move however many cells, stopping on a cell. A card on the way shortens it (the
         robot never drives onto a card it knows): forwards before any card placed for sure, sideways or backwards
         before any card the camera placed, even from far."""
-        if self.budget(True):
-            return self.refuse(f"MOVE {way} {asked}", "no_moves", max=self.mat["max_moves"])
+        refused = self.over(f"MOVE {way} {asked}", True)
+        if refused:
+            return refused
         if not cells:
             return self.refuse(f"MOVE {way} {asked}", "off_mat")
         card_stop = None
@@ -254,7 +282,7 @@ class Referee:
             conditions.append("CARD")  # forwards, it always stops in front of a card, never on it
         command = f"MOVE {way} {len(cells)}" + (" UNTIL " + ",".join(conditions) if conditions else "")
         terrain.moving(cells, counted=True)
-        self.moves += 1
+        self.moved(1)
         result = self.watch(command, way, terrain, counted=True, slide=cells, look=bool(conditions), hold=hold)
         if result["result"] == "done":
             result.update(card_stop=card_stop, edge=len(cells) < asked and card_stop is None)
@@ -264,9 +292,10 @@ class Referee:
         """Send one command and watch it until it ends, sending PING meanwhile ("I am still here": without it, the
         robot stops, its watchdog). hold: asked at each heartbeat during a slide; when it says yes (the mission is
         paused or stopped), HOLD: the robot stops on the next cell, as soon as possible, with no adult needed."""
+        common.count("commands")
         reply = self.link.request(command)
         if reply.startswith("ERR "):
-            self.moves -= 1 if counted else 0
+            self.moved(-1 if counted else 0)
             self.journal(command, "refused by the robot", why=reply[4:])
             return {"result": "refused", "rule": "robot", "why": reply[4:], "moved": False}
         self.journal(command, "sent")
@@ -282,6 +311,7 @@ class Referee:
                 next_ping = time.monotonic() + HEARTBEAT_S
                 if slide is not None and hold is not None and not held and hold():
                     self.link.send("HOLD")
+                    common.count("commands")
                     held = True
                     self.journal(command, "hold: stop on the next cell")
             if line is None or line in ("OK PONG", "OK HOLD"):
@@ -289,23 +319,27 @@ class Referee:
             if slide is not None and line.startswith("EVT CELL "):
                 k, pose = line.split()[2:4]
                 done = int(k)
+                common.count("cells")
                 terrain.reached(slide[done - 1], pose)
                 end = time.monotonic() + allowed
                 continue
             if slide is None and line == "EVT DONE " + kind:
+                if kind == "F":
+                    common.count("cells")
                 return {"result": "done", "cells_done": 1 if kind == "F" else 0}
             if slide is not None and line.startswith(f"EVT DONE {kind} "):
                 if done == 0:
-                    self.moves -= 1  # it never moved: like a refusal, not counted
+                    self.moved(-1)  # it never moved: like a refusal, not counted
                 return {"result": "done", "cells_done": done, "why": line.split()[4]}
             if line.startswith("EVT STOP "):
                 self.journal(command, "stopped by the robot", why=line[9:])
                 return {"result": "stopped", "why": line[9:], "cells_done": done}
             if line.startswith("EVT REFUSED "):
                 # It waited, the way stayed blocked, it never moved: still where it was.
-                self.moves -= 1 if counted else 0
+                self.moved(-1 if counted else 0)
                 return {"result": "refused", "rule": "robot", "why": line[12:], "moved": False, "waited": True}
         try:
+            common.count("commands")
             self.link.request("STOP")  # read its OK STOP: left unread, it would be taken for the next answer
         except RobotNotConnected:
             pass

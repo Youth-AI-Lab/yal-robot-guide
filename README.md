@@ -42,7 +42,9 @@ Three rules hold the design together:
   ([robot/reflex.py](robot/reflex.py), [robot/firmware.py](robot/firmware.py)).
 - **The Referee is the only door.** Four cells at most per move (a move counts one, however many
   cells), never off the mat, never onto a card, backwards or sideways only into cells its sensor saw
-  free, a number of moves per session. No personality and no model can loosen these rules
+  free, and, if the adults set them, limits per mission on the moves, the commands sent to the robot or
+  the cells it goes through (`limits`, none by default: what costs is the calls to the model, which the
+  Strategist limits, in turns and in dollars per mission). No personality and no model can loosen these rules
   ([stack/rules.json](stack/rules.json), [mat.json](mat.json)). The rules also say where the robot
   starts (`start`: a cell and a way to face, only the way it faces such as `{"facing": "north"}` for
   the top of the mat, or `"unknown"`) and which cards are landmarks on a known
@@ -436,7 +438,7 @@ such way: they read `since_last_call`.
 About eight minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
 would, then gives missions to the Strategist with no model or a scripted one, then through the
 Interpreter's link over HTTP, as Open WebUI would, and reads in the simulator what really happened:
-186 checks, all passed in the image 2026.10.45 on 7 November 2026 (container with 2 processors, no
+192 checks, all passed in the image 2026.10.45 on 7 November 2026 (container with 2 processors, no
 network). A real Open WebUI (0.12.4) with a fake model, then with Albert's `gemma-4-31b-it` as the
 Interpreter, was tried apart, not in these checks.
 

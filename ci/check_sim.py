@@ -468,6 +468,11 @@ async def main():
         mat_path = state_dir / "mat.json"
         mat_path.write_text(json.dumps(MAT), encoding="utf-8")
         env = dict(os.environ, ROBOT_STATE_DIR=str(state_dir), ROBOT_MAT=str(mat_path))
+        # The step tools are checked with a limit of the adults on the moves (none by default): MAT["max_moves"].
+        limited = json.loads((GUIDE / "stack" / "rules.json").read_text(encoding="utf-8"))
+        limited["limits"] = {"moves": MAT["max_moves"]}
+        (state_dir / "rules-limited.json").write_text(json.dumps(limited), encoding="utf-8")
+        env["ROBOT_RULES"] = str(state_dir / "rules-limited.json")
 
         # No robot yet: a clear answer, no crash.
         async with agent(dict(env, ROBOT_SERIAL=str(state_dir / "no-such-port"))) as a:
@@ -1396,6 +1401,7 @@ def mission(env, *args, wait=True):
 def stack_scenarios(sim, env):
     """The stack above the Referee: a mission in the closed format, through the Strategist, the Pilot and the
     Cartographer, with no model (the Pilot alone) or a scripted one. No network, no key."""
+    env = {k: v for k, v in env.items() if k != "ROBOT_RULES"}  # the rules of the guide: no limit on the moves
     big = dict(MAT, max_moves=40)
     world = {"cards": [{"cell": "C2", "label": "barbecue"}], "boxes": [], "balls": []}
     sim.act(do="load_world", mat=big, world=world)
@@ -1405,6 +1411,12 @@ def stack_scenarios(sim, env):
     check("mission without a model: the Pilot alone stops in front of the barbecue, light green",
           report.get("outcome") == "done" and {"card": "barbecue", "cell": "C2"} in report.get("cards", [])
           and r["cell"] == "C3" and r["collisions"] == 0, (done.stderr[-500:], report, r))
+    counts = report.get("counts") or {}
+    check("the report counts the mission: one mission, two operations, no call to the model, the cells the robot "
+          "went through (C5 to C3), the commands sent; no limit on the moves by default",
+          counts.get("missions") == 1 and counts.get("operations") == 2 and counts.get("model_calls") == 0
+          and counts.get("cells") == 2 and counts.get("commands", 0) >= 2 and counts.get("moves", 0) >= 1
+          and report.get("moves_left") is None, report)
 
     sim.act(do="load_world", mat=big, world=world)
     done = mission(env, "find_card:barbecue", "--model", "fake")
@@ -1412,6 +1424,9 @@ def stack_scenarios(sim, env):
     check("mission with a scripted model: it looks, reads the record, reports the card and its cell",
           report.get("outcome") == "done" and report.get("cards") == [{"card": "barbecue", "cell": "C2"}]
           and report.get("turns") == 4, (done.stderr[-500:], report))
+    counts = report.get("counts") or {}
+    check("its counts: one mission (the counts start again), four calls to the model, the operations it asked",
+          counts.get("missions") == 1 and counts.get("model_calls") == 4 and counts.get("operations", 0) >= 2, report)
     runs = sorted((Path(env["ROBOT_STATE_DIR"]) / "missions").iterdir())
     sent = (runs[-1] / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
     check("the model received the mission built from the closed format, never other words",
@@ -1473,6 +1488,20 @@ def stack_scenarios(sim, env):
         done = subprocess.run([PYTHON, "-I", str(GUIDE / "stack" / "drive.py"), *args], env=env_rules,
                               capture_output=True, text=True, timeout=60)
         return json.loads(done.stdout or "{}")
+
+    # A limit of the adults on another counter: two commands, the third move is refused, nothing sent.
+    two = with_rules("two-commands", limits={"commands": 2})
+    sim.act(do="load_world", mat=big, world={"cards": [], "boxes": [], "balls": []})
+    drive(two, "forward")
+    drive(two, "forward")
+    sent = wire_count(sim, "MOVE")
+    third = drive(two, "forward")
+    state = drive(two, "state")
+    check("rules with at most 2 commands: the third move is refused in words, nothing sent; robot_state shows the "
+          "counts and the limit", third.get("result") == "refused" and "the adults allow 2 commands" in third.get("why", "")
+          and wire_count(sim, "MOVE") == sent and (state.get("counts") or {}).get("commands") == 2
+          and (state.get("counts") or {}).get("limits_per_mission") == {"commands": 2}
+          and (state.get("counts") or {}).get("cells") == 2, (third, state))
 
     unknown = with_rules("unknown", start="unknown")
     sim.act(do="load_world", mat=big, world={"cards": [], "boxes": [], "balls": []})
@@ -1560,6 +1589,7 @@ async def interpreter_scenarios(sim, env):
     """The link from the Interpreter to the Strategist (stack/interpreter_link.py): MCP over HTTP with a token, as Open
     WebUI would use it. The Strategist with no model: no network, no key."""
     import secrets
+    env = {k: v for k, v in env.items() if k != "ROBOT_RULES"}  # the rules of the guide
     from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 
     token, port = secrets.token_hex(24), 18790

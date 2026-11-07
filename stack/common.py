@@ -1,6 +1,7 @@
 """What every tier of the stack shares: where the files are, the mat, the names of the cells, the log of what the
 caller received. No decision here."""
 import datetime
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -63,3 +64,56 @@ def mission_control():
         return load_json(STATE_DIR / "control.json").get("do", "go")
     except (OSError, ValueError, AttributeError):
         return "go"
+
+
+# The counters of the session, kept by the tier that does the thing (.robot-sim/counters.json, deleted with the
+# session): missions the Strategist was given, its calls to the model and their cost (as the provider says it),
+# operations the Pilot was asked (the tools), commands the Referee sent to the robot (MOVE, TURN, HOLD, STOP, LED: what
+# acts, not STATE, EVENTS or PING), cells the robot really went through (EVT CELL, or MOVE F done), and the moves of
+# the Referee's rule (a step, a slide or a quarter turn; look_around counts one). The same counts since the mission
+# began, while one runs or after it ended, until the next one.
+COUNTS = ("missions", "model_calls", "model_usd", "operations", "commands", "cells", "moves")
+
+
+def _counters(change=None):
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with (STATE_DIR / "counters.lock").open("w") as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)  # several processes count: the Strategist, an agent's MCP door, a terminal
+        try:
+            data = load_json(STATE_DIR / "counters.json")
+        except (OSError, ValueError):
+            data = {}
+        data = {"session": dict({k: 0 for k in COUNTS}, **data.get("session", {})), "mission": data.get("mission")}
+        if change:
+            change(data)
+            (STATE_DIR / "counters.json").write_text(json.dumps(data) + "\n", encoding="utf-8")
+        return data
+
+
+def count(name, n=1):
+    """Add n to a counter (a cost in dollars for model_usd), for the session and the mission."""
+    def add(data):
+        for part in (data["session"], data["mission"]):
+            if part is not None:
+                part[name] = round(part.get(name, 0) + n, 6)
+    _counters(add)
+
+
+def mission_begins():
+    """A new mission: its own counts start from zero (the session's go on)."""
+    def begin(data):
+        data["mission"] = {k: 0 for k in COUNTS}
+    _counters(begin)
+    count("missions")
+
+
+def counts():
+    """{"session": {...}, "this_mission": {...} or None}."""
+    data = _counters()
+    return {"session": data["session"], "this_mission": data["mission"]}
+
+
+def used():
+    """What the adults' limits count: since the mission began, or since the session began when there was none."""
+    data = _counters()
+    return data["mission"] if data["mission"] is not None else data["session"]

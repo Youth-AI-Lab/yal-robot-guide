@@ -15,7 +15,10 @@ A mission (from the Interpreter; today from stack/mission.py), JSON:
                {"do": "survey", "card": "dry-grass"}],     find every card of this kind, with its cell
      "personality": "cautious"}                           a file of stack/personality/, or a list of bricks
 Its report (to the Interpreter): {"outcome": "done" | "impossible" | "no report", "cards": [{"card", "cell"}],
-"why": a reason from a closed list, "moves_left", "turns", "spent_usd"}.
+"why": a reason from a closed list, "moves_left", "turns", "spent_usd", "counts"}: "counts" are the counters of the
+mission (stack/common.py: missions, model_calls, model_usd, operations, commands, cells, moves). The main limits are
+on the calls to the model, that is on the cost: MAX_TURNS and the cap in dollars per mission. The adults may add limits
+on the robot's counters in stack/rules.json ("limits"); none by default.
 Pause: the Interpreter (stack/interpreter_link.py, or stack/mission.py pause|resume|stop by hand) writes
 .robot-sim/control.json; the loop reads it before each call of the model and each tool, and the Pilot before each move,
 without asking the model; during a move, the Pilot has the robot stop on the next cell, as soon as possible (HOLD,
@@ -47,8 +50,8 @@ MODELS = {"qwen-flash": "qwen/qwen3.8-flash", "deepseek": "deepseek/deepseek-v4-
 MAX_TURNS, TIMEOUT_S, RUN_CAP_USD, MAX_TOKENS = 100, 3000, 0.25, 16384  # 4096 cut Qwen's reasoning (bench, 11:30); 100 turns: at 60, three absent-card runs of Hermes ended one cell short (2026-11-07)
 FAILED_CALL_USD = 0.01  # a call that failed may have been billed: counted at least this
 STEPS = {"reach_card": "card", "set_light": "color", "find_card": "card", "survey": "card"}
-WHY = ["", "not on the mat", "not seen yet", "no moves left", "no way there", "the robot waits for an adult",
-       "the robot does not know where it is", "other"]
+WHY = ["", "not on the mat", "not seen yet", "no moves left", "a limit of the adults", "no way there",
+       "the robot waits for an adult", "the robot does not know where it is", "other"]
 RULES = """# Rules for the Strategist, the part of the robot that chooses what to do next
 
 The robot keeps its own safety rules: the Reflex and the Referee. These only guide you.
@@ -245,11 +248,11 @@ def without_model(mission):
     for step in mission["steps"]:
         do = step["do"]
         if do == "set_light":
-            result = pilot.light(step["color"])
+            result = pilot.operate(pilot.light, color=step["color"])
         elif do == "reach_card":
-            result = pilot.go_to_card(step["card"])
+            result = pilot.operate(pilot.go_to_card, card=step["card"])
         else:
-            result = pilot.explore(step["card"] if do == "find_card" else None)
+            result = pilot.operate(pilot.explore, look_for=step["card"] if do == "find_card" else None)
         if do in ("find_card", "survey"):
             found = [{"card": step["card"], "cell": c} for c in result.get("cards_seen", {}).get(step["card"], [])]
             cards += found
@@ -267,7 +270,8 @@ def without_model(mission):
         if result.get("result") not in ("done", "found", "not found"):
             said = result.get("why", "")
             outcome = "impossible"
-            why = ("no moves left" if "moves" in said else "the robot waits for an adult" if "adult" in said
+            why = ("no moves left" if "no moves left" in said else "a limit of the adults" if "the adults allow" in said
+                   else "the robot waits for an adult" if "adult" in said
                    else "the robot does not know where it is" if "where it is" in said
                    else "no way there" if "find itself" in said or "way" in said else "other")
             break
@@ -281,6 +285,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
     words = task(mission)
     pilot.PILOT.configure(settings)
     pilot.OBEY_MISSION_CONTROL = True
+    common.mission_begins()
     out = Path(out or STATE_DIR / "missions" / time.strftime("%Y%m%d-%H%M%S"))
     out.mkdir(parents=True, exist_ok=True)
     if model == "none":
@@ -288,6 +293,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
         (out / "mission.json").write_text(json.dumps(dict(mission, task=words, settings=pilot.PILOT.settings), indent=1))
         report = without_model(mission)
         report["moves_left"] = pilot.robot_state().get("moves_left")
+        report["counts"] = common.counts()["this_mission"]
         (out / "report.json").write_text(json.dumps(report, ensure_ascii=False, indent=1) + "\n")
         return report
     toolset = pilot.TOOLSETS[tools]
@@ -323,6 +329,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
                 outcome = "cost cap"
                 break
             turns += 1
+            common.count("model_calls")
             if model == "fake":
                 message, used, finish = fake_model(mission, messages)
             else:
@@ -331,6 +338,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
             for k in ("prompt_tokens", "completion_tokens"):
                 usage[k] += used.get(k) or 0
             usage["cost"] += float(used.get("cost") or 0)
+            common.count("model_usd", float(used.get("cost") or 0))
             usage["dearest_call"] = max(usage["dearest_call"], float(used.get("cost") or 0))
             flush()
             message = {k: v for k, v in message.items() if k in ("content", "tool_calls", "reasoning", "reasoning_details")}
@@ -365,7 +373,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
                                                           "and read its answer before the next"}
                 else:
                     try:
-                        result = toolset[name][0](**arguments)
+                        result = pilot.operate(toolset[name][0], **arguments)
                     except Exception as e:  # noqa: BLE001  (as an MCP server: the error goes back to the model)
                         result = {"result": "error", "why": f"{type(e).__name__}: {e}"}
                     moved = moved or name in pilot.MOVES
@@ -386,7 +394,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
     state = pilot.robot_state()
     final = dict(report or {"outcome": outcome or "no report", "cards": [], "why": ""},
                  moves_left=state.get("moves_left"), turns=turns, seconds=round(time.monotonic() - start, 1),
-                 spent_usd=round(spent(), 4))
+                 spent_usd=round(spent(), 4), counts=common.counts()["this_mission"])
     if report is None and outcome:
         final["outcome"] = outcome
     (out / "report.json").write_text(json.dumps(final, ensure_ascii=False, indent=1) + "\n")
