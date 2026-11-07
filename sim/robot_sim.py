@@ -42,6 +42,9 @@ SENSOR_RANGE_CM = 400  # VL53L1X of the STeaMi board: 0 to 4 m (wiki.steami.cc)
 CAMERA_HALF_ANGLE_DEG = 30
 CAMERA_RANGE_CM = 120
 CAMERA_ANGLE_ERROR_DEG = 2
+# Boxes too, as "box": one point every BOX_STEP_DEG across the cone where the first thing in the way is a box (a
+# choice of the simulator; what the OpenMV N6 can recognise of a real box, and how it says where, is TO BE COMPLETED).
+BOX_STEP_DEG = 3
 SENSOR_RAYS_DEG = (-5, 0, 5)  # a narrow cone: a choice of the simulator, not a measure
 BATTERY_PER_CM = 0.05
 # The low fence around the simulated mat, this far outside its edge. At the fence itself, a robot on a
@@ -303,6 +306,27 @@ class World:
                 continue
             bias, tilt = 1 + rng.gauss(0, self.noise["camera_distance"]), rng.gauss(0, CAMERA_ANGLE_ERROR_DEG)
             out.append(["ball", int(round(angle + tilt)), int(round(d * bias))])
+        # The boxes, as points of their side the camera sees: [box, angle, cm from the robot's centre]. One error per
+        # box and point of view, like a card.
+        balls = [(bx - b["radius"], by - b["radius"], bx + b["radius"], by + b["radius"])
+                 for b in self.balls for bx, by in [self.ball_xy(b)]]
+        for k in range(-CAMERA_HALF_ANGLE_DEG, CAMERA_HALF_ANGLE_DEG + 1, BOX_STEP_DEG):
+            h = math.radians(self.heading + k)
+            dx, dy = math.sin(h), -math.cos(h)
+            nearest, which = None, None
+            for b in self.boxes:
+                t = ray_box(self.x, self.y, dx, dy, b["x"], b["y"], b["x"] + b["w"], b["y"] + b["h"])
+                if t is not None and t >= 0 and (nearest is None or t < nearest):
+                    nearest, which = t, b["id"]
+            if nearest is None or nearest > CAMERA_RANGE_CM:
+                continue
+            if any((t := ray_box(self.x, self.y, dx, dy, *ball)) is not None and 0 <= t < nearest for ball in balls):
+                continue  # a ball in front hides that part of the box
+            rng = random.Random(f"{view}:box{which}")
+            if rng.random() < self.noise["camera_miss"]:
+                continue
+            bias, tilt = 1 + rng.gauss(0, self.noise["camera_distance"]), rng.gauss(0, CAMERA_ANGLE_ERROR_DEG)
+            out.append(["box", int(round(k + tilt)), int(round(nearest * bias))])
         return out
 
     def beliefs(self):

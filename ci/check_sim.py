@@ -1281,16 +1281,47 @@ async def scenarios(sim, env):
     async with agent(env) as a:
         await a.call("robot_state")
         cover = (await a.call("seen_cards"))["camera_coverage"]
-        check("coverage: a box in C3 hides C2, C1 and B2 (the line to B2 crosses C3)",
-              {"C2", "C1", "B2", "D2"} <= set(cover["not_looked_at_yet"]) and "C3" not in cover["not_looked_at_yet"]
+        check("coverage: a box in C3 hides C2, C1 and B2 (the line to B2 crosses C3), and its own cell until it is "
+              "set apart (the camera sees its side in front of the centre)",
+              {"C2", "C1", "B2", "D2", "C3"} <= set(cover["not_looked_at_yet"])
               and "B3" not in cover["not_looked_at_yet"], cover)
-        check("coverage: met once, the box is not yet said to stand there (a ball rolls on)",
+        check("coverage: the box seen from one point of view only: not yet said to stand there",
               cover["something_stands_there"] == [], cover)
+
+    # A camera that does not name the box (it misses it): the distance sensor alone, at two moments.
+    sim.fresh(boxes=[{"x": 65, "y": 65, "w": 20, "h": 20, "name": "box"}])
+    sim.act(do="noise", camera_miss=1.0)
+    await asyncio.sleep(0.6)
+    async with agent(env) as a:
+        await a.call("robot_state")
+        cover = (await a.call("seen_cards"))["camera_coverage"]
+        check("coverage, the box not named by the camera: met once by the sensor, not yet said to stand there (a ball "
+              "rolls on)", cover["something_stands_there"] == [], cover)
         await asyncio.sleep(10.5)
         await a.call("robot_state")
         cover = (await a.call("seen_cards"))["camera_coverage"]
         check("coverage: met again 10 s later, something stands on C3, set apart from the cells looked at",
               cover["something_stands_there"] == ["C3"] and "C3" not in cover["not_looked_at_yet"], cover)
+    sim.act(do="noise", camera_miss=0.0)
+
+    # A box the distance sensor does not see (to one side, in B3): the camera names it, and the cell behind it (B2) is
+    # not counted looked at (facilitator/workshops/measures/2026-11-07-robot-diagonal/).
+    sim.fresh(boxes=[{"x": 40, "y": 62, "w": 18, "h": 18, "name": "box"}], cards=[{"cell": "B2", "label": "barbecue"}])
+    await asyncio.sleep(0.6)
+    async with agent(env) as a:
+        state = await a.call("robot_state")
+        result = await a.call("seen_cards")
+        cover = result["camera_coverage"]
+        check("a box to one side, that the distance sensor never meets: the cell it hides (B2, with a card) is left to "
+              "look at, C2 and C3 are looked at",
+              "B2" in cover["not_looked_at_yet"] and not {"C2", "C3"} & set(cover["not_looked_at_yet"])
+              and result["cards_seen"] == [] and state.get("distance_ahead_cm", 0) > 100, (state, cover))
+        await a.call("look_around")
+        await a.call("move", direction="west")
+        await a.call("move", direction="west")
+        cover = (await a.call("seen_cards"))["camera_coverage"]
+        check("the same box seen from three points of view (C5, B5, A5 facing north): B3 stands apart",
+              "B3" in cover["something_stands_there"] and sim.state()["robot"]["cell"] == "A5", cover)
 
     # Every cell looked at: the agent hears it once, with the cards seen.
     state_file = Path(env["ROBOT_STATE_DIR"]) / "terrain.json"

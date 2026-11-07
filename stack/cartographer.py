@@ -84,6 +84,18 @@ BALL_SECOND_LOOK_S = 0.4
 # centimetres. The simulator's camera errs by 10 % by default; the OpenMV N6's is TO BE COMPLETED.
 CAMERA_ERROR = 0.15
 CAMERA_MIN_ERROR_CM = 5
+# The camera names the points of boxes it sees (boxes= in STATE): a cell whose centre lies in the direction of such a
+# point, within this many degrees, and maybe behind it, is hidden. The simulator gives one point every 3°, with 2° of
+# error; the real camera's way of saying where a box is: TO BE COMPLETED.
+BOX_POINT_DEG = 4
+# The cell of a box: BOX_DEPTH_CM behind a point seen closer than BOX_MARK_MAX_CM (the point is on its side, the box
+# behind it), once BOX_VIEWS different points of view (cell and facing) put a point there. With one view, the camera's
+# error put points on free cells next to the box: replayed on the 36 runs of the absent card with the simulator's error
+# (10 %, 2 degrees), 2 free cells never seen were set apart and "every cell looked at" came too early in 5 runs; with
+# three views, none, and every cell done in 17 runs (facilitator/workshops/measures/2026-11-07-robot-camera-boxes/).
+BOX_DEPTH_CM = 10
+BOX_MARK_MAX_CM = 90
+BOX_VIEWS = 3
 # A ball rolls back and forth on a line: once seen moving along a row or a column, that line is its lane for
 # LANE_FOR_S. A card placed for sure stays on its cell this long when it leaves the camera's view (a box hides it).
 LANE_FOR_S = 600
@@ -143,6 +155,7 @@ class Cartographer:
             self.presses = saved.get("presses", 0)
             self.looked = saved.get("looked", {})
             self.blocked = {c: v for c, v in saved.get("blocked", {}).items() if isinstance(v, list)}
+            self.boxes = {c: v for c, v in saved.get("boxes", {}).items() if isinstance(v, list) and len(v) == 2}
             self.covered_said = saved.get("covered_said", False)
             self.frame = saved.get("frame")
             self.notices = saved.get("notices", [])
@@ -177,6 +190,7 @@ class Cartographer:
             self.presses = 0  # the robot's count of Resume presses, at its last answer
             self.looked = {}  # cell -> when the camera last looked at it, or the robot stood on it (time.time())
             self.blocked = {}  # cell -> [first, last] time the distance sensor met something there (a box, a ball)
+            self.boxes = {}  # cell -> [when, [points of view]]: the camera saw a point of a box's side put a box there
             self.covered_said = False  # the caller was told the camera has looked at every cell it can
 
     def save(self):
@@ -185,7 +199,7 @@ class Cartographer:
                  "resumes_at_stop": self.resumes_at_stop, "poses": self.poses, "seen": self.seen, "ball": self.ball,
                  "free": self.free, "lanes": self.lanes, "way": self.way, "back_fixed": self.back_fixed,
                  "placed": self.placed, "presses": self.presses, "looked": self.looked, "blocked": self.blocked,
-                 "covered_said": self.covered_said, "frame": self.frame, "notices": self.notices}
+                 "boxes": self.boxes, "covered_said": self.covered_said, "frame": self.frame, "notices": self.notices}
         (STATE_DIR / "terrain.json").write_text(json.dumps(saved) + "\n", encoding="utf-8")
 
     # Where the robot is on the mat --------------------------------------------------------------------------------
@@ -368,6 +382,7 @@ class Cartographer:
         self.way = [list(pose(c, r)[:2]) for c, r in self.way] if self.way else None
         self.free, self.looked, self.placed, self.blocked = (cells(self.free), cells(self.looked), cells(self.placed),
                                                              cells(self.blocked))
+        self.boxes = cells(self.boxes)
         self.lanes = {line(k): v for k, v in self.lanes.items()}
         if self.ball and self.ball.get("from"):
             b = dict(self.ball, **{"from": list(pose(*self.ball["from"]))})
@@ -426,7 +441,8 @@ class Cartographer:
             self.localize(int(fields["dist"]))
             self.note_free(int(fields["dist"]))
         if self.sure and fields.get("looked") == "1":
-            self.note_looked(None if fields.get("dist", "none") == "none" else int(fields["dist"]))
+            self.note_looked(None if fields.get("dist", "none") == "none" else int(fields["dist"]),
+                             self.box_points(fields))
         return fields
 
     def new_events(self):
@@ -573,12 +589,23 @@ class Cartographer:
             if k * self.mat["cell_cm"] + STOP_MARGIN_CM <= dist:
                 self.free[cell_name(col, row)] = now
                 self.blocked.pop(cell_name(col, row), None)
+                self.boxes.pop(cell_name(col, row), None)
             else:
                 # Something is there, or behind it the sensor cannot tell: an older "free" no longer holds.
                 self.free.pop(cell_name(col, row), None)
             k += 1
 
-    def note_looked(self, dist):
+    @staticmethod
+    def box_points(fields):
+        """The points of boxes the camera sees (boxes= in STATE): [(angle, cm), ...]; none from an older robot."""
+        points = []
+        for part in fields.get("boxes", "none").split(","):
+            angle, _, cm = part.partition(":")
+            if angle.lstrip("-").isdigit() and cm.isdigit():
+                points.append((int(angle), int(cm)))
+        return points
+
+    def note_looked(self, dist, boxes=()):
         """The robot stands still and the camera's view is believed: a cell whose centre is in the camera's cone
         counts as looked at, unless the line to it crosses a cell where the distance sensor met something (a box would
         hide it), or it is straight ahead beyond what the sensor met. What met the sensor is on a cell: something
@@ -593,6 +620,20 @@ class Cartographer:
         cell_cm = self.mat["cell_cm"]
         self.went(self.col, self.row)
         heading = self.facing * 90
+        # The camera names the boxes it sees: a point close enough puts a box on its cell (something stands there);
+        # every point hides what may be behind it, in its direction.
+        hidden_by = []
+        view = f"{cell_name(self.col, self.row)}:{FACING[self.facing]}"
+        for angle, cm in boxes:
+            error = max(cm * CAMERA_ERROR, CAMERA_MIN_ERROR_CM)
+            cell = self.point_cell(math.radians(heading + angle), cm + BOX_DEPTH_CM)
+            if cm <= BOX_MARK_MAX_CM and cell is not None and cell != (self.col, self.row):
+                mark = self.boxes.setdefault(cell_name(*cell), [now, []])
+                mark[0] = now
+                if view not in mark[1]:
+                    mark[1].append(view)
+            hidden_by.append((angle, cm - error))
+        boxes_here = self.box_cells()
         hit = None if dist is None else dist + SENSOR_FROM_CENTRE_CM  # from the robot's centre
         if hit is not None:
             dc, dr = FACING_STEP[self.facing]
@@ -611,8 +652,23 @@ class Cartographer:
                     continue
                 if abs(angle) < 1 and hit is not None and d - cell_cm / 2 > hit:
                     continue  # straight ahead, behind what the sensor met
-                if not any(c in self.blocked for c in self.between((self.col, self.row), (col, row))):
+                if any(abs(angle - a) <= BOX_POINT_DEG and nearest < d for a, nearest in hidden_by):
+                    continue  # a box the camera sees may stand in front of its centre
+                if not any(c in self.blocked or c in boxes_here for c in self.between((self.col, self.row), (col, row))):
                     self.looked[cell_name(col, row)] = now
+
+    def box_cells(self):
+        """The cells where the camera saw a box from enough points of view."""
+        return {c for c, (_, views) in self.boxes.items() if len(views) >= BOX_VIEWS}
+
+    def point_cell(self, h, cm):
+        """The cell of the point this far from the robot's centre, in the direction h (radians from north), or None
+        off the mat."""
+        cell_cm = self.mat["cell_cm"]
+        x = (self.col + 0.5) * cell_cm + math.sin(h) * cm
+        y = (self.row + 0.5) * cell_cm - math.cos(h) * cm
+        col, row = math.floor(x / cell_cm), math.floor(y / cell_cm)
+        return (col, row) if 0 <= col < self.cols and 0 <= row < self.rows else None
 
     def between(self, a, b):
         """The cells the straight line from the centre of cell a to the centre of cell b crosses, a and b left out."""
@@ -631,20 +687,24 @@ class Cartographer:
         now = time.time()
         self.looked[cell_name(col, row)] = now
         self.blocked.pop(cell_name(col, row), None)
+        self.boxes.pop(cell_name(col, row), None)
 
     def coverage(self):
         """What the camera has looked at: a count, and the cells it has not looked at yet. A cell where something
         stands (met by the distance sensor at two moments STANDS_FOR_S apart, not seen free since) is left out: there
         is nothing there for the camera to look at. The note gives no advice: "a last look at a cell next to a box
         costs little" sent a model round a rock for 25 calls, sure the card was under it (DeepSeek v4 Flash behind
-        Hermes, 2026-11-06). A box the distance sensor never met can still hide a cell: the Cartographer cannot know
+        Hermes, 2026-11-06). The camera also names the boxes it sees (since 2026-11-07): a cell one of them may hide is
+        not looked at, and the cell of a box seen for sure is one where something stands. A box neither saw can still
+        hide a cell: the Cartographer cannot know
         it, and the caller is not asked to guess."""
         if self.frame:
             return {"cells_looked_at": None, "cells_on_the_mat": self.mat["cols"] * self.mat["rows"],
                     "not_looked_at_yet": None, "something_stands_there": [],
                     "note": "Not counted while the Cartographer does not know where the robot is on the mat."}
         cells = [cell_name(c, r) for r in range(self.mat["rows"]) for c in range(self.mat["cols"])]
-        stands = [c for c in cells if c in self.blocked and self.blocked[c][1] - self.blocked[c][0] >= STANDS_FOR_S]
+        stands = [c for c in cells if (c in self.blocked and self.blocked[c][1] - self.blocked[c][0] >= STANDS_FOR_S)
+                  or c in self.box_cells()]
         left = [c for c in cells if c not in self.looked and c not in stands]
         return {"cells_looked_at": len(cells) - len(left) - len(stands), "cells_on_the_mat": len(cells),
                 "not_looked_at_yet": left, "something_stands_there": stands,

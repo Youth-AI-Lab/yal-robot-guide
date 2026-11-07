@@ -17,6 +17,7 @@ it at any time, without asking the computer. Nothing else is understood.
                        slid=<cells reached in the last move: MOVE F 0 or 1, MOVE <d> <n> 0 to n, a turn 0>
                        looked=<1 when it stands still and the camera's view of where it stands is believed>
                        heading=<degrees from north, from the compass (magnetometer), or none>
+                       boxes=<none, or the points of boxes the camera sees, once its view is believed: <angle>:<cm>,...>
                        fault=<none|reflex|error: the robot's program had an error, see FAULT below>
                        tick_max=<the longest time between two turns of the robot's loop since the last STATE, ms>
                        (an adult puts the robot back on the last cell it reached, even when the
@@ -112,8 +113,9 @@ counted (the wheels) is a total; what is measured comes with the time of the mea
                                        or a press on "stop", the board cuts the motors itself, at once,
                                        until release()
     camera_view()                      the camera's newest answer: (number of the image, ticks_ms() when
-                                       the image was taken, what it recognises: a list of [name ("ball" or
-                                       a card), angle in degrees (+ = right), distance in cm])
+                                       the image was taken, what it recognises: a list of [name ("ball",
+                                       "box" for a point of a box's side it sees, or a card), angle in
+                                       degrees (+ = right), distance in cm])
     compass()                          the magnetometer: degrees from north (0 to 360); its calibration on
                                        the real board (motors and magnets nearby) is TO BE COMPLETED
     led(color)                         one of COLORS
@@ -200,6 +202,7 @@ class Firmware:
         self.ball_trend = None
         self.view = []  # what the camera shows, once believed: [[card, angle, cm], ...]
         self.view_key = None
+        self.boxes = []  # the points of boxes in the believed view: [[angle, cm], ...]
         self.candidate = None
         self.candidate_since = 0
         self.last_heard = hal.ticks_ms()
@@ -461,15 +464,16 @@ class Firmware:
         self.last_frame = self.frame
         taken = self.frame_at
         self.watch_ball(taken, [v for v in everything if v[0] == "ball"])
-        view = [v for v in everything if v[0] != "ball"]  # the cards: they stay put, the ball does not
-        key = repr(view)
+        view = [v for v in everything if v[0] not in ("ball", "box")]  # the cards: they stay put, the ball does not
+        boxes = [[v[1], v[2]] for v in everything if v[0] == "box"]
+        key = repr(view) + repr(boxes)
         if key != self.candidate:
             self.candidate, self.candidate_since = key, taken
             return
         if key == self.view_key or self.hal.ticks_diff(taken, self.candidate_since) < CAMERA_STABLE_MS:
             return
         left = list(self.view)
-        self.view, self.view_key = view, key
+        self.view, self.view_key, self.boxes = view, key, boxes
         for card, angle, cm in view:
             if [card, angle, cm] in left:
                 left.remove([card, angle, cm])
@@ -514,7 +518,7 @@ class Firmware:
         for card, angle, cm in self.shown():
             # 40 cm: a card on the next cell is seen at about 30 cm, one two cells away at about 60 cm; with the
             # camera's error, 45 cm took a card two cells away for one in front (review of 2026-11-06).
-            if card != "ball" and -15 <= angle <= 15 and cm <= CELL_CM * 4 // 3 and (best is None or cm < best[1]):
+            if card not in ("ball", "box") and -15 <= angle <= 15 and cm <= CELL_CM * 4 // 3 and (best is None or cm < best[1]):
                 best = [card, cm]
         return None if best is None else best[0]
 
@@ -523,7 +527,7 @@ class Firmware:
         would drive forwards onto one."""
         names = self.plan[4]
         for card, angle, cm in self.shown():
-            if card != "ball" and card not in names:
+            if card not in ("ball", "box") and card not in names:
                 names.append(card)
         if self.plan[0] == "F" and "CARD" in self.plan[3] and self.card_in_front():
             return "card"
@@ -786,7 +790,11 @@ class Firmware:
         if hasattr(self.hal, "compass"):
             heading = str(int(self.hal.compass()) % 360)
         tick_max, self.tick_max = self.tick_max, 0
-        return "OK STATE dist=%s card=%s battery=%d estop=%d wait_adult=%d moving=%d last_stop=%s bumper=%d warning=%d resumes=%d pose=%d slid=%d looked=%d heading=%s fault=%s tick_max=%d" % (
+        looked = self.motion is None and self.view_key is not None
+        boxes = "none"
+        if looked and self.boxes:
+            boxes = ",".join(["%d:%d" % (angle, cm) for angle, cm in self.boxes])
+        return "OK STATE dist=%s card=%s battery=%d estop=%d wait_adult=%d moving=%d last_stop=%s bumper=%d warning=%d resumes=%d pose=%d slid=%d looked=%d heading=%s fault=%s tick_max=%d boxes=%s" % (
             "none" if distance is None else str(int(distance)),
             card or "none",
             int(self.battery),
@@ -799,8 +807,9 @@ class Firmware:
             self.resumes,
             self.pose,
             self.slid,
-            1 if self.motion is None and self.view_key is not None else 0,
+            1 if looked else 0,
             heading,
             self.fault or "none",
             tick_max,
+            boxes,
         )

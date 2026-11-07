@@ -454,7 +454,8 @@ The robot's program is one loop, every 10 ms, that reads all its sensors at the 
 and then decides. What is brief (a touch on the bumper, a press on a button) is counted by the board
 itself, which also cuts the motors at once on a touch: a touch shorter than a turn of the loop is never
 missed. The distance and the camera come with the time they were measured: the robot does not believe
-a distance older than 300 ms, nor an image taken before it stopped (the real camera answers late). Any
+a distance older than 300 ms, nor an image taken before it stopped (the real camera answers late). The camera
+also names the boxes it sees (`box`), so that a cell a box hides to one side is not counted as looked at. Any
 error in the program stops the wheels, and so does a loop that ran late while they turned. The head
 of [robot/firmware.py](robot/firmware.py) says what the board must give the program.
 
