@@ -299,6 +299,31 @@ def ollama_chat(model, messages, seed):
     return {"content": message.get("content", ""), **({"tool_calls": calls} if calls else {})}
 
 
+# Albert's quotas (2026-11-07): a limit per minute, and per day on some models. Calls are spaced; a "per minute"
+# refusal waits a minute and tries again, so that a conversation is not cut short.
+MIN_INTERVAL_S = {"albert:": 2.0}
+LAST_CALL = {"at": 0.0}
+# What a paid provider (OpenRouter) says the calls cost, against the cap of --cap-usd: no call once it is reached.
+SPENT = {"usd": 0.0, "cap": 1.0}
+
+
+def provider_call(model, messages, key, usage):
+    wait = next((v for k, v in MIN_INTERVAL_S.items() if model.startswith(k)), 0.0)
+    time.sleep(max(0.0, LAST_CALL["at"] + wait - time.monotonic()))
+    if SPENT["usd"] >= SPENT["cap"]:
+        raise strategist.ApiError("cost cap", f"cost cap of {SPENT['cap']} $ reached ({SPENT['usd']:.4f} $)")
+    for attempt in range(4):
+        LAST_CALL["at"] = time.monotonic()
+        try:
+            message, used, finish = strategist.api_model(model, messages, TOOLS, key, usage, lambda: None)
+            SPENT["usd"] += float((used or {}).get("cost") or 0)
+            return message, used, finish
+        except strategist.ApiError as e:
+            if "per minute" not in str(getattr(e, "args", [""])) or attempt == 3:
+                raise
+            time.sleep(65)
+
+
 def interpreter_turn(model, key, messages, ctx, usage, seed):
     """The Interpreter answers one line of the group: tool calls (run on the link) until it writes to the group."""
     calls = []
@@ -306,7 +331,7 @@ def interpreter_turn(model, key, messages, ctx, usage, seed):
         if model.startswith("ollama:"):
             message = ollama_chat(model[len("ollama:"):], messages, seed * 10 + k)
         else:
-            message, used, finish = strategist.api_model(model, messages, TOOLS, key, usage, lambda: None)
+            message, used, finish = provider_call(model, messages, key, usage)
         usage["calls"] = usage.get("calls", 0) + 1
         message = {k: v for k, v in message.items() if k in ("content", "tool_calls")}
         message["role"] = "assistant"
@@ -487,7 +512,8 @@ def mutants():
 
 def main(args):
     model = getattr(args, "interpreter_model", None) or "ollama:qwen3:8b"
-    key = sys.stdin.readline().strip() if model.startswith("albert:") else ""
+    key = sys.stdin.readline().strip() if model.startswith(("albert:", "openrouter:")) else ""
+    SPENT["cap"] = getattr(args, "cap_usd", 1.0)
     langs = {"fr": ["fr"], "en": ["en"]}.get(getattr(args, "lang", "both"), ["fr", "en"])
     steps = args.steps if args.steps != 30 else 8
     out = Path(args.out or GUIDE / ".robot-sim" / "probes" / time.strftime("interpreter-%Y%m%d-%H%M%S"))
@@ -503,6 +529,9 @@ def main(args):
         (out / f"runs-{re.sub(r'[^a-z0-9]+', '-', name)}.jsonl").write_text(
             "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in results), encoding="utf-8")
     (out / "summary.json").write_text(json.dumps(report, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
-    print(json.dumps(report if args.mutants else report["plain"], indent=1, ensure_ascii=False))
+    report["spent_usd"] = round(SPENT["usd"], 4)
+    (out / "summary.json").write_text(json.dumps(report, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+    print(json.dumps(report if args.mutants else dict(report["plain"], spent_usd=report["spent_usd"]), indent=1,
+                     ensure_ascii=False))
     shutil.rmtree(STATE, ignore_errors=True)
     return 0

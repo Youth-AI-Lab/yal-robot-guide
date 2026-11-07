@@ -485,8 +485,10 @@ def main():
     parser.add_argument("--tier", default="reflex",
                         choices=["reflex", "referee", "cartographer", "pilot", "strategist", "interpreter"])
     parser.add_argument("--interpreter-model", default="ollama:qwen3:8b",
-                        help="interpreter tier: the model that plays it, ollama:<model> or albert:<model> (key on stdin)")
+                        help="interpreter tier: the model that plays it, ollama:<model>, albert:<model> or openrouter:<model> (key on stdin)")
     parser.add_argument("--lang", default="both", choices=["fr", "en", "both"], help="interpreter tier: the group's")
+    parser.add_argument("--cap-usd", type=float, default=1.0,
+                        help="interpreter tier: no call to a paid provider once it says this much was spent")
     parser.add_argument("--generator", default="random", help="random, or ollama:<model>")
     parser.add_argument("--persona", default="careful", choices=sorted(PERSONAS))
     parser.add_argument("--runs", type=int, default=10)
