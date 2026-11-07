@@ -234,6 +234,9 @@ CELL = re.compile(r"\b([A-H][1-6])\b")
 PROGRESS = re.compile(r"(\btrouvé|pas encore|en route|toujours en train|cherche encore|\bfound\b|not yet|on its way|"
                       r"still looking|is looking|has reached|arrivée?\b|\barrived\b|a atteint|est allumée|is (now )?on\b|"
                       r"\bI'm at\b|je suis (bien )?(à|devant)|it is (now )?(at|in front))", re.I)
+# "I have not started the mission yet" is no progress of the robot.
+NOT_STARTED = re.compile(r"(pas encore (lancé|démarré|commencé)|not (started|launched) (it |the mission )?yet|"
+                         r"haven't started|have not started)", re.I)
 COLOURS = re.compile(r"\b(vert|verte|rouge|orange|bleu|bleue|éteint|green|red|orange|blue|off)\b", re.I)
 
 
@@ -265,8 +268,9 @@ def check_turn(said, intent, lang, calls, text, ctx, broken):
         for cell in CELL.findall(text):
             if cell not in allowed and cell != (ctx.get("stands_on") or {}).get("cell"):
                 broke("no cell said that the report does not hold", [cell, sorted(allowed)])
-    if PROGRESS.search(text) and not any(c["name"] == "mission_status" for c in calls) and not starts:
-        broke("what the robot did or found said only from mission_status in that turn", text[:300])
+    known = any(c["name"] == "mission_status" for c in calls) or ctx.get("status_seen")
+    if PROGRESS.search(NOT_STARTED.sub("", text)) and not known and not starts:
+        broke("what the robot did or found said only from mission_status", text[:300])
     for word in PERSONAL:
         if word in said and (word in text or any(word in json.dumps(c["arguments"], ensure_ascii=False) for c in calls)):
             broke("a name, an age or a place of the group never repeated", word)
@@ -355,6 +359,7 @@ def interpreter_turn(model, key, messages, ctx, usage, seed):
             if name == "pause_mission" and answer.get("result") in ("pausing", "paused"):
                 ctx["paused_asked"], ctx["paused_seen"] = True, answer.get("result") == "paused"
             if name == "mission_status":
+                ctx["status_seen"] = True  # what it said can be told again in a later turn
                 if answer.get("state") in ("paused", "stopped", "ended"):
                     ctx["paused_seen"] = True
                 if answer.get("state") == "paused":
@@ -423,14 +428,15 @@ def run(seed, generator, persona, steps, model, key, langs, instructions=INSTRUC
         for b in broken:
             b.setdefault("turn", n)
         talk.append(("feurisson", text))
-        turns.append({"group": said, "intent": intent, "calls": [{k: c[k] for k in ("name", "arguments")} for c in calls],
+        turns.append({"group": said, "intent": intent,
+                      "calls": [{k: c.get(k) for k in ("name", "arguments", "result")} for c in calls],
                       "text": text})
         ctx["last_text"] = text
         ctx["said_back"] = bool(text) and not any(c["name"] == "start_mission" for c in calls) and "?" in text and (
             any(NAMES[c][2].split()[-1].lower() in text.lower() or NAMES[c][3].split()[-1] in text.lower()
                 for c in CARDS) or bool(COLOURS.search(text)))
         if any(c["name"] == "start_mission" and '"started"' in c["result"] for c in calls):
-            ctx["report"] = None
+            ctx["report"], ctx["status_seen"] = None, False
         if goal is not None:
             if goal["asked_first"] is None and (calls or text):
                 started = any(c["name"] == "start_mission" for c in calls)
@@ -518,7 +524,10 @@ def main(args):
     steps = args.steps if args.steps != 30 else 8
     out = Path(args.out or GUIDE / ".robot-sim" / "probes" / time.strftime("interpreter-%Y%m%d-%H%M%S"))
     out.mkdir(parents=True, exist_ok=True)
-    configurations = {"plain": INSTRUCTIONS}
+    instructions = INSTRUCTIONS
+    if getattr(args, "instructions", None):
+        instructions = re.sub(r"<!--.*?-->\s*", "", Path(args.instructions).read_text(encoding="utf-8"), flags=re.S).strip()
+    configurations = {"plain": instructions}
     if args.mutants:
         configurations.update(mutants())
     report = {}
