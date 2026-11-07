@@ -207,6 +207,7 @@ class World:
             (self.state_dir / "referee.json").unlink(missing_ok=True)
             (self.state_dir / "counters.json").unlink(missing_ok=True)
             (self.state_dir / "poses.jsonl").unlink(missing_ok=True)
+            (self.state_dir / "waiting.json").unlink(missing_ok=True)
             # The mat in use, for the stack started by the Drive buttons of the page.
             (self.state_dir / "mat.json").write_text(json.dumps(mat, indent=2) + "\n", encoding="utf-8")
 

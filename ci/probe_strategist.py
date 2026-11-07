@@ -581,9 +581,19 @@ _FNS = {f.__name__: f for f in (explore, go_to_card, go_to_cell, look, face_towa
                                 step_forward, move, turn, look_around, face, robot_state, set_light)}
 FAKE.TOOLSETS = {kind: {name: (_FNS[spec[0].__name__],) + tuple(spec[1:]) for name, spec in tools.items()}
                  for kind, tools in REAL.TOOLSETS.items()}  # a KeyError here: the Pilot has a tool the fake lacks
+# While the robot waits for an adult, the Strategist reads the robot's state through the Pilot's command() and the
+# adult's instruction from its Cartographer: here an adult who has already put the robot back at the first reading.
+_CART = types.SimpleNamespace(adult_instruction=lambda: "Stop and ask an adult to put the robot back on cell C3, "
+                                                        "facing north, then to press Resume on the robot.")
+
+
+def _command(name, *args):
+    return {"waiting_for_adult": False, "position_known": True, "cell": "C3", "facing": "north"}
+
+
 for _name, _value in dict(_FNS, MAT=MAT, CELLS=list(REAL.CELLS), STEP=dict(REAL.STEP), MOVES=set(REAL.MOVES),
                           PILOT=FakePilotSettings(), OBEY_MISSION_CONTROL=False, operate=operate,
-                          hold_still=hold_still, Stuck=Stuck).items():
+                          hold_still=hold_still, Stuck=Stuck, CART=_CART, command=_command).items():
     setattr(FAKE, _name, _value)
 sys.modules["pilot"] = FAKE  # what `import pilot` in the Strategist gets
 REF = probe_tiers.load("strategist_reference", GUIDE / "stack" / "strategist.py")
@@ -1054,15 +1064,29 @@ def check_report(ctx, report, out):
 def check_without_model(ctx, report):
     """Model "none" (S10, S15, S16): each step to its goal tool, in order, until a failure or a stop."""
     want_tools = {"set_light": "light", "reach_card": "go_to_card", "find_card": "explore", "survey": "explore"}
-    outcome, why, cards, ran = "done", "", [], 0
+    outcome, why, cards, ran, used = "done", "", [], 0, 0
     coverage = list(ctx.coverage)
-    for step, op in zip(ctx.mission["steps"], ctx.ops):
+    ops = list(ctx.ops)
+
+    def waits(result):
+        """The robot waits for an adult after this answer (the spec, section 6: the loop waits, then the step again)."""
+        state = result.get("state") if isinstance(result.get("state"), dict) else result
+        return ("waits for an adult" in str(result.get("why", "")) or result.get("result") == "stopped"
+                or state.get("waiting_for_adult") is True)
+    for step in ctx.mission["steps"]:
+        if used >= len(ops):
+            break
         ran += 1
         do, value = step["do"], step[STEP_ARG[step["do"]]]
         wanted = {"color": value} if do == "set_light" else {"card": value} if do == "reach_card" else \
             {"look_for": value if do == "find_card" else None}
-        if op["tool"] != want_tools[do] or op["arguments"] != wanted:
-            ctx.broke("none: each step goes to its goal tool", [step, op["tool"], op["arguments"]])
+        for attempt in range(3):  # the fake's adult has always put the robot back: the step is tried again
+            op = ops[used]
+            used += 1
+            if op["tool"] != want_tools[do] or op["arguments"] != wanted:
+                ctx.broke("none: each step goes to its goal tool", [step, op["tool"], op["arguments"]])
+            if not waits(op["result"] or {}) or op["stopped_after"] or used >= len(ops):
+                break
         result = op["result"] or {}
         if do in ("find_card", "survey"):
             seen = (result.get("cards_seen") or {}).get(value, [])
@@ -1088,7 +1112,7 @@ def check_without_model(ctx, report):
         if do == "reach_card" and result.get("result") == "not found":
             ctx.known.append({"known": "S16: without a model, reach_card of a card not on the mat does not make the "
                                        "mission impossible", "mission": ctx.k, "detail": value})
-    if ran != len(ctx.ops) or (ran < len(ctx.mission["steps"]) and outcome not in ("stopped", "impossible")):
+    if used != len(ctx.ops) or (ran < len(ctx.mission["steps"]) and outcome not in ("stopped", "impossible")):
         ctx.broke("none: the steps run in order, until a failure or a stop", [len(ctx.mission["steps"]), len(ctx.ops)])
     if ran < len(ctx.mission["steps"]) and not (ctx.ops and (ctx.ops[-1]["stopped_after"] or
                                                               (ctx.ops[-1]["result"] or {}).get("result") not in

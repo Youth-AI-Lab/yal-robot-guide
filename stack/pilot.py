@@ -66,6 +66,10 @@ class Stuck(Exception):
     pass
 
 
+class AdultNeeded(Stuck):
+    """The robot waits for an adult. Under the Strategist, the tool ends at once: its loop waits, without the model."""
+
+
 def hold_still():
     """While the mission is paused, nothing moves: say so up the chain once (where the robot stands), then wait."""
     if common.mission_control() != "pause":
@@ -194,6 +198,9 @@ class Pilot:
         return cell_xy(self.state["cell"]), self.state["facing"]
 
     def wait_for_adult(self):
+        if OBEY_MISSION_CONTROL:
+            self.state = {}  # the adult will put the robot somewhere: the next tool reads where
+            raise AdultNeeded("the robot waits for an adult")
         end = time.monotonic() + ADULT_WAIT_S
         while time.monotonic() < end:
             command("wait_for_event", 30)

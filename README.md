@@ -438,7 +438,7 @@ such way: they read `since_last_call`.
 About eight minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
 would, then gives missions to the Strategist with no model or a scripted one, then through the
 Interpreter's link over HTTP, as Open WebUI would, and reads in the simulator what really happened:
-208 checks, all passed in the image 2026.10.45 on 7 November 2026 (container with 2 processors, no
+210 checks, all passed in the image 2026.10.45 on 7 November 2026 (container with 2 processors, no
 network). A real Open WebUI (0.12.4) with a fake model, then with Albert's `gemma-4-31b-it` as the
 Interpreter, was tried apart, not in these checks.
 

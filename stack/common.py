@@ -58,6 +58,24 @@ def held_where():
         return None
 
 
+def say_waiting(info):
+    """The robot waits for an adult during a mission: what the Interpreter tells the group ({since, what_to_do}), or None
+    once it moves again (.robot-sim/waiting.json). Written by the Strategist's loop, which waits without its model."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    path = STATE_DIR / "waiting.json"
+    if info is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_text(json.dumps(info, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def waiting_info():
+    try:
+        return load_json(STATE_DIR / "waiting.json")
+    except (OSError, ValueError):
+        return None
+
+
 def mission_control():
     """What the Interpreter asks of the mission running: "go", "pause" or "stop" (.robot-sim/control.json)."""
     try:

@@ -1473,6 +1473,64 @@ def stack_scenarios(sim, env):
     check("mission stopped by the Interpreter: the loop ends it without asking the model",
           report.get("outcome") == "stopped" and report.get("turns", 9) < 4, (report, err[-300:]))
 
+    # The robot waits for an adult in the middle of a mission (the emergency button during look_around): the Strategist
+    # waits without its model, says it for the Interpreter (waiting.json), and calls the model again on Resume.
+    state_dir = Path(env["ROBOT_STATE_DIR"])
+    sim.act(do="load_world", mat=big, world=world)
+    running = mission(env, "find_card:barbecue", "--model", "fake", wait=False)
+    for _ in range(40):
+        if sim.state()["robot"]["moving"]:
+            break
+        time.sleep(0.25)
+    sim.act(do="button", name="stop")
+    waiting = None
+    for _ in range(60):
+        if (state_dir / "waiting.json").exists():
+            waiting = json.loads((state_dir / "waiting.json").read_text(encoding="utf-8"))
+            break
+        time.sleep(0.5)
+    runs = sorted((state_dir / "missions").iterdir())
+    lines = len((runs[-1] / "transcript.jsonl").read_text(encoding="utf-8").splitlines())
+    time.sleep(3.0)
+    still = len((runs[-1] / "transcript.jsonl").read_text(encoding="utf-8").splitlines())
+    sim.act(do="adult_resume")
+    out, err = running.communicate(timeout=120)
+    report = json.loads(out or "{}")
+    told = (runs[-1] / "transcript.jsonl").read_text(encoding="utf-8")
+    check("the robot waits for an adult during a mission: the model is not called meanwhile, the Interpreter can say "
+          "what to do (waiting.json), and the model hears the event on Resume, then reports",
+          waiting is not None and "adult" in (waiting.get("what_to_do") or "") and still == lines
+          and "Event: an adult put the robot back and pressed Resume" in told
+          and report.get("outcome") in ("done", "impossible")
+          and not (state_dir / "waiting.json").exists(), (waiting, lines, still, report, err[-400:]))
+
+    # The same without a model: a box dropped in front during a slide north; after the adult, the step again.
+    sim.act(do="load_world", mat=big, world=world)
+    running = mission(env, "reach_card:barbecue", "--model", "none", wait=False)
+    box = None
+    for _ in range(120):
+        r = sim.state()["robot"]
+        if r["moving"] and near(r["heading"] % 360, 0, 3) and r["y"] < 133:
+            box = box_in_front(sim, 4)
+            break
+        time.sleep(0.1)
+    waiting = None
+    for _ in range(60):
+        if (state_dir / "waiting.json").exists():
+            waiting = json.loads((state_dir / "waiting.json").read_text(encoding="utf-8"))
+            break
+        time.sleep(0.5)
+    if box is not None:
+        sim.act(do="remove_box", id=box)
+    sim.act(do="adult_resume")
+    out, err = running.communicate(timeout=180)
+    report = json.loads(out or "{}")
+    r = sim.state()["robot"]
+    check("without a model, a box dropped in front during the mission: the Strategist waits for the adult, then tries "
+          "the step again and stops in front of the barbecue", box is not None and waiting is not None
+          and report.get("outcome") == "done" and r["cell"] == "C3" and r["collisions"] == 0, (box, waiting, report, r,
+                                                                                               err[-400:]))
+
     # The pause during a long slide: the robot stops on the next cell, as soon as possible, no adult needed (HOLD).
     sim.act(do="load_world", mat=big, world={"cards": [], "boxes": [], "balls": []})
     script = ("import json, sys, threading; sys.path.insert(0, 'stack'); import common, pilot; "

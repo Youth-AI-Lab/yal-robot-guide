@@ -64,6 +64,7 @@ LOGGED = {"state", "go_to_card", "explore", "light", "go_to_cell", "look", "face
 CALLS_PER_TOOL = 3000   # calls to the Cartographer in one tool, at most, before the probe calls it endless
 HOURS_PER_TOOL = 4      # hours on the probe's clock in one tool, at most
 GIVE_UP = ("the mission was stopped", "no moves left", "the robot still waits for an adult",
+           "the robot waits for an adult",  # under the Strategist: its loop waits for the adult, without the model
            "the robot could not find where it is on the mat", "the Cartographer did not give the cards seen",
            "the robot did not find itself in front of the card")
 FORMAT = ("One tool call per line: the name of a tool, then its arguments as a JSON object (nothing when there are "

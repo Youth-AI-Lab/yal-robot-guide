@@ -48,6 +48,10 @@ ALBERT_URL = "https://albert.api.etalab.gouv.fr/v1/chat/completions"
 MODELS = {"qwen-flash": "qwen/qwen3.8-flash", "deepseek": "deepseek/deepseek-v4-flash",
           "gemini-argon": "google/gemini-4-argon", "sonnet": "anthropic/claude-sonnet-5.5"}
 MAX_TURNS, TIMEOUT_S, RUN_CAP_USD, MAX_TOKENS = 100, 3000, 0.25, 16384  # 4096 cut Qwen's reasoning (bench, 11:30); 100 turns: at 60, three absent-card runs of Hermes ended one cell short (2026-11-07)
+# The robot waits for an adult (a move stopped on the way): the loop waits, never calling its model, until Resume, a
+# stop asked by the Interpreter, or this long; then it calls the model again with the event. The wait does not count in
+# TIMEOUT_S.
+WAIT_FOR_ADULT_S = 900
 FAILED_CALL_USD = 0.01  # a call that failed may have been billed: counted at least this
 STEPS = {"reach_card": "card", "set_light": "color", "find_card": "card", "survey": "card"}
 WHY = ["", "not on the mat", "not seen yet", "no moves left", "a limit of the adults", "no way there",
@@ -243,18 +247,63 @@ def paused():
     return common.mission_control() == "stop"
 
 
+def waits_for_adult(result):
+    """A tool's answer that leaves the robot waiting for an adult (a goal or route tool gave up for it, or a step
+    tool's move stopped on the way)."""
+    if not isinstance(result, dict):
+        return False
+    state = result.get("state") if isinstance(result.get("state"), dict) else result
+    return ("waits for an adult" in str(result.get("why", "")) or result.get("result") == "stopped"
+            or state.get("waiting_for_adult") is True)
+
+
+def wait_for_adult():
+    """Wait, without the model, until an adult presses Resume: "resumed" (with where the robot stands), "stopped" (the
+    Interpreter stopped the mission), or "too long". The Interpreter reads .robot-sim/waiting.json meanwhile."""
+    since = time.monotonic()
+    common.say_waiting({"since": time.strftime("%H:%M:%S"), "what_to_do": pilot.CART.adult_instruction()})
+    try:
+        while time.monotonic() - since < WAIT_FOR_ADULT_S:
+            if common.mission_control() == "stop":
+                return "stopped", None, time.monotonic() - since
+            state = pilot.command("robot_state")
+            if isinstance(state, dict) and state.get("waiting_for_adult") is False:
+                return "resumed", state, time.monotonic() - since
+            time.sleep(1.0)
+        return "too long", None, time.monotonic() - since
+    finally:
+        common.say_waiting(None)
+
+
+def resumed_event(state):
+    """What the model is told when the robot moves again: built by code, closed words only."""
+    if state.get("position_known") and state.get("cell"):
+        where = f"it stands on {state['cell']} facing {state['facing']}"
+    else:
+        where = "where it stands on the mat is not known yet"
+    return f"Event: an adult put the robot back and pressed Resume; {where}. Go on with the mission."
+
+
 def without_model(mission):
     """Model "none": each step goes straight to the Pilot's goal tools, no model (the Pilot alone of the bench of
     6 November). The same report, built by code."""
     start, cards, outcome, why = time.monotonic(), [], "done", ""
     for step in mission["steps"]:
         do = step["do"]
-        if do == "set_light":
-            result = pilot.operate(pilot.light, color=step["color"])
-        elif do == "reach_card":
-            result = pilot.operate(pilot.go_to_card, card=step["card"])
-        else:
-            result = pilot.operate(pilot.explore, look_for=step["card"] if do == "find_card" else None)
+        for _ in range(3):  # an adult's help between two tries: the step again, from where the robot is put back
+            if do == "set_light":
+                result = pilot.operate(pilot.light, color=step["color"])
+            elif do == "reach_card":
+                result = pilot.operate(pilot.go_to_card, card=step["card"])
+            else:
+                result = pilot.operate(pilot.explore, look_for=step["card"] if do == "find_card" else None)
+            if not waits_for_adult(result):
+                break
+            how, _, _ = wait_for_adult()
+            if how != "resumed":
+                result = {"result": "gave up", "why": "the mission was stopped" if how == "stopped"
+                          else "the robot waits for an adult"}
+                break
         if do in ("find_card", "survey"):
             seen = result.get("cards_seen", {}).get(step["card"], [])
             # Only a cell of the mat: in a frame relative to the start, the Cartographer has no cell to give.
@@ -292,6 +341,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
     pilot.PILOT.configure(settings)
     pilot.OBEY_MISSION_CONTROL = True
     common.mission_begins()
+    common.say_waiting(None)  # a mission that ended in the middle of a wait left it
     out = Path(out or STATE_DIR / "missions" / time.strftime("%Y%m%d-%H%M%S"))
     out.mkdir(parents=True, exist_ok=True)
     if model == "none":
@@ -322,13 +372,14 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
     for m in messages:
         transcript.write(json.dumps(m, ensure_ascii=False) + "\n")
     report, outcome, turns, nudged, start = None, None, 0, False, time.monotonic()
+    waited = 0.0  # time spent waiting for an adult: not counted in TIMEOUT_S
     flush()
     try:
         while report is None:
             if paused():
                 outcome = "stopped"
                 break
-            if turns >= MAX_TURNS or time.monotonic() - start > TIMEOUT_S:
+            if turns >= MAX_TURNS or time.monotonic() - start - waited > TIMEOUT_S:
                 outcome = "limit"
                 break
             if spent() > cap_usd:
@@ -358,7 +409,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
                 nudged = True  # once: the model answered in words; the report is a tool
                 messages.append({"role": "user", "content": "Call report to end the mission."})
                 continue
-            moved = False
+            moved, adult = False, False
             for n, call in enumerate(message["tool_calls"]):
                 call.setdefault("id", f"call_{turns}_{n}")
                 name = (call.get("function") or {}).get("name", "")
@@ -387,8 +438,21 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
                 log(name, arguments, text, caller="strategist")
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": text})
                 transcript.write(json.dumps({"role": "tool", "name": name, "content": text}, ensure_ascii=False) + "\n")
+                adult = adult or waits_for_adult(result)
             if outcome == "stopped":
                 break
+            if adult:
+                # The model finished its turn; it is not called while the robot waits, then hears the event.
+                how, state, seconds = wait_for_adult()
+                waited += seconds
+                if how != "resumed":
+                    outcome = "stopped" if how == "stopped" else "impossible"
+                    report = None if how == "stopped" else {"outcome": "impossible", "cards": [],
+                                                            "why": "the robot waits for an adult"}
+                    break
+                event = resumed_event(state)
+                messages.append({"role": "user", "content": event})
+                transcript.write(json.dumps({"role": "user", "content": event}, ensure_ascii=False) + "\n")
     except ApiError as e:
         outcome = e.exit_code
     transcript.close()
