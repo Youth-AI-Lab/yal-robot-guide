@@ -73,7 +73,7 @@ def personality(spec):
     library = common.load_json(HERE / "personality" / "bricks.json")["bricks"]
     if isinstance(spec, str):
         path = HERE / "personality" / f"{spec}.json"
-        if not spec.replace("-", "").replace("_", "").isalnum() or not path.exists():
+        if not spec.replace("-", "").replace("_", "").isalnum() or spec == "bricks" or not path.exists():
             raise Refused(f"no personality {spec!r} in stack/personality/")
         spec = common.load_json(path)["bricks"]
     settings, texts = {}, []
@@ -251,8 +251,9 @@ def without_model(mission):
         else:
             result = pilot.explore(step["card"] if do == "find_card" else None)
         if do in ("find_card", "survey"):
-            cards += [{"card": step["card"], "cell": c} for c in result.get("cards_seen", {}).get(step["card"], [])]
-            if not cards:
+            found = [{"card": step["card"], "cell": c} for c in result.get("cards_seen", {}).get(step["card"], [])]
+            cards += found
+            if not found:
                 # "Not on the mat" only when the camera has looked at every cell it can: else, not seen yet.
                 left = pilot.cards().get("camera_coverage", {}).get("not_looked_at_yet", [None])
                 outcome, why = "impossible", "not seen yet" if left else "not on the mat"

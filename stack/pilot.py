@@ -70,8 +70,9 @@ def hold_still():
     """While the mission is paused, nothing moves: say so up the chain once (where the robot stands), then wait."""
     if common.mission_control() != "pause":
         return
-    common.say_held({"cell": cell_name(CART.col, CART.row) if CART.sure else None,
-                     "facing": FACING[CART.facing] if CART.sure else None, "since": time.strftime("%H:%M:%S")})
+    known = CART.sure and not CART.frame  # in a frame relative to the start, a cell name would mean nothing
+    common.say_held({"cell": cell_name(CART.col, CART.row) if known else None,
+                     "facing": FACING[CART.facing] if known else None, "since": time.strftime("%H:%M:%S")})
     while common.mission_control() == "pause":
         time.sleep(0.5)
     common.say_held(None)
@@ -91,11 +92,17 @@ class Pilot:
         self.settings = {k: v["default"] for k, v in SETTINGS.items()}
 
     def configure(self, settings):
+        """The settings of a new mission: the defaults, then the personality's bricks (a setting not given goes back to
+        its default: a mission never keeps the bricks of the one before)."""
         for key, value in (settings or {}).items():
             if key not in SETTINGS:
-                raise ValueError(f"no setting {key} for the Pilot")
-            self.settings[key] = value
-        self.settings["max_leg"] = max(1, min(MAX_CELLS, int(self.settings["max_leg"])))
+                raise ValueError(f"no setting {key} for the Pilot")  # checked first: nothing changed
+            if not isinstance(value, type(SETTINGS[key]["default"])) or isinstance(value, bool) != isinstance(
+                    SETTINGS[key]["default"], bool):
+                raise ValueError(f"the setting {key} is a {type(SETTINGS[key]['default']).__name__}")
+        self.settings = {k: v["default"] for k, v in SETTINGS.items()}
+        self.settings.update(settings or {})
+        self.settings["max_leg"] = max(1, min(MAX_CELLS, self.settings["max_leg"]))
 
     # --- what the Cartographer says ------------------------------------------------------------------------------
     def read(self, answer):

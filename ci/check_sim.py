@@ -1161,10 +1161,28 @@ def stack_scenarios(sim, env):
           first.get("cell") is None and first.get("position") in ("unknown", "probable") and slide.get("result") == "refused"
           and "does not know yet" in slide.get("why", "") and face.get("result") == "refused" and wire_count(sim, "MOVE") == sent,
           (first, slide, face))
+    check("start unknown: the compass (north at the top of the mat) and one reading leave the cells of row 5, facing "
+          "north", sorted(first.get("could_be") or []) == [f"{c}5 facing north" for c in "ABCDE"], first)
     around = drive(unknown, "around")
+    heard = [e["event"] for e in around.get("since_last_call", [])]
+    check("start unknown, no landmark: after a look around, the compass and the border give C5 facing north, and the "
+          "Cartographer says so", (around.get("state") or {}).get("cell") == "C5"
+          and around["state"].get("facing") == "north" and any("compass" in e for e in heard), (around.get("state"), heard))
+    no_compass = with_rules("no-compass", start="unknown", mat_north_up=False)
+    sim.act(do="load_world", mat=big, world={"cards": [], "boxes": [], "balls": []})
+    around = drive(no_compass, "around")
     places = (around.get("state") or {}).get("could_be") or []
-    check("start unknown, the border alone: after a look around, 4 places on a square mat that looks the same at each "
-          "quarter turn, C5 facing north among them", len(places) == 4 and "C5 facing north" in places, around.get("state"))
+    check("start unknown, without the compass: the border alone leaves 4 places on a square mat that looks the same at "
+          "each quarter turn, C5 facing north among them", len(places) == 4 and "C5 facing north" in places,
+          around.get("state"))
+    facing_up = with_rules("facing-up", start={"facing": "north"}, mat_north_up=False)
+    sim.act(do="load_world", mat=big, world={"cards": [], "boxes": [], "balls": []})
+    around = drive(facing_up, "around")
+    check("a start known only by its facing (the top of the mat), without the compass: the border settles the cell, "
+          "C5 facing north", (around.get("state") or {}).get("cell") == "C5" and around["state"].get("facing") == "north",
+          around.get("state"))
+    sim.act(do="load_world", mat=big, world={"cards": [], "boxes": [], "balls": []})
+    drive(unknown, "state")
     step = drive(unknown, "forward")
     check("start unknown: one cell forwards, where the sensor sees the way free", step.get("result") == "done"
           and sim.state()["robot"]["cell"] == "C4", step)
@@ -1189,6 +1207,14 @@ def stack_scenarios(sim, env):
     check("a start the rules give wrong (C4, the robot on C5): the first reading beyond the border, the Cartographer no "
           "longer believes it, and says so", state.get("cell") is None and any("no longer knows" in e for e in heard),
           (state, heard))
+
+    turned = with_rules("turned", start={"cell": "C5", "facing": "east"})
+    sim.act(do="load_world", mat=big, world={"cards": [], "boxes": [], "balls": []})
+    state = drive(turned, "state")
+    heard = [e["event"] for e in state.get("since_last_call", [])]
+    check("a start the rules give turned (east, the robot faces north): the compass contradicts it, the Cartographer no "
+          "longer believes it, and says so", state.get("cell") is None
+          and any("compass says it faces north" in e for e in heard), (state, heard))
 
     world = {"cards": [{"cell": "C2", "label": "water-point"}, {"cell": "E2", "label": "barbecue"}], "boxes": [], "balls": []}
     sim.act(do="load_world", mat=big, world=world)

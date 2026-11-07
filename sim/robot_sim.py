@@ -146,7 +146,7 @@ class World:
         self.mode = "realtime"
         # camera_distance: the camera's distance error, as a share of the distance (an estimate from the
         # size of the card in the image grows worse with distance).
-        self.noise = {"distance_cm": 0.0, "slip": 0.0, "camera_miss": 0.0, "camera_distance": 0.1}
+        self.noise = {"distance_cm": 0.0, "slip": 0.0, "camera_miss": 0.0, "camera_distance": 0.1, "compass_deg": 0.0}
         self.reflex_error = None
         self.load(mat, world)
 
@@ -544,6 +544,10 @@ class Hal:
 
     def camera_view(self):
         return self.w.camera_view()
+
+    def compass(self):
+        """The magnetometer: the way the robot faces, in degrees from north (the mat lies with north at the top)."""
+        return (self.w.heading + self.w.random.gauss(0, self.w.noise["compass_deg"])) % 360
 
     def bumper(self):
         return self.w.touching or self.w.ball_contact

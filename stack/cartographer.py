@@ -90,6 +90,8 @@ STANDS_FOR_S = 10
 BORDER_CM = 10
 READING_TOLERANCE_CM = 6
 DOUBT_CM = 20
+# The compass is believed only near a quarter turn (a reading in the middle of a turn, or disturbed by a magnet, is not).
+COMPASS_TOLERANCE_DEG = 25
 TURNED = ["the way it faced at the start", "to the right of it", "the other way", "to the left of it"]
 
 
@@ -133,9 +135,13 @@ class Cartographer:
             start = self.rules.get("start") or self.mat["start"]
             self.frame = None  # None: cells of the mat; else relative to the start, with the places still possible
             self.notices = []  # what the Cartographer has to tell the next caller (its position found, or lost)
-            if start == "unknown":
-                self.frame = {"candidates": [[c, r, f] for c in range(self.mat["cols"]) for r in range(self.mat["rows"])
-                                             for f in range(4)]}
+            if start == "unknown" or "cell" not in start or "facing" not in start:
+                # Unknown, or known in part: only the way it faces ({"facing": "north"}: it starts facing the top of
+                # the mat), or only its cell. The places that fit are kept.
+                cells = [cell_xy(start["cell"])] if isinstance(start, dict) and "cell" in start else \
+                    [(c, r) for c in range(self.mat["cols"]) for r in range(self.mat["rows"])]
+                facings = [FACING.index(start["facing"])] if isinstance(start, dict) and "facing" in start else range(4)
+                self.frame = {"candidates": [[c, r, f] for c, r in cells for f in facings]}
                 self.col, self.row, self.facing = self.mat["cols"] - 1, self.mat["rows"] - 1, 0
             else:
                 self.col, self.row = cell_xy(start["cell"])
@@ -231,6 +237,29 @@ class Cartographer:
             return [[self.col, self.row, self.facing]]
         return [list(self.to_mat(s, self.col, self.row, self.facing)) for s in self.frame["candidates"]]
 
+    def compass(self, fields):
+        """The way the robot faces on the mat, from its compass (the rule mat_north_up: north at the top), or None."""
+        heading = fields.get("heading", "none")
+        if not self.rules.get("mat_north_up", True) or not heading.isdigit():
+            return None
+        degrees = int(heading) % 360
+        quarter = round(degrees / 90) % 4
+        off = abs((degrees - quarter * 90 + 180) % 360 - 180)
+        return quarter if off <= COMPASS_TOLERANCE_DEG else None
+
+    def orient(self, facing):
+        """The compass says which way the robot faces on the mat: only the places facing that way are kept. With a
+        place it believed facing another way: it no longer believes it (a turn went wrong, or an adult put it back
+        turned)."""
+        if self.frame:
+            kept = [st for st in self.frame["candidates"] if (self.facing + st[2]) % 4 == facing]
+            if kept:
+                self.frame["candidates"] = kept
+                if len(kept) == 1:
+                    self.settle(kept[0], "the compass")
+        elif self.facing != facing:
+            self.unsettle(None, facing)
+
     def localize(self, dist):
         """A reading of the distance sensor, standing still: rules out the places it could not come from. One place left:
         the Cartographer knows where the robot is. A reading far beyond the border from the place it believed: it no
@@ -241,7 +270,8 @@ class Cartographer:
             if kept:  # none left: a reading that fits no place (a misreading): ignored
                 self.frame["candidates"] = kept
                 if len(kept) == 1:
-                    self.settle(kept[0], "the distance sensor and the border")
+                    self.settle(kept[0], ("the compass, " if self.rules.get("mat_north_up", True) else "")
+                                + "the distance sensor and the border")
         elif dist > self.way_to_border(self.col, self.row, self.facing) + DOUBT_CM:
             self.unsettle(dist)
 
@@ -277,15 +307,18 @@ class Cartographer:
                             f"facing {FACING[self.facing]} at that moment (found with {how}); the cards seen before are "
                             "now on the mat")
 
-    def unsettle(self, dist):
+    def unsettle(self, dist, facing=None):
+        """No longer believe the place on the mat: count from here, every place still possible kept (with the reading,
+        and the way the compass says it faces)."""
         here = [self.col, self.row, self.facing]
         places = [[c, r, f] for c in range(self.mat["cols"]) for r in range(self.mat["rows"]) for f in range(4)
-                  if self.possible(c, r, f, dist)]
+                  if (dist is None or self.possible(c, r, f, dist)) and (facing is None or f == facing)]
         self.rebase(lambda c, r, f=0: self.from_mat(here, c, r, f), lambda x, y: self.point_from_mat(here, x, y),
                     {"candidates": places})
-        self.notices.append("the Cartographer no longer knows where the robot is: the distance sensor reads farther than "
-                            "the border from where it believed it (the wheels may have slipped); it counts from here "
-                            "again, and looks for its place")
+        why = ("the distance sensor reads farther than the border from where it believed it (the wheels may have "
+               "slipped)" if dist is not None else f"the compass says it faces {FACING[facing]}, not {FACING[here[2]]}")
+        self.notices.append(f"the Cartographer no longer knows where the robot is: {why}; it counts from here again, "
+                            "and looks for its place")
 
     def rebase(self, pose, point, frame):
         """Everything the Cartographer keeps, moved from its frame to another (the mat, or relative to a start)."""
@@ -367,6 +400,10 @@ class Cartographer:
             self.poses[fields["pose"]] = [self.col, self.row, self.facing]
             for old in sorted(self.poses, key=int)[:-100]:
                 del self.poses[old]
+        if self.sure and fields.get("moving") == "0" and fields.get("wait_adult") == "0":
+            facing = self.compass(fields)
+            if facing is not None:
+                self.orient(facing)
         if (self.sure and fields.get("moving") == "0" and fields.get("wait_adult") == "0"
                 and fields.get("estop") == "0" and fields.get("dist", "none") != "none"):
             self.localize(int(fields["dist"]))

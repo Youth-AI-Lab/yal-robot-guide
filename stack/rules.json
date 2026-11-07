@@ -6,8 +6,10 @@
   "never_into_a_ball_lane_when_blind": true,
   "ball_seen_recently_s": 10,
   "one_command_at_a_time": true,
-  "_start": "Where the robot starts its mission: {\"cell\": \"A6\", \"facing\": \"north\"}; null for the start of mat.json; \"unknown\" when nobody says where it stands: the Cartographer then works relative to where it started, and finds its place on the mat with the border (the distance sensor sees it) and the landmarks.",
+  "_start": "Where the robot starts its mission: {\"cell\": \"A6\", \"facing\": \"north\"}; only the way it faces, {\"facing\": \"north\"} (it starts facing the top of the mat, on a cell nobody gives), or only its cell, {\"cell\": \"A6\"}; null for the start of mat.json; \"unknown\" when nobody says where it stands: the Cartographer then works relative to where it started, and finds its place on the mat with the border (the distance sensor sees it) and the landmarks.",
   "start": null,
-  "_landmarks": "Cards the adults put on a known cell before the session, {\"fire-station\": \"A6\"}: when the camera recognises one, the Cartographer knows better where the robot is. The border alone leaves two places possible on a mat that looks the same turned round.",
+  "_mat_north_up": "The mat lies with north at the top: the robot's compass (magnetometer) gives the way it faces, so the Cartographer only looks for the cell.",
+  "mat_north_up": true,
+  "_landmarks": "Cards the adults put on a known cell before the session, {\"fire-station\": \"A6\"}: when the camera recognises one, the Cartographer knows better where the robot is. Useful when boxes hide the border, or without the compass (the border alone leaves two places on a mat that looks the same turned round).",
   "landmarks": {}
 }
