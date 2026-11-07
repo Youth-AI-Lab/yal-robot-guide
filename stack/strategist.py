@@ -53,6 +53,10 @@ MAX_TURNS, TIMEOUT_S, RUN_CAP_USD, MAX_TOKENS = 100, 3000, 0.25, 16384  # 4096 c
 # TIMEOUT_S.
 WAIT_FOR_ADULT_S = 900
 FAILED_CALL_USD = 0.01  # a call that failed may have been billed: counted at least this
+# The same call refused again and again: the model is told from the second time, the mission ends ("limit") at the
+# fourth. Mistral Small 3.2 (Albert, 2026-11-07) sent look_around {"seconds": 1} 44 times, and used up the quota.
+SAME_REFUSAL_MAX = 4
+BUSY_WAIT_S = 0.5  # the stack held a moment by another program (drive.py, the page): the record is read again
 STEPS = {"reach_card": "card", "set_light": "color", "find_card": "card", "survey": "card"}
 WHY = ["", "not on the mat", "not seen yet", "no moves left", "a limit of the adults", "no way there",
        "the robot waits for an adult", "the robot does not know where it is", "other"]
@@ -140,6 +144,40 @@ REPORT = {"type": "function", "function": {
                                                  "card": {"type": "string", "enum": sorted(pilot.MAT["cards"])},
                                                  "cell": {"type": "string", "enum": pilot.CELLS}}}},
         "why": {"type": "string", "enum": WHY}}}}}
+
+
+def record_check(cards):
+    """Why the cards of a report cannot be taken, or None; and the Cartographer's answer to give back with a refusal.
+    Each card must be in the record (seen_cards), on its cell or one of its could_also_be. Mistral Small 3.2 (Albert,
+    2026-11-07) reported the barbecue on D4 without ever seeing it, and the group was told. The record is read by a
+    seen_cards like any other: what that call heard (since_last_call, notices) goes back to the model with the refusal.
+    A robot that cannot be reached at all: nothing to compare with, the report goes through."""
+    if not cards:
+        return None, None
+    for attempt in range(3):
+        try:
+            answer = pilot.command("seen_cards")
+        except Exception:  # noqa: BLE001
+            return None, None
+        if answer.get("rule") not in ("another_command", "one_move_at_a_time"):
+            break
+        time.sleep(BUSY_WAIT_S)
+    if "cards_seen" not in answer:
+        return "the record of the cards could not be read now: report again", answer
+    placed, unplaced = set(), set()
+    for seen in answer["cards_seen"]:
+        if seen.get("cell"):
+            placed.update((seen["card"], cell) for cell in [seen["cell"], *(seen.get("could_also_be") or [])])
+        else:
+            unplaced.add(seen["card"])
+    wrong = [c for c in cards if (c.get("card"), c.get("cell")) not in placed]
+    if not wrong:
+        return None, answer
+    if any(c.get("card") in unplaced for c in wrong):
+        return ("the robot does not know where it is now, so the record gives no cells: find its place first, or "
+                "report impossible with why \"the robot does not know where it is\""), answer
+    named = ", ".join(f"{c.get('card')} on {c.get('cell')}" for c in wrong)
+    return f"the record does not place {named}: report only cards and cells that seen_cards gives", answer
 
 
 def invalid(spec, arguments):
@@ -372,6 +410,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
     for m in messages:
         transcript.write(json.dumps(m, ensure_ascii=False) + "\n")
     report, outcome, turns, nudged, start = None, None, 0, False, time.monotonic()
+    last_refused, same_refused = None, 0
     waited = 0.0  # time spent waiting for an adult: not counted in TIMEOUT_S
     flush()
     try:
@@ -409,7 +448,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
                 nudged = True  # once: the model answered in words; the report is a tool
                 messages.append({"role": "user", "content": "Call report to end the mission."})
                 continue
-            moved, adult = False, False
+            moved, adult, counted = False, False, set()
             for n, call in enumerate(message["tool_calls"]):
                 call.setdefault("id", f"call_{turns}_{n}")
                 name = (call.get("function") or {}).get("name", "")
@@ -417,10 +456,29 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
                     arguments = json.loads((call.get("function") or {}).get("arguments") or "{}")
                 except ValueError:
                     arguments = None
-                why = "no tool named " + name if name not in specs else invalid(specs[name], arguments)
+                why, record = "no tool named " + name if name not in specs else invalid(specs[name], arguments), None
                 if why:
-                    result = {"result": "refused", "why": f"invalid arguments: {why}: nothing was sent"}
+                    why = f"invalid arguments: {why}: nothing was sent"
+                elif name == "report" and outcome != "limit":
+                    why, record = record_check(arguments.get("cards") or [])
+                if outcome == "limit":  # the same call refused too often, earlier in this answer: nothing else runs
+                    result = {"result": "refused", "why": "the mission ended: the same call was refused "
+                                                          f"{SAME_REFUSAL_MAX} times in a row"}
+                elif why:
+                    result = {"result": "refused", "why": why}
+                    if record is not None:
+                        result["seen_cards"] = record
+                    this = (name, (call.get("function") or {}).get("arguments") or "")  # word for word
+                    if this not in counted:  # counted once per answer: the model reads each refusal before it counts
+                        counted.add(this)
+                        same_refused = same_refused + 1 if this == last_refused else 1
+                    last_refused = this
+                    if same_refused >= 2:
+                        result["why"] += f"; this same call was refused {same_refused} times in a row: change it"
+                    if same_refused >= SAME_REFUSAL_MAX:
+                        outcome = "limit"
                 elif name == "report":
+                    last_refused = None
                     report = arguments
                     result = {"result": "done"}
                 elif paused():
@@ -429,6 +487,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
                     result = {"result": "refused", "why": "another move is still running: send one move at a time, "
                                                           "and read its answer before the next"}
                 else:
+                    last_refused = None
                     try:
                         result = pilot.operate(toolset[name][0], **arguments)
                     except Exception as e:  # noqa: BLE001  (as an MCP server: the error goes back to the model)
@@ -439,7 +498,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": text})
                 transcript.write(json.dumps({"role": "tool", "name": name, "content": text}, ensure_ascii=False) + "\n")
                 adult = adult or waits_for_adult(result)
-            if outcome == "stopped":
+            if outcome in ("stopped", "limit"):
                 break
             if adult:
                 # The model finished its turn; it is not called while the robot waits, then hears the event.

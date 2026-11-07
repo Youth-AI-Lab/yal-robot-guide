@@ -70,6 +70,12 @@ OUTCOMES = {"done", "impossible", "stopped", "no report", "limit", "cost cap", "
 COUNTS = ("missions", "model_calls", "model_usd", "operations", "commands", "cells", "moves")
 MOVES = {"step_forward", "move", "turn", "look_around", "face", "go_to_card", "explore", "go_to_cell"}
 ANOTHER_MOVE = "another move is still running: send one move at a time, and read its answer before the next"
+SAME_REFUSAL_MAX = 4  # stack/strategist.py: the same refused call this many times in a row ends the mission (limit)
+REPEATED = re.compile(r"; this same call was refused (\d+) times in a row: change it$")
+BUSY = ("another_command", "one_move_at_a_time")  # the stack held by another program a moment: the loop reads again
+NOT_PLACED, PLACE_LOST = "the record does not place ", "the robot does not know where it is now"
+UNREAD = "the record of the cards could not be read now"
+ENDED = f"the mission ended: the same call was refused {SAME_REFUSAL_MAX} times in a row"
 NUDGE = "Call report to end the mission."
 REPORT = {"required": ["outcome"], "properties": {
     "outcome": {"type": "string", "enum": ["done", "impossible"]},
@@ -108,6 +114,7 @@ class Ctx:
         self.ops, self.response, self.moved, self.reported = [], 0, False, set()
         self.coverage, self.configured, self.holds, self.probe_resumes, self.moves = [], [], 0, 0, 0
         self.messages, self.model_report, self.lies, self.stop_in_call = None, None, [], None
+        self.records_given, self.last_refused, self.same_refused, self.most_same = [], None, 0, 0
         self.secrets = sorted({s for k2, v in (mission.items() if isinstance(mission, dict) else [])
                                if k2 not in ("steps", "personality") for s in strings(v) if len(s) >= 6})
         self.kinds = collections.Counter()
@@ -213,6 +220,7 @@ class FakePilotSettings:
         self.settings = dict({k: v["default"] for k, v in REAL.SETTINGS.items()}, **(settings or {}))
 
 
+
 WORLD, CTX = None, None
 
 
@@ -302,6 +310,8 @@ def one_move():
     tick("move")
     if w.rng.random() < 0.03:
         w.waiting = True  # something touched the robot: it waits for an adult
+    elif w.rng.random() < 0.03:
+        w.frame = True  # the wheels slipped: the Cartographer no longer knows where the robot is
 
 
 def here():
@@ -588,7 +598,28 @@ _CART = types.SimpleNamespace(adult_instruction=lambda: "Stop and ask an adult t
 
 
 def _command(name, *args):
+    if name == "seen_cards" and CTX is not None:  # the record a report is compared with; sometimes the stack is busy
+        busy = CTX.ctrl_rng.random() < 0.35
+        answer = {"result": "refused", "rule": "another_command", "why": "another program is using the robot"} if busy \
+            else {"cards_seen": [WORLD.masked(r) for r in WORLD.records], "since_last_call": [f"probe {len(WORLD.records)}"]}
+        CTX.records_given.append(answer)
+        return answer
     return {"waiting_for_adult": False, "position_known": True, "cell": "C3", "facing": "north"}
+
+
+def report_refusal(cards, shown):
+    """What the loop must answer a report with these cards, given the record it read: None (taken) or a refusal's start."""
+    if not cards or shown is None:
+        return None
+    if "cards_seen" not in shown:
+        return UNREAD
+    placed = {(r["card"], c) for r in shown["cards_seen"] if r.get("cell")
+              for c in [r["cell"], *(r.get("could_also_be") or [])]}
+    unplaced = {r["card"] for r in shown["cards_seen"] if not r.get("cell")}
+    wrong = [c for c in cards if (c["card"], c["cell"]) not in placed]
+    if not wrong:
+        return None
+    return PLACE_LOST if any(c["card"] in unplaced for c in wrong) else NOT_PLACED
 
 
 for _name, _value in dict(_FNS, MAT=MAT, CELLS=list(REAL.CELLS), STEP=dict(REAL.STEP), MOVES=set(REAL.MOVES),
@@ -668,6 +699,17 @@ def random_model(mission, messages):
              "cost": rng.choice([0, 0, 0, 0.0004, 0.003, 0.02, 0.08])}
     seen = sorted(p for m in messages if m["role"] == "tool" for p in said_pairs(json.loads(m["content"]))
                   if p[0] in CARDS and p[1] in CELLS)
+    # Stubborn, as Mistral Small 3.2 on Albert: the last answer was one call, refused; the same call again, word for word.
+    last = max((i for i, m in enumerate(messages) if m["role"] == "assistant"), default=None)
+    if last is not None and len(messages[last].get("tool_calls") or []) == 1 and last + 1 < len(messages) \
+            and messages[last + 1]["role"] == "tool" and '"result": "refused"' in messages[last + 1]["content"] \
+            and rng.random() < 0.6:
+        again = [dict(messages[last]["tool_calls"][0], id=f"probe_{n}_0")]
+        if rng.random() < 0.4:  # and something else after it, in the same answer
+            name, arguments = random_call(rng, ctx)
+            text = arguments if isinstance(arguments, str) else json.dumps(arguments)
+            again.append({"type": "function", "id": f"probe_{n}_1", "function": {"name": name, "arguments": text}})
+        return {"role": "assistant", "content": None, "tool_calls": again}, usage, "tool_calls"
     r = rng.random()
     if r < 0.07:
         return {"role": "assistant", "content": "The robot looked around; I think it is done."}, usage, "stop"
@@ -675,7 +717,10 @@ def random_model(mission, messages):
     if r < 0.07 + min(0.5, 0.05 + 0.02 * n):
         if rng.random() < 0.1:
             calls.append(random_call(rng, ctx))
-        calls.append(("report", report_arguments(rng, seen)))
+        arguments = report_arguments(rng, seen)
+        if WORLD.frame and WORLD.records and rng.random() < 0.5:  # a card seen, its true cell, while the place is lost
+            arguments["cards"] = [{"card": WORLD.records[0]["card"], "cell": WORLD.records[0]["cell"]}]
+        calls.append(("report", arguments))
         if rng.random() < 0.1:
             calls.append(random_call(rng, ctx))
     else:
@@ -928,9 +973,10 @@ def check_response(ctx, messages):
         return
     pilot = [json.dumps(o["result"], ensure_ascii=False) for o in ctx.ops
              if o["response"] == ctx.response and o["result"] is not None]
-    reported_at = None
+    reported_at, limit_hit, counted = None, False, set()
     for j, (call, answer) in enumerate(zip(calls, answers)):
         name = (call.get("function") or {}).get("name", "")
+        word_for_word = (name, (call.get("function") or {}).get("arguments") or "")
         raw = (call.get("function") or {}).get("arguments") or "{}"
         try:
             arguments = json.loads(raw)
@@ -940,12 +986,51 @@ def check_response(ctx, messages):
                fits(REPORT if name == "report" else schema_of(ctx.tools, name), arguments))
         content = answer["content"]
         said = json.loads(content)
-        invalid = said.get("result") == "refused" and str(said.get("why", "")).startswith("invalid arguments: ")
-        if why and not (invalid and said["why"].endswith(": nothing was sent")):
+        said_why = str(said.get("why", ""))
+        repeated = REPEATED.search(said_why) if said.get("result") == "refused" else None
+        bare_why = said_why[:repeated.start()] if repeated else said_why
+        invalid = said.get("result") == "refused" and bare_why.startswith("invalid arguments: ")
+        if limit_hit:
+            if said != {"result": "refused", "why": ENDED}:
+                ctx.broke("after the fourth same refusal, nothing else of that answer runs", [name, said])
+            ctx.kinds["answer refused: mission ended"] += 1
+            continue
+        expected, shown = None, None
+        if name == "report" and not why and arguments.get("cards"):
+            if not ctx.records_given:  # the fake robot always answers: a report with cards is always compared
+                ctx.broke("a report with cards is compared with the record (seen_cards)", [arguments, said])
+                shown = {"cards_seen": [WORLD.masked(r) for r in WORLD.records]}
+            for _ in range(3):
+                if not ctx.records_given:
+                    break
+                shown = ctx.records_given.pop(0)
+                if shown.get("rule") not in BUSY:
+                    break
+            expected = report_refusal(arguments["cards"], shown)
+        refused_report = name == "report" and said.get("result") == "refused" and \
+            bare_why.startswith((NOT_PLACED, PLACE_LOST, UNREAD))
+        if why and not (invalid and bare_why.endswith(": nothing was sent")):
             ctx.broke("a call that does not fit its schema is refused, and nothing is sent", [name, raw, said])
         if not why and invalid:
             ctx.broke("a call that fits its schema is not refused as invalid", [name, raw, said])
-        if name == "report" and not why:
+        if expected and not (refused_report and bare_why.startswith(expected) and said.get("seen_cards") == shown):
+            ctx.broke("a report the record does not back is refused, with the record it was compared with",
+                      [arguments, expected, said])
+        if refused_report and not expected:
+            ctx.broke("a report the record backs is not refused", [arguments, shown, said])
+        if invalid or refused_report:
+            if word_for_word not in counted:  # once per answer: the model reads each refusal before it counts again
+                counted.add(word_for_word)
+                ctx.same_refused = ctx.same_refused + 1 if word_for_word == ctx.last_refused else 1
+            ctx.last_refused = word_for_word
+            ctx.most_same = max(ctx.most_same, ctx.same_refused)
+            limit_hit = ctx.same_refused >= SAME_REFUSAL_MAX
+            if (repeated is None) != (ctx.same_refused < 2) or (repeated and int(repeated[1]) != ctx.same_refused):
+                ctx.broke("from the second time in a row, a refused call says how many times", [ctx.same_refused, said])
+        if refused_report:
+            kind = "refused: " + next(k for k in (NOT_PLACED, PLACE_LOST, UNREAD) if bare_why.startswith(k)).strip()
+        elif name == "report" and not why:
+            ctx.last_refused = None
             if said != {"result": "done"}:
                 ctx.broke("a report is answered done", said)
             ctx.model_report = arguments
@@ -955,6 +1040,7 @@ def check_response(ctx, messages):
             kind = "report"
         elif content in pilot:
             pilot.remove(content)
+            ctx.last_refused = None
             kind = "pilot answer"
             if reported_at is not None:
                 ctx.known.append({"known": "S17: a tool after report, in the same answer, still runs",
@@ -968,6 +1054,7 @@ def check_response(ctx, messages):
             if name not in MOVES:
                 ctx.broke("only a move is refused as a second move", name)
         elif said.get("result") == "error" and isinstance(said.get("why"), str):
+            ctx.last_refused = None
             kind = "error"
         else:
             ctx.broke("each answer is the Pilot's answer as it is, or one of the loop's own", [name, said])
@@ -999,8 +1086,8 @@ def check_report(ctx, report, out):
     for c in cards:
         if (c["card"], c["cell"]) not in ctx.reported:
             if c in model_cards and ctx.lies:
-                ctx.noted.append({"noted": "a card the model reported that the Pilot never said: passed on "
-                                           "(spec 6: no comparison with seen_cards)", "mission": ctx.k, "detail": c})
+                ctx.noted.append({"noted": "a card the model reported that the Pilot never said, but that the camera "
+                                           "saw there: passed on", "mission": ctx.k, "detail": c})
             else:
                 broke("the report's cards are cards the Pilot reported", [c, sorted(ctx.reported)])
     counts = report.get("counts") or {}
@@ -1051,6 +1138,8 @@ def check_report(ctx, report, out):
         want = {"stopped", "no report"} if ctx.texts >= 2 and ctx.stop_in_call == ctx.calls else {"stopped"}
     elif ctx.texts >= 2:
         want = {"no report"}
+    elif ctx.most_same >= SAME_REFUSAL_MAX:
+        want = {"limit"}
     elif ctx.calls >= ctx.max_turns:
         want = {"limit"}
     elif sum(ctx.costs) > ctx.cap:
@@ -1130,6 +1219,7 @@ def check_without_model(ctx, report):
 def load_fresh(name="strategist_probe"):
     module = probe_tiers.load(name, GUIDE / "stack" / "strategist.py")
     module.probe_fake_model = module.fake_model
+    module.BUSY_WAIT_S = 0  # the fake stack is busy often: no real waiting
     while sys.path.count(str(GUIDE / "stack")) > 1:
         sys.path.remove(str(GUIDE / "stack"))
     return module
@@ -1329,6 +1419,8 @@ def mutants():
             return False
         m.paused = paused
     def turns_ignored(m): m.MAX_TURNS = 10 ** 6
+    def repeats_ignored(m): m.SAME_REFUSAL_MAX = 10 ** 6
+    def unseen_accepted(m): m.record_check = lambda cards: (None, None)
     def cost_ignored(m):
         run_ = m.run
         m.run = lambda mission, model="fake", key="", tools="route", out=None, cap_usd=0.25: run_(
@@ -1366,6 +1458,8 @@ def mutants():
             "invalid steps accepted": steps_accepted, "personality bricks or unknown accepted": personality_accepted,
             "the personality's Pilot settings dropped": settings_dropped, "free words sent to the model": free_words,
             "pause ignored": pause_ignored, "stop ignored": stop_ignored, "turns cap ignored": turns_ignored,
+            "the same refused call repeated without end": repeats_ignored,
+            "a report with a card never seen accepted": unseen_accepted,
             "cost cap ignored": cost_ignored, "two moves in one answer": two_moves,
             "invalid arguments sent to the Pilot": invalid_passed, "model calls not counted": calls_uncounted,
             "a refused mission is counted": begins_first, "none: a card found left out": no_report_cards,

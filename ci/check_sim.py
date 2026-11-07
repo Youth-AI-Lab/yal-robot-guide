@@ -1706,6 +1706,44 @@ def stack_scenarios(sim, env):
           first.get("outcome") == "done" and second.get("outcome") == "done" and "no moves left" not in str(second)
           and r["cell"] == "C3" and r["collisions"] == 0, (first, second, r, done.stderr[-400:]))
 
+    # A model that sends the same refused call again and again (Mistral Small 3.2 on Albert, 44 times): it is told from
+    # the second time, and the mission ends at the fourth, without using up the quota.
+    out = Path(tempfile.mkdtemp(dir=env["ROBOT_STATE_DIR"]))
+    script = ("import json, sys; sys.path.insert(0, 'stack'); import strategist; "
+              "bad = {'tool_calls': [{'id': 'c', 'type': 'function', 'function': {'name': 'look_around', "
+              "'arguments': '{\"seconds\": 1}'}}]}; "
+              "strategist.api_model = lambda *a, **k: (dict(bad), {}, 'tool_calls'); "
+              f"print(json.dumps(strategist.run({{'steps': [{{'do': 'find_card', 'card': 'barbecue'}}]}}, "
+              f"model='loop', out={str(out)!r})))")
+    done = subprocess.run([PYTHON, "-I", "-c", script], env=env, cwd=GUIDE, capture_output=True, text=True, timeout=120)
+    looped = json.loads(done.stdout or "{}")
+    told = [json.loads(line)["content"] for line in (out / "transcript.jsonl").read_text().splitlines()
+            if json.loads(line).get("role") == "tool"] if (out / "transcript.jsonl").exists() else []
+    check("the same refused call four times in a row: the model is told from the second, the mission ends (limit)",
+          looped.get("outcome") == "limit" and looped.get("turns") == 4 and len(told) == 4
+          and "refused" in told[0] and "times in a row" not in told[0] and "refused 2 times in a row" in told[1],
+          (looped, told[:2], done.stderr[-400:]))
+
+    # A report that names a card the record does not place there (Mistral Small 3.2 on Albert: the barbecue on D4) is
+    # refused, with the record; the model reports again, with what was seen. The world has no water point.
+    out = Path(tempfile.mkdtemp(dir=env["ROBOT_STATE_DIR"]))
+    script = ("import json, sys; sys.path.insert(0, 'stack'); import strategist; "
+              "calls = iter([{'cards': [{'card': 'water-point', 'cell': 'A1'}], 'outcome': 'done'}, "
+              "{'cards': [], 'outcome': 'impossible', 'why': 'not seen yet'}]); "
+              "strategist.api_model = lambda *a, **k: ({'tool_calls': [{'id': 'r', 'type': 'function', 'function': "
+              "{'name': 'report', 'arguments': json.dumps(next(calls))}}]}, {}, 'tool_calls'); "
+              f"print(json.dumps(strategist.run({{'steps': [{{'do': 'find_card', 'card': 'water-point'}}]}}, "
+              f"model='invents', out={str(out)!r})))")
+    done = subprocess.run([PYTHON, "-I", "-c", script], env=env, cwd=GUIDE, capture_output=True, text=True, timeout=120)
+    invented = json.loads(done.stdout or "{}")
+    told = [json.loads(line)["content"] for line in (out / "transcript.jsonl").read_text().splitlines()
+            if json.loads(line).get("role") == "tool"] if (out / "transcript.jsonl").exists() else []
+    check("a report with a card the record does not place there is refused, with the record; the next report, "
+          "without it, ends the mission", invented.get("outcome") == "impossible" and invented.get("cards") == []
+          and len(told) == 2 and told[0].startswith('{"result": "refused", "why": "the record does not place '
+                                                     'water-point on A1') and '"seen_cards"' in told[0]
+          and '"done"' in told[1], (invented, told, done.stderr[-400:]))
+
     # A card seen while the place on the mat is unknown has no cell in the record yet: the Pilot finds its place first,
     # then refuses a cell that holds a card.
     unknown = with_rules("unknown", start="unknown")
