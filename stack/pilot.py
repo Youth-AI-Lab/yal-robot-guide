@@ -32,11 +32,13 @@ STEP = {"north": (0, -1), "east": (1, 0), "south": (0, 1), "west": (-1, 0)}
 CAMERA_CM = 120
 REPLANS = 8          # new plans in one go_to before giving up
 BALL_WAITS = 6       # waits for a ball, in one leg, before giving up the leg
+LANE_WATCHES, LANE_WATCH_S = 3, 5  # before crossing a lane whose ball was not seen going away: watch, at most this long
 BALL_RECENT_S = RULES["ball_seen_recently_s"]
 ADULT_WAIT_S = 150   # how long to wait for an adult's Resume
 # The Pilot's settings: bricks of the group's personality (personalities/*.json), always applied.
 SETTINGS = {
-    "careful_balls": {"default": True, "means": "before each leg, wait while a ball seen just before comes closer"},
+    "careful_balls": {"default": True, "means": "before each leg, wait while a ball seen just before comes closer, and "
+                                                "watch a ball's lane before crossing it until its ball is seen going away"},
     "max_leg": {"default": 4, "means": "cells in one move, at most (1 to 4)"},
     "look_each_leg": {"default": False, "means": "look around before every leg"},
 }
@@ -193,6 +195,23 @@ class Pilot:
         finally:
             self.leaving = False
 
+    def lanes_crossed(self, dc, dr, cells):
+        """The lanes ("row", r), ("col", c) or ("cell", cell) on the cells a leg goes through."""
+        (c, r), _ = self.here()
+        out = set()
+        for k in range(1, cells + 1):
+            x, y = c + dc * k, r + dr * k
+            out |= {lane for lane in (("col", x), ("row", y), ("cell", (x, y))) if lane in self.lanes}
+        return out
+
+    def going_away(self, lanes):
+        """The last ball, seen just before on one of these lanes, was moving away from the robot."""
+        ball = self.state.get("ball_last_seen") or {}
+        if not (self.ball_recent() and ball.get("how", "").startswith("moving away") and ball.get("cell")):
+            return False
+        c, r = cell_xy(ball["cell"])
+        return bool({("col", c), ("row", r), ("cell", (c, r))} & lanes)
+
     def ball_recent(self):
         ball = self.state.get("ball_last_seen") or {}
         return bool(ball.get("t")) and time.time() - ball["t"] < BALL_RECENT_S
@@ -302,6 +321,7 @@ class Pilot:
         """Face the way, then go forwards: the distance sensor and the camera watch the way."""
         dc, dr = STEP[direction]
         start = self.state.get("cell")
+        watched = 0
         for _ in range(BALL_WAITS):
             if self.short(1):
                 raise Stuck("no moves left")
@@ -310,6 +330,15 @@ class Pilot:
             ball = self.state.get("ball_last_seen") or {}
             if self.settings["careful_balls"] and self.ball_recent() and "closer" in ball.get("how", ""):
                 command("wait_for_event", 5)  # cross only when the ball goes away
+                self.read(command("robot_state"))
+                continue
+            crossed = self.lanes_crossed(dc, dr, cells)
+            if self.settings["careful_balls"] and crossed and watched < LANE_WATCHES and not self.going_away(crossed):
+                # A lane on the way, its ball not seen going away just before: the camera, facing the way, watches
+                # where the leg crosses it (each run of the balls mission was hit once crossing a lane unseen, bench
+                # of 7 November). After LANE_WATCHES watches without seeing it, the ball is far: go.
+                watched += 1
+                command("wait_for_event", LANE_WATCH_S)
                 self.read(command("robot_state"))
                 continue
             answer = self.read(command("move", direction, cells, []))

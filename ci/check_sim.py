@@ -920,6 +920,29 @@ async def scenarios(sim, env):
           reply.get("result") == "refused" and "lane" in reply.get("why", "") and "C4" in reply.get("what_to_do", "")
           and sim.state()["robot"]["cell"] == "C5", (reply, done.stderr[-400:]))
 
+    # Crossing a lane whose ball was not seen going away: the Pilot watches first (careful_balls), then crosses.
+    sim.fresh()
+    time.sleep(0.6)
+    script = ("import json, sys, time; sys.path.insert(0, 'stack'); import pilot; pilot.robot_state(); "
+              "from pathlib import Path; f = Path(sys.argv[1]); t = json.loads(f.read_text()); "
+              "t['lanes'] = {'row:3': time.time()}; f.write_text(json.dumps(t)); "
+              "start = time.monotonic(); r = pilot.go_to_cell('C3'); print(json.dumps([r, time.monotonic() - start]))")
+    done = subprocess.run([PYTHON, "-I", "-c", script, str(state_file)], env=env, cwd=GUIDE, capture_output=True,
+                          text=True, timeout=120)
+    reply, took = json.loads(done.stdout.strip().splitlines()[-1]) if done.stdout.strip() else ({}, 0)
+    check("go_to_cell to C3 across row 4, a lane whose ball was not seen: the Pilot watches (about 15 s), then crosses",
+          reply.get("result") == "done" and sim.state()["robot"]["cell"] == "C3" and took >= 14
+          and wire_count(sim, "MOVE") >= 1, (reply, took, done.stderr[-400:]))
+    sim.fresh()
+    time.sleep(0.6)
+    script = script.replace("pilot.robot_state(); ", "pilot.PILOT.configure({'careful_balls': False}); pilot.robot_state(); ")
+    done = subprocess.run([PYTHON, "-I", "-c", script, str(state_file)], env=env, cwd=GUIDE, capture_output=True,
+                          text=True, timeout=120)
+    reply, took = json.loads(done.stdout.strip().splitlines()[-1]) if done.stdout.strip() else ({}, 0)
+    check("the same without careful_balls (an adventurous personality): no watch, it crosses at once",
+          reply.get("result") == "done" and sim.state()["robot"]["cell"] == "C3" and took < 10,
+          (reply, took, done.stderr[-400:]))
+
     # Stopped on a lane: the adult is sent to the last cell before it, and the instruction does not change.
     sim.fresh()
     state_file = Path(env["ROBOT_STATE_DIR"]) / "terrain.json"
