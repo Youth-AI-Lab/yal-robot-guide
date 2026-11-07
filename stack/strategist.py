@@ -47,7 +47,8 @@ MODELS = {"qwen-flash": "qwen/qwen3.8-flash", "deepseek": "deepseek/deepseek-v4-
 MAX_TURNS, TIMEOUT_S, RUN_CAP_USD, MAX_TOKENS = 60, 1800, 0.25, 16384  # 4096 cut Qwen's reasoning (bench, 11:30)
 FAILED_CALL_USD = 0.01  # a call that failed may have been billed: counted at least this
 STEPS = {"reach_card": "card", "set_light": "color", "find_card": "card", "survey": "card"}
-WHY = ["", "not on the mat", "not seen yet", "no moves left", "no way there", "the robot waits for an adult", "other"]
+WHY = ["", "not on the mat", "not seen yet", "no moves left", "no way there", "the robot waits for an adult",
+       "the robot does not know where it is", "other"]
 RULES = """# Rules for the Strategist, the part of the robot that chooses what to do next
 
 The robot keeps its own safety rules: the Reflex and the Referee. These only guide you.
@@ -266,6 +267,7 @@ def without_model(mission):
             said = result.get("why", "")
             outcome = "impossible"
             why = ("no moves left" if "moves" in said else "the robot waits for an adult" if "adult" in said
+                   else "the robot does not know where it is" if "where it is" in said
                    else "no way there" if "find itself" in said or "way" in said else "other")
             break
     return {"outcome": outcome, "cards": cards, "why": why, "turns": 0,

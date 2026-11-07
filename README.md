@@ -43,7 +43,12 @@ Three rules hold the design together:
 - **The Referee is the only door.** Four cells at most per move (a move counts one, however many
   cells), never off the mat, never onto a card, backwards or sideways only into cells its sensor saw
   free, a number of moves per session. No personality and no model can loosen these rules
-  ([stack/rules.json](stack/rules.json), [mat.json](mat.json)).
+  ([stack/rules.json](stack/rules.json), [mat.json](mat.json)). The rules also say where the robot
+  starts (`start`: a cell and a way to face, or `"unknown"`) and which cards are landmarks on a known
+  cell (`landmarks`). With an unknown start, the Cartographer counts from where the robot started and
+  rules places out with each reading of the distance sensor (the mat has a border it sees) and each
+  landmark the camera recognises; meanwhile the robot only turns, and steps forwards where the way is
+  seen free.
 - **No image ever leaves the robot.** The camera gives the name of a card from a short list.
 
 The simulator replaces only the physical part. The program of the robot runs in it unchanged, and
@@ -427,7 +432,7 @@ such way: they read `since_last_call`.
 About eight minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
 would, then gives missions to the Strategist with no model or a scripted one, then through the
 Interpreter's link over HTTP, as Open WebUI would, and reads in the simulator what really happened:
-153 checks, all passed in the image 2026.10.45 on 7 November 2026 (container with 2 processors, no
+160 checks, all passed in the image 2026.10.45 on 7 November 2026 (container with 2 processors, no
 network). A real Open WebUI (0.12.4) with a fake model, then with Albert's `gemma-4-31b-it` as the
 Interpreter, was tried apart, not in these checks.
 

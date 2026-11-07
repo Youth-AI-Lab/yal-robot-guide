@@ -5,5 +5,9 @@
   "blind_only_into_cells_seen_free_for_s": 120,
   "never_into_a_ball_lane_when_blind": true,
   "ball_seen_recently_s": 10,
-  "one_command_at_a_time": true
+  "one_command_at_a_time": true,
+  "_start": "Where the robot starts its mission: {\"cell\": \"A6\", \"facing\": \"north\"}; null for the start of mat.json; \"unknown\" when nobody says where it stands: the Cartographer then works relative to where it started, and finds its place on the mat with the border (the distance sensor sees it) and the landmarks.",
+  "start": null,
+  "_landmarks": "Cards the adults put on a known cell before the session, {\"fire-station\": \"A6\"}: when the camera recognises one, the Cartographer knows better where the robot is. The border alone leaves two places possible on a mat that looks the same turned round.",
+  "landmarks": {}
 }

@@ -83,6 +83,14 @@ CAMERA_RANGE_CM = 120
 SENSOR_FROM_CENTRE_CM = 10
 # Something the distance sensor met on a cell at two moments this far apart stands there (a box): a ball rolls on.
 STANDS_FOR_S = 10
+# The border around the mat, which the distance sensor sees, this far outside its edge: the simulator's fence; the
+# real mat has a visible border too, its distance TO BE COMPLETED. A reading longer than the way to the border, by more
+# than READING_TOLERANCE_CM, rules a place out; by more than DOUBT_CM from the place the Cartographer believed, it no
+# longer believes it (the wheels slipped).
+BORDER_CM = 10
+READING_TOLERANCE_CM = 6
+DOUBT_CM = 20
+TURNED = ["the way it faced at the start", "to the right of it", "the other way", "to the left of it"]
 
 
 class Cartographer:
@@ -117,10 +125,21 @@ class Cartographer:
             self.looked = saved.get("looked", {})
             self.blocked = {c: v for c, v in saved.get("blocked", {}).items() if isinstance(v, list)}
             self.covered_said = saved.get("covered_said", False)
+            self.frame = saved.get("frame")
+            self.notices = saved.get("notices", [])
         except (OSError, ValueError, KeyError):
-            start = self.mat["start"]
-            self.col, self.row = cell_xy(start["cell"])
-            self.facing = FACING.index(start["facing"])
+            # Where the robot starts: the rule "start" of the Referee's rules (adults), else the start of the mat.
+            # "unknown": the Cartographer works relative to where it started, every place of the mat still possible.
+            start = self.rules.get("start") or self.mat["start"]
+            self.frame = None  # None: cells of the mat; else relative to the start, with the places still possible
+            self.notices = []  # what the Cartographer has to tell the next caller (its position found, or lost)
+            if start == "unknown":
+                self.frame = {"candidates": [[c, r, f] for c in range(self.mat["cols"]) for r in range(self.mat["rows"])
+                                             for f in range(4)]}
+                self.col, self.row, self.facing = self.mat["cols"] - 1, self.mat["rows"] - 1, 0
+            else:
+                self.col, self.row = cell_xy(start["cell"])
+                self.facing = FACING.index(start["facing"])
             self.sure = True  # False after an interrupted move, until an adult puts the robot back
             self.back = None
             self.resumes_at_stop = None  # how many times Resume had been pressed when a move stopped
@@ -143,8 +162,199 @@ class Cartographer:
                  "resumes_at_stop": self.resumes_at_stop, "poses": self.poses, "seen": self.seen, "ball": self.ball,
                  "free": self.free, "lanes": self.lanes, "way": self.way, "back_fixed": self.back_fixed,
                  "placed": self.placed, "presses": self.presses, "looked": self.looked, "blocked": self.blocked,
-                 "covered_said": self.covered_said}
+                 "covered_said": self.covered_said, "frame": self.frame, "notices": self.notices}
         (STATE_DIR / "terrain.json").write_text(json.dumps(saved) + "\n", encoding="utf-8")
+
+    # Where the robot is on the mat --------------------------------------------------------------------------------
+    # While the Cartographer does not know it, it counts in a frame relative to where the robot started: the start is
+    # the middle cell of a grid twice the mat's size, facing "north" of that grid, and every place of the mat the start
+    # could have been is kept (frame["candidates"], [col, row, facing] each). Readings of the distance sensor and
+    # landmarks rule places out; when one is left, everything is moved onto the mat.
+    @property
+    def cols(self):
+        return 2 * self.mat["cols"] - 1 if self.frame else self.mat["cols"]
+
+    @property
+    def rows(self):
+        return 2 * self.mat["rows"] - 1 if self.frame else self.mat["rows"]
+
+    def origin(self):
+        return self.mat["cols"] - 1, self.mat["rows"] - 1
+
+    def to_mat(self, start, col, row, facing=0):
+        """A place of the relative frame, on the mat, had the robot started at `start` [col, row, facing]."""
+        oc, orow = self.origin()
+        dx, dy = col - oc, row - orow
+        for _ in range(start[2]):
+            dx, dy = -dy, dx  # a quarter turn to the right
+        return start[0] + dx, start[1] + dy, (facing + start[2]) % 4
+
+    def point_to_mat(self, start, x, y):
+        cell = self.mat["cell_cm"]
+        oc, orow = self.origin()
+        dx, dy = x - (oc + 0.5) * cell, y - (orow + 0.5) * cell
+        for _ in range(start[2]):
+            dx, dy = -dy, dx
+        return (start[0] + 0.5) * cell + dx, (start[1] + 0.5) * cell + dy
+
+    def from_mat(self, here, col, row, facing=0):
+        """A place of the mat, in a relative frame whose start is `here` [col, row, facing]."""
+        oc, orow = self.origin()
+        dx, dy = col - here[0], row - here[1]
+        for _ in range(here[2]):
+            dx, dy = dy, -dx  # a quarter turn to the left
+        return oc + dx, orow + dy, (facing - here[2]) % 4
+
+    def point_from_mat(self, here, x, y):
+        cell = self.mat["cell_cm"]
+        oc, orow = self.origin()
+        dx, dy = x - (here[0] + 0.5) * cell, y - (here[1] + 0.5) * cell
+        for _ in range(here[2]):
+            dx, dy = dy, -dx
+        return (oc + 0.5) * cell + dx, (orow + 0.5) * cell + dy
+
+    def on_mat(self, col, row):
+        return 0 <= col < self.mat["cols"] and 0 <= row < self.mat["rows"]
+
+    def way_to_border(self, col, row, facing):
+        """What the distance sensor reads at most from this cell of the mat, facing this way: the border."""
+        cells = (row, self.mat["cols"] - 1 - col, self.mat["rows"] - 1 - row, col)[facing]
+        return (cells + 0.5) * self.mat["cell_cm"] + BORDER_CM - SENSOR_FROM_CENTRE_CM
+
+    def possible(self, col, row, facing, dist):
+        """Could the robot stand there and read `dist`? Something in between makes a reading shorter, never longer."""
+        return self.on_mat(col, row) and dist <= self.way_to_border(col, row, facing) + READING_TOLERANCE_CM
+
+    def places(self):
+        """The places of the mat the robot could be on now, [col, row, facing] each (one when it is known)."""
+        if not self.frame:
+            return [[self.col, self.row, self.facing]]
+        return [list(self.to_mat(s, self.col, self.row, self.facing)) for s in self.frame["candidates"]]
+
+    def localize(self, dist):
+        """A reading of the distance sensor, standing still: rules out the places it could not come from. One place left:
+        the Cartographer knows where the robot is. A reading far beyond the border from the place it believed: it no
+        longer believes it."""
+        if self.frame:
+            kept = [st for st in self.frame["candidates"]
+                    if self.possible(*self.to_mat(st, self.col, self.row, self.facing), dist)]
+            if kept:  # none left: a reading that fits no place (a misreading): ignored
+                self.frame["candidates"] = kept
+                if len(kept) == 1:
+                    self.settle(kept[0], "the distance sensor and the border")
+        elif dist > self.way_to_border(self.col, self.row, self.facing) + DOUBT_CM:
+            self.unsettle(dist)
+
+    def stepped(self):
+        """A move that went: the places from which it would have left the mat are ruled out."""
+        if self.frame:
+            kept = [st for st in self.frame["candidates"] if self.on_mat(*self.to_mat(st, self.col, self.row)[:2])]
+            if kept:
+                self.frame["candidates"] = kept
+                if len(kept) == 1:
+                    self.settle(kept[0], "the border")
+
+    def landmark(self, label, x, y, u):
+        """A landmark of the rules (a card the adults put on a known cell) seen at (x, y) of the relative frame."""
+        cell = (self.rules.get("landmarks") or {}).get(label)
+        if not self.frame or not cell:
+            return
+        lc, lr = cell_xy(cell)
+        size = self.mat["cell_cm"]
+        kept = []
+        for st in self.frame["candidates"]:
+            mx, my = self.point_to_mat(st, x, y)
+            if math.hypot(mx - (lc + 0.5) * size, my - (lr + 0.5) * size) <= u + size / 2:
+                kept.append(st)
+        if kept:
+            self.frame["candidates"] = kept
+            if len(kept) == 1:
+                self.settle(kept[0], f"the landmark {label} in {cell}")
+
+    def settle(self, start, how):
+        self.rebase(lambda c, r, f=0: self.to_mat(start, c, r, f), lambda x, y: self.point_to_mat(start, x, y), None)
+        self.notices.append(f"the Cartographer now knows where the robot is on the mat: {cell_name(self.col, self.row)}, "
+                            f"facing {FACING[self.facing]} at that moment (found with {how}); the cards seen before are "
+                            "now on the mat")
+
+    def unsettle(self, dist):
+        here = [self.col, self.row, self.facing]
+        places = [[c, r, f] for c in range(self.mat["cols"]) for r in range(self.mat["rows"]) for f in range(4)
+                  if self.possible(c, r, f, dist)]
+        self.rebase(lambda c, r, f=0: self.from_mat(here, c, r, f), lambda x, y: self.point_from_mat(here, x, y),
+                    {"candidates": places})
+        self.notices.append("the Cartographer no longer knows where the robot is: the distance sensor reads farther than "
+                            "the border from where it believed it (the wheels may have slipped); it counts from here "
+                            "again, and looks for its place")
+
+    def rebase(self, pose, point, frame):
+        """Everything the Cartographer keeps, moved from its frame to another (the mat, or relative to a start)."""
+        old_frame = self.frame
+        self.frame = frame
+
+        def cell(name):
+            c, r, _ = pose(*cell_xy(name))
+            return cell_name(c, r) if 0 <= c < self.cols and 0 <= r < self.rows else None
+
+        def cells(d):
+            out = {}
+            for k, v in d.items():
+                if cell(k):
+                    out[cell(k)] = v
+            return out
+
+        def line(key):
+            kind, _, value = key.partition(":")
+            if kind == "cell":
+                return "cell:" + (cell(value) or "")
+            a = (0, int(value)) if kind == "row" else (int(value), 0)
+            b = (1, int(value)) if kind == "row" else (int(value), 1)
+            (ac, ar, _), (bc, br, _) = pose(*a), pose(*b)
+            return f"row:{ar}" if ar == br else f"col:{ac}"
+
+        self.col, self.row, self.facing = pose(self.col, self.row, self.facing)
+        self.poses = {k: list(pose(*v)) for k, v in self.poses.items()}
+        self.back = list(pose(*self.back)) if self.back else None
+        self.way = [list(pose(c, r)[:2]) for c, r in self.way] if self.way else None
+        self.free, self.looked, self.placed, self.blocked = (cells(self.free), cells(self.looked), cells(self.placed),
+                                                             cells(self.blocked))
+        self.lanes = {line(k): v for k, v in self.lanes.items()}
+        if self.ball and self.ball.get("from"):
+            b = dict(self.ball, **{"from": list(pose(*self.ball["from"]))})
+            if b.get("cell"):
+                b["cell"] = cell(b["cell"])
+                b["could_also_be"] = [cell(x) for x in b.get("could_also_be", []) if cell(x)]
+            if b.get("moving"):
+                b["moving"] = FACING[pose(0, 0, FACING.index(b["moving"]))[2]]
+            b["seen_from"] = self.pose_text(*b["from"])
+            self.ball = b
+        elif self.ball:
+            self.ball = None  # a sighting with no place to move: forgotten (a ball is seen again within seconds)
+        seen = []
+        for entry in self.seen:
+            e = dict(entry)
+            e["x"], e["y"] = (round(v, 1) for v in point(entry["x"], entry["y"]))
+            if entry.get("from"):
+                e["from"] = list(pose(*entry["from"]))
+                e["seen_from"] = self.pose_text(*e["from"])
+            e["cell"], e["could_also_be"] = self.cells_near(e["x"], e["y"], e["u"])
+            seen.append(e)
+        self.seen = seen
+        if old_frame is None or frame is None:
+            self.covered_said = False
+
+    def pose_text(self, col, row, facing):
+        if not self.frame:
+            return f"{cell_name(col, row)} facing {FACING[facing]}"
+        oc, orow = self.origin()
+        ahead, right = orow - row, col - oc
+        parts = []
+        if ahead:
+            parts.append(f"{abs(ahead)} cell{'s' if abs(ahead) > 1 else ''} {'ahead of' if ahead > 0 else 'behind'}")
+        if right:
+            parts.append(f"{abs(right)} cell{'s' if abs(right) > 1 else ''} to the {'right' if right > 0 else 'left'} of")
+        where = " and ".join(parts) + " where it started" if parts else "where it started"
+        return f"{where}, facing {TURNED[facing]}"
 
     # What the Referee passes up ---------------------------------------------------------------------------------
     def fields(self):
@@ -159,6 +369,7 @@ class Cartographer:
                 del self.poses[old]
         if (self.sure and fields.get("moving") == "0" and fields.get("wait_adult") == "0"
                 and fields.get("estop") == "0" and fields.get("dist", "none") != "none"):
+            self.localize(int(fields["dist"]))
             self.note_free(int(fields["dist"]))
         if self.sure and fields.get("looked") == "1":
             self.note_looked(None if fields.get("dist", "none") == "none" else int(fields["dist"]))
@@ -201,18 +412,24 @@ class Cartographer:
                 return None
             return EVENTS["SEEN"] + f"{label} ({means}), about {cm} cm away, {side}; where: not known (the robot's position was not known)"
         x, y = self.place(where, angle, cm)
+        if kind == "SEEN":
+            self.landmark(label, x, y, max(CAMERA_MIN_ERROR_CM, CAMERA_ERROR * cm + CAMERA_MIN_ERROR_CM))
         u = max(CAMERA_MIN_ERROR_CM, CAMERA_ERROR * cm + CAMERA_MIN_ERROR_CM)  # grows with the distance
         if kind == "GONE":
             self.seen = [s for s in self.seen if not (s["card"] == label and math.hypot(s["x"] - x, s["y"] - y) < max(s["u"], u))]
             return None
         cell, others = self.cells_near(x, y, u)
         at = (datetime.datetime.now() - datetime.timedelta(milliseconds=age_ms)).strftime("%H:%M:%S")
+        if self.frame is None and kind == "SEEN" and where is not None and self.poses.get(pose) != where:
+            where = self.poses.get(pose) or where  # the landmark just told the Cartographer where it is: on the mat now
+            x, y = self.place(where, angle, cm)
+            cell, others = self.cells_near(x, y, u)
         entry = {"card": label, "means": means, "cell": cell, "could_also_be": others, "x": round(x, 1),
-                 "y": round(y, 1), "u": round(u, 1), "seen_from": f"{cell_name(where[0], where[1])} facing "
-                 f"{FACING[where[2]]}", "distance_cm": cm, "at": at}
+                 "y": round(y, 1), "u": round(u, 1), "seen_from": self.pose_text(*where), "from": list(where),
+                 "distance_cm": cm, "at": at}
         # The same card seen again: keep the most precise estimate (seen from closer). The larger uncertainty, not
         # their sum: two like cards side by side (dry grass in C2 and D2) stay two.
-        if not others:
+        if not others and not self.frame:
             self.placed[cell] = time.time()
         same = [s for s in self.seen if s["card"] == label and math.hypot(s["x"] - x, s["y"] - y) < max(s["u"], u)]
         if not same:
@@ -223,9 +440,11 @@ class Cartographer:
             entry = min(same, key=lambda s: s["u"])
         where_text = entry["cell"] if not entry["could_also_be"] else \
             f"probably {entry['cell']} (could also be {', '.join(entry['could_also_be'])})"
+        if self.frame:
+            where_text = "where on the mat: not known yet (the Cartographer does not know yet where the robot is)"
         # Where it was seen from: the event can reach the caller after the next move (a model took a card seen from
         # C2 for one seen from D2, 2026-11-05).
-        seen_from = f"{cell_name(where[0], where[1])} facing {FACING[where[2]]}"
+        seen_from = self.pose_text(*where)
         return (EVENTS["SEEN"] + f"{label} ({means}), seen from {seen_from}, about {cm} cm away, {side}: "
                 f"{where_text}, as the Cartographer counts the moves")
 
@@ -255,9 +474,12 @@ class Cartographer:
         going = "" if math.hypot(dx, dy) < 2 or trend == "gone" else \
             (", moving " + (("east" if dx > 0 else "west") if abs(dx) > abs(dy) else ("south" if dy > 0 else "north")))
         in_cell = cell if not others else f"probably {cell} (could also be {', '.join(others)})"
-        seen_from = f"{cell_name(where[0], where[1])} facing {FACING[where[2]]}"
+        seen_from = self.pose_text(*where)
         self.ball = {"cell": cell, "could_also_be": others, "moving": going[9:] or None, "how": how,
-                     "seen_from": seen_from, "at": at, "t": time.time() - age_ms / 1000}
+                     "seen_from": seen_from, "from": list(where), "at": at, "t": time.time() - age_ms / 1000}
+        if self.frame:
+            in_cell = "where on the mat: not known yet"
+            going = ""
         # Its lane, for every cell it could be on (from far, the estimate can fall on the next row).
         moving, when = going[9:], time.time() - age_ms / 1000
         for name in [cell] + others:
@@ -270,7 +492,7 @@ class Cartographer:
 
     def cells_near(self, x, y, u):
         """The cell of the estimate, and the other cells of the mat within its uncertainty."""
-        cell_cm, cols, rows = self.mat["cell_cm"], self.mat["cols"], self.mat["rows"]
+        cell_cm, cols, rows = self.mat["cell_cm"], self.cols, self.rows
         col = min(max(int(x // cell_cm), 0), cols - 1)
         row = min(max(int(y // cell_cm), 0), rows - 1)
         others = []
@@ -290,7 +512,7 @@ class Cartographer:
         k = 1
         while True:
             col, row = self.col + dc * k, self.row + dr * k
-            if not (0 <= col < self.mat["cols"] and 0 <= row < self.mat["rows"]):
+            if not (0 <= col < self.cols and 0 <= row < self.rows):
                 break
             if k * self.mat["cell_cm"] + STOP_MARGIN_CM <= dist:
                 self.free[cell_name(col, row)] = now
@@ -320,10 +542,10 @@ class Cartographer:
             dc, dr = FACING_STEP[self.facing]
             k = round(hit / cell_cm)
             col, row = self.col + dc * k, self.row + dr * k
-            if k >= 1 and 0 <= col < self.mat["cols"] and 0 <= row < self.mat["rows"]:
+            if k >= 1 and 0 <= col < self.cols and 0 <= row < self.rows:
                 self.blocked.setdefault(cell_name(col, row), [now, now])[1] = now
-        for col in range(self.mat["cols"]):
-            for row in range(self.mat["rows"]):
+        for col in range(self.cols):
+            for row in range(self.rows):
                 dx, dy = (col - self.col) * cell_cm, (row - self.row) * cell_cm
                 d = math.hypot(dx, dy)
                 if d == 0 or d > CAMERA_RANGE_CM:
@@ -361,6 +583,10 @@ class Cartographer:
         costs little" sent a model round a rock for 25 calls, sure the card was under it (DeepSeek v4 Flash behind
         Hermes, 2026-11-06). A box the distance sensor never met can still hide a cell: the Cartographer cannot know
         it, and the caller is not asked to guess."""
+        if self.frame:
+            return {"cells_looked_at": None, "cells_on_the_mat": self.mat["cols"] * self.mat["rows"],
+                    "not_looked_at_yet": None, "something_stands_there": [],
+                    "note": "Not counted while the Cartographer does not know where the robot is on the mat."}
         cells = [cell_name(c, r) for r in range(self.mat["rows"]) for c in range(self.mat["cols"])]
         stands = [c for c in cells if c in self.blocked and self.blocked[c][1] - self.blocked[c][0] >= STANDS_FOR_S]
         left = [c for c in cells if c not in self.looked and c not in stands]
@@ -399,6 +625,8 @@ class Cartographer:
     def ball_sighting(self):
         """The last ball placed on the mat: the cells it could be on, how long ago, whether it came closer."""
         ball = self.ball or {}
+        if self.frame and ball.get("t"):
+            return {"cells": [], "s_ago": time.time() - ball["t"], "closer": ball.get("how", "").startswith("getting")}
         if not ball.get("cell"):
             return None
         return {"cells": [cell_xy(n) for n in [ball["cell"]] + ball.get("could_also_be", [])],
@@ -479,6 +707,9 @@ class Cartographer:
                 "what_to_do": self.adult_instruction()}
 
     def adult_instruction(self):
+        if self.frame:
+            return ("Stop and ask an adult to put the robot back on the cell where its last move started, facing the "
+                    "way it faced then, then to press Resume on the robot. Do not try to move it before.")
         col, row, facing = self.back if self.back else (self.col, self.row, self.facing)
         return (f"Stop and ask an adult to put the robot back on cell {cell_name(col, row)}, facing "
                 f"{FACING[facing]}, then to press Resume on the robot. Do not try to move it before.")
@@ -524,6 +755,18 @@ class Cartographer:
             return self.refused(f"the robot only sees in front of it ({facing}): it slides {direction} only into cells "
                                 f"its distance sensor saw free in the last {answer['free_for_min']} minutes, and {cell} "
                                 "is not one", what_to_do=f"face {direction} (one move) or look_around, then move again")
+        if rule == "position_unknown":
+            return self.refused("the Cartographer does not know yet where the robot is on the mat, so north, east, south "
+                                "and west mean nothing yet: only quarter turns, look_around, and step_forward where the "
+                                "distance sensor sees the way free", what_to_do="look_around: the distance sensor sees "
+                                "the border of the mat, and the camera the landmarks")
+        if rule == "unknown_way":
+            return self.refused("the Cartographer does not know yet where the robot is on the mat: it goes one cell "
+                                "forwards only where its distance sensor sees the way free beyond that cell",
+                                what_to_do="turn towards a free way (look_around tells which), then step_forward")
+        if rule == "ball_unknown":
+            return self.refused(f"a ball was seen less than {recent} s ago, and the Cartographer does not know yet where "
+                                "it is on the mat", what_to_do="watch it go away (wait_for_event), then try again")
         if rule == "one_move_at_a_time":
             return self.refused("another move is still running: send one move at a time, and read its answer before "
                                 "the next")
@@ -535,10 +778,12 @@ class Cartographer:
     def robot_state(self):
         fields = self.fields()
         card = fields.get("card", "none")
-        return {
-            "cell": cell_name(self.col, self.row) if self.sure else None,
-            "facing": FACING[self.facing] if self.sure else None,
-            "position_known": self.sure,
+        known = self.sure and not self.frame
+        places = self.places()
+        state = {
+            "cell": cell_name(self.col, self.row) if known else None,
+            "facing": FACING[self.facing] if known else None,
+            "position_known": known,
             "distance_ahead_cm": None if fields.get("dist") == "none" else int(fields["dist"]),
             "card_ahead": None if card == "none" else {"card": card, "means": self.cards.get(card, "unknown card")},
             "battery_percent": int(fields.get("battery", 0)),
@@ -547,18 +792,30 @@ class Cartographer:
             "bumper_touched": fields.get("bumper") == "1",
             "warning_light_on": fields.get("warning") == "1",
             "ball_last_seen": self.ball,
-            "on_a_ball_lane": self.on_lane((self.col, self.row)) if self.sure else None,
-            "cells_not_looked_at_yet": len(self.coverage()["not_looked_at_yet"]),
+            "on_a_ball_lane": self.on_lane((self.col, self.row)) if known else None,
+            "cells_not_looked_at_yet": None if self.frame else len(self.coverage()["not_looked_at_yet"]),
             "last_stop": "none" if fields.get("last_stop", "none") == "none"
                          else REASONS.get(fields["last_stop"], fields["last_stop"]),
             "moves_left": self.referee.moves_left(),
             "mat": f"{self.mat['cols']} columns (A to {cell_name(self.mat['cols'] - 1, 0)[0]}), "
                    f"{self.mat['rows']} rows (1 at the top to {self.mat['rows']})",
         }
+        if self.frame and self.sure:
+            state["position"] = "probable" if len(places) <= 6 else "unknown"
+            state["since_start"] = self.pose_text(self.col, self.row, self.facing)
+            if len(places) <= 6:
+                state["could_be"] = [f"{cell_name(c, r)} facing {FACING[f]}" for c, r, f in places]
+            state["how_to_find_it"] = ("look_around (the distance sensor sees the border of the mat; a landmark of the "
+                                       "rules, once the camera sees it, settles it), then step_forward where the way is "
+                                       "free")
+        return state
 
     def seen_cards(self):
         keys = ("card", "means", "cell", "could_also_be", "distance_cm", "seen_from", "at")
         cards = [{k: s[k] for k in keys} for s in sorted(self.seen, key=lambda s: s["at"])]
+        if self.frame:
+            cards = [dict(c, cell=None, could_also_be=[], where="not known yet: the Cartographer does not know yet where "
+                                                              "the robot is on the mat") for c in cards]
         return {"cards_seen": cards, "camera_coverage": self.coverage(),
                 "note": "The camera sees up to 120 cm ahead, wider when farther, and guesses the distance: the "
                         "farther the card, the less sure its cell (could_also_be). Seen again from closer, the "
@@ -567,7 +824,7 @@ class Cartographer:
     def ahead(self):
         dc, dr = FACING_STEP[self.facing]
         col, row = self.col + dc, self.row + dr
-        return (col, row) if 0 <= col < self.mat["cols"] and 0 <= row < self.mat["rows"] else None
+        return (col, row) if 0 <= col < self.cols and 0 <= row < self.rows else None
 
     def turned(self, answer, kind):
         """A quarter turn of the Referee, on the map."""
@@ -583,13 +840,20 @@ class Cartographer:
         if not self.sure:
             return self.refused("wait_adult", what_to_do=self.adult_instruction())
         target = self.ahead()
-        card_ahead = self.fields().get("card", "none") != "none"
+        fields = self.fields()
+        card_ahead = fields.get("card", "none") != "none"
         start = (self.col, self.row)
-        answer = self.referee.step(self, target, card_ahead)
+        if self.frame:
+            # Where it is on the mat is not known: one cell forwards only where the sensor sees the way free beyond it.
+            dist = None if fields.get("dist", "none") == "none" else int(fields["dist"])
+            answer = self.referee.step_blind(self, target, card_ahead, dist, self.mat["cell_cm"] + STOP_MARGIN_CM)
+        else:
+            answer = self.referee.step(self, target, card_ahead)
         if answer["result"] == "done":
             self.free[cell_name(*start)] = self.free[cell_name(*target)] = time.time()
             self.col, self.row = target
             self.went(self.col, self.row)
+            self.stepped()
             self.ended()
             return {"result": "done", "state": self.robot_state()}
         if answer["result"] == "stopped":
@@ -607,6 +871,8 @@ class Cartographer:
         direction of the robot (forwards, backwards, to its left, to its right), from the way it faces."""
         if not self.sure:
             return self.refused("wait_adult", what_to_do=self.adult_instruction())
+        if self.frame:
+            return self.say({"result": "refused", "rule": "position_unknown"})
         side = FACING.index(direction)
         kind = "FRBL"[(side - self.facing) % 4]
         dc, dr = FACING_STEP[side]
@@ -656,6 +922,8 @@ class Cartographer:
         """Turn on the spot until the robot faces north, east, south or west: one move, or none."""
         if not self.sure:
             return self.refused("wait_adult", what_to_do=self.adult_instruction())
+        if self.frame:
+            return self.say({"result": "refused", "rule": "position_unknown"})
         turns = (FACING.index(direction) - self.facing) % 4
         result = {"result": "done", "state": self.robot_state()}
         for n, kind in enumerate({0: "", 1: "R", 2: "RR", 3: "L"}[turns]):
@@ -688,8 +956,12 @@ class Cartographer:
                     events += self.new_events()
                 except RobotNotConnected:
                     pass  # the robot does not answer now: the events wait for the next call
+                events += [{"event": n} for n in self.notices]
+                self.notices = []
                 left = self.coverage()["not_looked_at_yet"]
-                if not left and not self.covered_said:
+                if left is None:
+                    pass  # not counted while the position on the mat is not known
+                elif not left and not self.covered_said:
                     self.covered_said = True
                     names = sorted({c["card"] for c in self.seen})
                     events.append({"event": "the camera has now looked at every cell of the mat (seen_cards: "

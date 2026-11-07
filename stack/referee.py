@@ -197,6 +197,23 @@ class Referee:
         self.moves += 1
         return self.watch("MOVE F", "F", terrain, counted=True)
 
+    def step_blind(self, terrain, target, card_ahead, dist, need_cm):
+        """One cell forwards while the Cartographer does not know where the robot is on the mat: only when the distance
+        sensor sees the way free beyond that cell (so it is on the mat, and nothing is in the way), never onto a card in
+        front of the camera, never while a ball was seen a moment ago (where it is cannot be known)."""
+        if self.budget(True):
+            return self.refuse("MOVE F", "no_moves", max=self.mat["max_moves"])
+        if self.rules["never_onto_a_card"] and card_ahead:
+            return self.refuse("MOVE F", "card", cell="ahead")
+        ball = terrain.ball_sighting() or {}
+        if ball and ball["s_ago"] < self.rules["ball_seen_recently_s"]:
+            return self.refuse("MOVE F", "ball_unknown")
+        if dist is None or dist < need_cm:
+            return self.refuse("MOVE F", "unknown_way", seen_cm=dist)
+        terrain.moving([target], counted=True)
+        self.moves += 1
+        return self.watch("MOVE F", "F", terrain, counted=True)
+
     def turn(self, terrain, way, counted):
         refused = self.budget(counted)
         if refused:

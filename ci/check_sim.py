@@ -1137,6 +1137,69 @@ def stack_scenarios(sim, env):
           (reply, r, done.stderr[-400:]))
     (Path(env["ROBOT_STATE_DIR"]) / "control.json").write_text(json.dumps({"do": "go"}))
 
+    # Where the robot is on the mat, when nobody says where it starts: rules of the Referee with the start "unknown".
+    rules = json.loads((GUIDE / "stack" / "rules.json").read_text(encoding="utf-8"))
+    state_dir = Path(env["ROBOT_STATE_DIR"])
+
+    def with_rules(name, **changes):
+        path = state_dir / f"rules-{name}.json"
+        path.write_text(json.dumps(dict(rules, **changes)), encoding="utf-8")
+        return dict(env, ROBOT_RULES=str(path))
+
+    def drive(env_rules, *args):
+        done = subprocess.run([PYTHON, "-I", str(GUIDE / "stack" / "drive.py"), *args], env=env_rules,
+                              capture_output=True, text=True, timeout=60)
+        return json.loads(done.stdout or "{}")
+
+    unknown = with_rules("unknown", start="unknown")
+    sim.act(do="load_world", mat=big, world={"cards": [], "boxes": [], "balls": []})
+    first = drive(unknown, "state")
+    sent = wire_count(sim, "MOVE")
+    slide = drive(unknown, "move", "north", "2")
+    face = drive(unknown, "face", "east")
+    check("start unknown: no cell, and the Referee refuses what needs the mat (move, face), nothing sent",
+          first.get("cell") is None and first.get("position") in ("unknown", "probable") and slide.get("result") == "refused"
+          and "does not know yet" in slide.get("why", "") and face.get("result") == "refused" and wire_count(sim, "MOVE") == sent,
+          (first, slide, face))
+    around = drive(unknown, "around")
+    places = (around.get("state") or {}).get("could_be") or []
+    check("start unknown, the border alone: after a look around, 4 places on a square mat that looks the same at each "
+          "quarter turn, C5 facing north among them", len(places) == 4 and "C5 facing north" in places, around.get("state"))
+    step = drive(unknown, "forward")
+    check("start unknown: one cell forwards, where the sensor sees the way free", step.get("result") == "done"
+          and sim.state()["robot"]["cell"] == "C4", step)
+
+    landmark = with_rules("landmark", start="unknown", landmarks={"water-point": "C2"})
+    sim.act(do="load_world", mat=big, world={"cards": [{"cell": "C2", "label": "water-point"}], "boxes": [], "balls": []})
+    time.sleep(0.6)
+    drive(landmark, "state")
+    around = drive(landmark, "around")
+    heard = [e["event"] for e in around.get("since_last_call", [])]
+    check("a landmark of the rules (the water point in C2): the Cartographer finds C5 facing north, and says so",
+          around.get("state", {}).get("cell") == "C5" and around["state"].get("facing") == "north"
+          and any("now knows where the robot is" in e for e in heard), (around.get("state"), heard))
+    cards = drive(landmark, "seen").get("cards_seen", [])
+    check("the cards seen before it knew are now on the mat (the water point in C2)",
+          any(c["card"] == "water-point" and c["cell"] == "C2" for c in cards), cards)
+
+    wrong = with_rules("wrong", start={"cell": "C4", "facing": "north"})
+    sim.act(do="load_world", mat=big, world={"cards": [], "boxes": [], "balls": []})
+    state = drive(wrong, "state")
+    heard = [e["event"] for e in state.get("since_last_call", [])]
+    check("a start the rules give wrong (C4, the robot on C5): the first reading beyond the border, the Cartographer no "
+          "longer believes it, and says so", state.get("cell") is None and any("no longer knows" in e for e in heard),
+          (state, heard))
+
+    world = {"cards": [{"cell": "C2", "label": "water-point"}, {"cell": "E2", "label": "barbecue"}], "boxes": [], "balls": []}
+    sim.act(do="load_world", mat=big, world=world)
+    done = subprocess.run([PYTHON, "-I", str(GUIDE / "stack" / "mission.py"), "reach_card:barbecue", "--model", "none"],
+                          env=landmark, capture_output=True, text=True, timeout=300)
+    report = json.loads(done.stdout or "{}")
+    r = sim.state()["robot"]
+    check("start unknown, a mission without a model: the Pilot finds where it is first, then stops in front of the "
+          "barbecue (E2)", report.get("outcome") == "done" and {"card": "barbecue", "cell": "E2"} in report.get("cards", [])
+          and r["collisions"] == 0, (report, r, done.stderr[-400:]))
+
     journal = [json.loads(line) for line in
                (Path(env["ROBOT_STATE_DIR"]) / "referee.jsonl").read_text(encoding="utf-8").splitlines()]
     check("the Referee's journal: every command it sent or refused, with the rule",

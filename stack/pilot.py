@@ -169,8 +169,10 @@ class Pilot:
     def here(self):
         if not self.state.get("position_known"):
             self.read(command("robot_state"))
-        if not self.state.get("position_known") or self.state.get("waiting_for_adult"):
+        if self.state.get("waiting_for_adult"):
             self.wait_for_adult()
+        if not self.state.get("position_known"):
+            self.localize()
         return cell_xy(self.state["cell"]), self.state["facing"]
 
     def wait_for_adult(self):
@@ -178,10 +180,37 @@ class Pilot:
         while time.monotonic() < end:
             command("wait_for_event", 30)
             self.read(command("robot_state"))
-            if self.state.get("position_known") and not self.state.get("waiting_for_adult"):
-                self.leave_lane()  # an adult may put it back in a ball's lane
+            if not self.state.get("waiting_for_adult"):
+                if self.state.get("position_known"):
+                    self.leave_lane()  # an adult may put it back in a ball's lane
                 return
         raise Stuck("the robot still waits for an adult")
+
+    def localize(self):
+        """Find where the robot is on the mat before going anywhere: look around (the distance sensor sees the border, the
+        camera the landmarks), then one cell forwards where the way is free, or a quarter turn, and again."""
+        places = None
+        for _ in range(8):
+            self.read(command("look_around"))
+            self.read(command("robot_state"))
+            if self.state.get("waiting_for_adult"):
+                self.wait_for_adult()
+            if self.state.get("position_known"):
+                return
+            now = len(self.state.get("could_be") or [None] * 99)
+            if self.moves_left <= 2 or now == places:
+                break  # a whole round ruled nothing out: the border alone will not settle it
+            places = now
+            answer = self.read(command("step_forward"))
+            if answer.get("result") == "stopped":
+                self.wait_for_adult()
+            elif answer.get("result") != "done":
+                self.read(command("turn", "right"))
+            self.read(command("robot_state"))
+            if self.state.get("position_known"):
+                return
+        raise Stuck("the robot could not find where it is on the mat (the border alone leaves two places on a mat that "
+                    "looks the same turned round: a landmark in the rules settles it)")
 
     def records(self):
         answer = command("seen_cards")
@@ -441,6 +470,7 @@ def go_to_card(card):
     seen this card yet, explore the mat first. Answers where the robot stopped, or why it could not."""
     # A card seen from far may be on a neighbour of its probable cell (could_also_be): the cells are tried from the
     # surest, and a cell faced from next to it without that card is ruled out.
+    PILOT.here()  # the cells of the record mean something once the robot knows where it is on the mat
     for attempt in range(8):
         candidates = {}
         for s in PILOT.records():
