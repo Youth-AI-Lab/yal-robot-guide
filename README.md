@@ -299,14 +299,38 @@ caps Feurisson's conversation but the limit of the key itself, set on OpenRouter
 
    Open WebUI and its conversations are erased. `robot-session status` says what runs.
 
+**With Albert API** (French public servants, teachers included: no price, hosted in France), instead of
+steps 1 and 2:
+
+```bash
+robot-session start --albert <model>
+```
+
+It asks for your Albert key (not shown, never saved) and checks it with Albert's list of models. `<model>`
+is Feurisson's; the Strategist's is `deepseek-v4-flash-0731`, the only model of Albert seen doing the
+missions. Albert counts requests and tokens per minute and per day, model by model.
+
 > ⚠️ **Important.** Open WebUI has no accounts here: anyone who opens it is its administrator and
 > can read the key. `robot-session start` stops everything if port 3000 or 8780 is public, but a
 > port made public afterwards is not seen. Never make them public.
 
 > ℹ️ **Note.** The link listens only on Docker's network inside the Codespace, with a random token:
 > Open WebUI reaches it, the Ports tab does not. Checked without a model by
-> `python3 -I ci/check_session.py`, in a local dev container; not yet tried with a real model, in a
-> real Codespace, nor on screen.
+> `python3 -I ci/check_session.py`, in a local dev container. Not yet tried in a real Codespace, nor
+> on screen.
+
+What real models did on 7 November 2026, one try each, the group played by a script, in French:
+- DeepSeek v4 Flash through OpenRouter, for both: the two missions done (the barbecue on F3; dry grass
+  on C2 and D2), 0.018 US dollars for two conversations. Feurisson waited for the yes every time, but
+  once gave no report after reading it, once said an old state without asking `mission_status`, and
+  once stopped a mission without asking the group first.
+- Mistral Small 3.2 on Albert, as Feurisson: it started missions before the yes, then called a tool
+  without a name, and Albert refused the rest of the conversation. As the Strategist: the same refused
+  call again and again, and a card reported where it never was. Not usable for either.
+- `deepseek-v4-flash-0731` on Albert, as the Strategist: the two missions done.
+
+The stack now refuses a report with a card the camera never placed there, and ends a mission whose
+model sends the same refused call four times.
 
 ### Step by step, on any computer
 
@@ -489,7 +513,7 @@ such way: they read `since_last_call`.
 About eight minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
 would, then gives missions to the Strategist with no model or a scripted one, then through the
 Interpreter's link over HTTP, as Open WebUI would, and reads in the simulator what really happened:
-217 checks, all passed in the image 2026.11.5 on 7 November 2026 (a local dev container; the
+219 checks, all passed in the image 2026.11.5 on 7 November 2026 (a local dev container; the
 checks call nothing outside it). A real Open WebUI (0.12.4) with a fake model, then with Albert's `gemma-4-31b-it` as the
 Interpreter, was tried apart, not in these checks.
 

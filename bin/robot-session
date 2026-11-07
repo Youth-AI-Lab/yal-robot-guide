@@ -3,6 +3,10 @@
 Interpreter's link, and Open WebUI with Feurisson, the Interpreter, ready to chat.
 
     robot-session start      everything, in order; then open the Ports tab: Robot simulator (8780), Open WebUI (3000)
+    robot-session start --albert <model>
+                             the same with Albert API (DINUM, for French public servants): <model> is Feurisson's,
+                             the Strategist's is deepseek-v4-flash-0731; the Albert key is asked for (or read on
+                             stdin), never saved
     robot-session status     what runs
     robot-session stop       everything stops; Open WebUI's conversations are erased
 
@@ -10,6 +14,11 @@ The key is the pair's, saved by workshop-login (an OpenRouter key, sk-or-...): n
 It pays for both models, the Strategist's and Feurisson's (DeepSeek v4 Flash, whatever workshop-login --model chose,
 with OpenRouter told to avoid companies that may collect the data); the Strategist stops a mission at RUN_CAP_USD of
 stack/strategist.py. workshop-login --europe is refused for now: the Strategist has not been tried with its models.
+With --albert, both models are models of Albert API: no price, the content is not kept (metadata are, 24 months),
+hosted in France; quotas per minute and per day, per model. Tried on 7 November 2026: deepseek-v4-flash-0731 did both
+missions as the Strategist; Mistral Small 3.2 failed as the Strategist (the same refused call again and again, a
+card reported where it never was) and as Feurisson (a mission started before the yes; then a call without a name,
+and Albert refused the rest of the conversation).
 
 How it is laid out (the guide's README, part 6): the simulator and the stack run in the Codespace itself; Open WebUI
 runs in Docker, inside the Codespace, on a network of its own (robot-session). The Interpreter's link listens only on
@@ -18,9 +27,11 @@ WebUI has no accounts (one person, or a pair, per Codespace): start refuses a pu
 shows one, as the kit's openwebui does (checked when the command runs: a port made public later is not seen). Never
 with young people until the rules for that are decided.
 
-For the checks (ci/check_session.py) only: ROBOT_STRATEGIST (none, fake), ROBOT_MODEL, ROBOT_OPENAI_BASE_URL (a fake
-model in this Codespace).
+For the checks (ci/check_session.py) and the trials only: ROBOT_STRATEGIST (none, fake, or another model for the
+Strategist), ROBOT_MODEL, ROBOT_OPENAI_BASE_URL (a fake model in this Codespace), ROBOT_CAP_USD (the most a mission may
+cost, instead of RUN_CAP_USD).
 """
+import getpass
 import json
 import os
 import secrets
@@ -44,6 +55,8 @@ OWUI, VOLUME, NETWORK = "robot-owui", "robot-owui-data", "robot-session"
 OWUI_PORT, SIM_PORT, LINK_PORT = 3000, 8780, 8790
 PORT_NAMES = {OWUI_PORT: "Open WebUI", SIM_PORT: "Robot simulator"}
 MODEL = os.environ.get("ROBOT_MODEL", "deepseek/deepseek-v4-flash")
+OPENROUTER_URL, ALBERT_URL = "https://openrouter.ai/api/v1", "https://albert.api.etalab.gouv.fr/v1"
+ALBERT_STRATEGIST = "deepseek-v4-flash-0731"  # the only model of Albert seen doing the Strategist's missions
 BOT, SERVER = "feurisson-robot", "robot-mission"
 SCRIPTS = {"simulator": "sim/robot_sim.py", "link": "stack/interpreter_link.py"}
 # The kit's choices (kit/.devcontainer/bin/openwebui): no built-in tool of Open WebUI (memories, other conversations,
@@ -96,7 +109,31 @@ def saved_key():
     if wp.europe():
         fail("workshop-login --europe is not ready for the robot: the Strategist has not been tried with its models. "
              "Type workshop-login --no-europe, or follow part 6 step by step.")
-    return key, wp.routing()
+    return {"key": key, "routing": wp.routing(), "url": OPENROUTER_URL, "model": MODEL,
+            "strategist": "openrouter:" + MODEL, "again": "robot-session start"}
+
+
+def albert_key(model):
+    """An Albert key, typed (not shown) or on stdin; it stays in memory, and goes to the link and to Open WebUI. The
+    key and the model are checked first, by Albert's list of models (free)."""
+    model = model.removeprefix("albert:")
+    key = getpass.getpass("Albert key (not shown): ") if sys.stdin.isatty() else sys.stdin.read()
+    key = key.strip()
+    if not key or any(c.isspace() for c in key):
+        fail("No Albert key given (one line, no spaces).")
+    request = urllib.request.Request(ALBERT_URL + "/models", headers={"Authorization": "Bearer " + key})
+    try:
+        with urllib.request.urlopen(request, timeout=30) as r:
+            models = [m.get("id") for m in json.loads(r.read()).get("data", []) if m.get("type") == "text-generation"]
+    except urllib.error.HTTPError as e:
+        fail(f"Albert refused the key (HTTP {e.code}).")
+    except OSError as e:
+        fail(f"Albert does not answer: {e}")
+    for wanted in (model, ALBERT_STRATEGIST):
+        if wanted not in models:
+            fail(f"Albert has no model {wanted} today. Its models: {', '.join(sorted(m for m in models if m))}")
+    return {"key": key, "routing": None, "url": ALBERT_URL, "model": model, "strategist": "albert:" + ALBERT_STRATEGIST,
+            "again": f"robot-session start --albert {model}"}
 
 
 def needs_key(strategist):
@@ -202,7 +239,7 @@ def open_webui_runs():
     return sh("docker", "inspect", "-f", "{{.State.Running}}", OWUI, check=False).stdout.strip() == "true"
 
 
-def start_openwebui(key, routing, link_url, token):
+def start_openwebui(use, link_url, token):
     if sh("docker", "image", "inspect", OWUI_IMAGE, check=False).returncode != 0:
         say(f"First time: downloading Open WebUI ({OWUI_IMAGE}, about 1.6 GB, a few minutes)…")
         if subprocess.run(["docker", "pull", OWUI_IMAGE]).returncode != 0:
@@ -211,11 +248,13 @@ def start_openwebui(key, routing, link_url, token):
                 "forward_cookies": False, "config": {"enable": True, "function_name_filter_list": ""},
                 "info": {"id": SERVER, "name": "Robot mission",
                          "description": "Give the robot a mission, pause it, stop it, read its report."}}]
-    routed = {"custom_params": {"provider": json.dumps(routing)}}  # as the kit's routed(): a text, read as JSON
+    # The routing of OpenRouter, as the kit's routed(): a text, read as JSON. None with Albert.
+    routed = {"custom_params": {"provider": json.dumps(use["routing"])}} if use["routing"] else {}
+    model = use["model"]
     env = {
         "ENABLE_OLLAMA_API": "false", "OLLAMA_BASE_URL": "http://127.0.0.1:11434", "ENABLE_OPENAI_API": "true",
-        "OPENAI_API_BASE_URL": os.environ.get("ROBOT_OPENAI_BASE_URL", "https://openrouter.ai/api/v1"),
-        "OPENAI_API_CONFIGS": json.dumps({"0": {"enable": True, "model_ids": [MODEL]}}),
+        "OPENAI_API_BASE_URL": os.environ.get("ROBOT_OPENAI_BASE_URL", use["url"]),
+        "OPENAI_API_CONFIGS": json.dumps({"0": {"enable": True, "model_ids": [model]}}),
         "DEFAULT_MODEL_PARAMS": json.dumps(routed), "DEFAULT_MODELS": BOT,
         "ENABLE_PERSISTENT_CONFIG": "false", "ENABLE_TITLE_GENERATION": "false", "ENABLE_TAGS_GENERATION": "false",
         "ENABLE_FOLLOW_UP_GENERATION": "false", "ENABLE_AUTOCOMPLETE_GENERATION": "false",
@@ -231,7 +270,7 @@ def start_openwebui(key, routing, link_url, token):
     # once, never on the command line (docker inspect still shows them to this account, as in the kit).
     with tempfile.NamedTemporaryFile("w", dir=SESSION, delete=False, prefix=".env-") as f:
         os.chmod(f.name, 0o600)
-        f.write("".join(f"{k}={v}\n" for k, v in dict(env, OPENAI_API_KEY=key).items()))
+        f.write("".join(f"{k}={v}\n" for k, v in dict(env, OPENAI_API_KEY=use["key"]).items()))
     try:
         sh("docker", "run", "-d", "--name", OWUI, "--network", NETWORK, "-p", f"127.0.0.1:{OWUI_PORT}:8080",
            "-v", f"{VOLUME}:/app/backend/data", "--env-file", f.name, OWUI_IMAGE)
@@ -251,14 +290,14 @@ def start_openwebui(key, routing, link_url, token):
     token_owui = api("POST", "/auths/signin", {"email": "", "password": ""})["token"]
     system = (GUIDE / "interpreter" / "feurisson.md").read_text(encoding="utf-8")
     api("POST", "/models/create", {  # a new volume each session: neither model is there yet
-        "id": BOT, "base_model_id": MODEL, "name": "Feurisson robot", "is_active": True,
+        "id": BOT, "base_model_id": model, "name": "Feurisson robot", "is_active": True,
         "meta": {"description": "The voice of the robot: it gives the robot its missions.",
                  "toolIds": [f"server:mcp:{SERVER}"], "capabilities": NO_TOOLS,
                  "builtinTools": dict.fromkeys(BUILTIN_CATEGORIES, False)},
         "params": dict(routed, system=system, function_calling="native")}, token=token_owui)
     # The plain model, hidden from the list and without tools: chosen by its id, it still gets the routing.
     api("POST", "/models/create", {
-        "id": MODEL, "base_model_id": None, "name": MODEL, "is_active": True,
+        "id": model, "base_model_id": None, "name": model, "is_active": True,
         "meta": {"hidden": True, "capabilities": NO_TOOLS, "builtinTools": dict.fromkeys(BUILTIN_CATEGORIES, False)},
         "params": dict(routed, function_calling="legacy")}, token=token_owui)
     return round(time.monotonic() - t0)
@@ -296,37 +335,37 @@ def public_ports():
     return public
 
 
-def refuse_public(public):
+def refuse_public(public, again):
     lines = [f"Port {port} ({PORT_NAMES[port]}) is public: anyone with its link could use your key." for port in public]
     stop(quiet=True)
     fail("\n".join(lines) + "\nEverything was stopped. In the Ports tab (next to Terminal), right-click on each line "
-         "-> Port Visibility -> Private. Then type: robot-session start")
+         f"-> Port Visibility -> Private. Then type: {again}")
 
 
-def start():
+def start(albert=None):
     if running():
         fail("A session already runs: robot-session status, or robot-session stop first.")
-    key, routing = saved_key()
+    use = albert_key(albert) if albert else saved_key()
     if shutil.which("docker") is None or sh("docker", "info", check=False).returncode != 0:
         fail("Docker does not answer in this Codespace: wait a minute after it opens, then try again.")
     stop(quiet=True)  # what an earlier session left (a Codespace stopped without robot-session stop)
     SESSION.mkdir(parents=True, exist_ok=True)
     os.chmod(SESSION, 0o700)
     try:
-        begin(key, routing)
+        begin(use)
     except BaseException as e:
         if sh("docker", "container", "inspect", OWUI, check=False).returncode == 0:
             (SESSION / "open-webui.log").write_text(sh("docker", "logs", OWUI, check=False).stdout[-20000:])
         stop(quiet=True)
         if isinstance(e, Stop):
-            fail(f"{e}\nThe session did not start: everything was stopped. Logs in {SESSION}.")
+            fail(f"{e}\nThe session did not start: everything was stopped. Logs in {SESSION}. Then: {use['again']}")
         raise
     public = public_ports()
     if public:
-        refuse_public(public)
+        refuse_public(public, use["again"])
 
 
-def begin(key, routing):
+def begin(use):
     say("1. The simulator…")
     simulator = background("simulator", [sys.executable, "-I", "sim/robot_sim.py", "--port", str(SIM_PORT)])
     wait_ready("simulator", simulator, "READY")
@@ -334,14 +373,15 @@ def begin(key, routing):
     address = gateway()
     token = secrets.token_hex(24)
     env = dict(os.environ, MCP_TOKEN=token)
-    strategist = os.environ.get("ROBOT_STRATEGIST", "openrouter:" + MODEL)  # "none", "fake": the checks
+    strategist = os.environ.get("ROBOT_STRATEGIST", use["strategist"])  # "none", "fake": the checks
     link = background("link", [PYTHON, "-I", "stack/interpreter_link.py", "--host", address, "--port", str(LINK_PORT),
-                               "--allowed-host", f"{address}:{LINK_PORT}", "--model", strategist],
-                      env=env, stdin=key if needs_key(strategist) else None)
+                               "--allowed-host", f"{address}:{LINK_PORT}", "--model", strategist]
+                      + (["--cap", os.environ["ROBOT_CAP_USD"]] if os.environ.get("ROBOT_CAP_USD") else []),
+                      env=env, stdin=use["key"] if needs_key(strategist) else None)
     wait_ready("link", link, "READY robot-mission")
     wait_port("link", link, address, LINK_PORT)
     say("3. Open WebUI, with Feurisson…")
-    seconds = start_openwebui(key, routing, f"http://{address}:{LINK_PORT}/mcp", token)
+    seconds = start_openwebui(use, f"http://{address}:{LINK_PORT}/mcp", token)
     say(f"Ready (Open WebUI answered in {seconds} s).\n"
         f"  The robot: Ports tab, Robot simulator ({SIM_PORT}).\n"
         f"  Feurisson: Ports tab, Open WebUI ({OWUI_PORT}), then choose \"Feurisson robot\" and ask it a mission.\n"
@@ -396,8 +436,13 @@ def stop(quiet=False):
 
 
 def main():
-    command = sys.argv[1] if len(sys.argv) == 2 else ""
-    {"start": start, "status": status, "stop": stop}.get(command, lambda: fail(__doc__.split("\n\n")[1]))()
+    args = sys.argv[1:]
+    if args[:2] == ["start", "--albert"] and len(args) == 3:
+        start(albert=args[2])
+    elif len(args) == 1 and args[0] in ("start", "status", "stop"):
+        {"start": start, "status": status, "stop": stop}[args[0]]()
+    else:
+        fail(__doc__.split("\n\n")[1])
 
 
 if __name__ == "__main__":
