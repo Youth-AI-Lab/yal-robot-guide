@@ -259,6 +259,57 @@ only after the group says yes. It reaches the stack through one door,
 tools (the closed lists, start, pause, resume, stop, the mission's state and report), none of which
 drives the robot. Its instructions are [interpreter/feurisson.md](interpreter/feurisson.md).
 
+### All at once, in this guide's Codespace
+
+One command starts the simulator, the stack with the Strategist's model, the link, and Open WebUI
+with the chatbot "Feurisson robot" (the same Open WebUI as the workshops, without accounts). Both
+models, the Strategist's and Feurisson's, are DeepSeek v4 Flash through OpenRouter, paid with the
+pair's key; OpenRouter is asked to avoid companies that may collect the data, which does not stop a
+provider from keeping what it receives. The Strategist stops a mission at 0.25 US dollars; nothing
+caps Feurisson's conversation but the limit of the key itself, set on OpenRouter.
+
+1. Save an OpenRouter key (`sk-or-...`), as in the workshops:
+
+   ```bash
+   workshop-login
+   ```
+
+   It ends with `Key OK (…). You can start: workshop bare`: that line is for the workshops; here, go on
+   with step 2. The model is DeepSeek v4 Flash whatever `--model` chose; `--europe` is refused for
+   now (the Strategist has not been tried with its models): follow the steps below instead.
+
+2. Start everything:
+
+   ```bash
+   robot-session start
+   ```
+
+   The first time, it downloads Open WebUI (about 1.6 GB, a few minutes). You should see
+   `Ready (Open WebUI answered in … s).`
+
+3. In the **Ports** tab (next to Terminal): **Robot simulator** (8780) shows the robot; **Open WebUI**
+   (3000), then choose "Feurisson robot" in the box where you type, and ask it a mission. Keep both
+   ports private.
+
+4. To end:
+
+   ```bash
+   robot-session stop
+   ```
+
+   Open WebUI and its conversations are erased. `robot-session status` says what runs.
+
+> ⚠️ **Important.** Open WebUI has no accounts here: anyone who opens it is its administrator and
+> can read the key. `robot-session start` stops everything if port 3000 or 8780 is public, but a
+> port made public afterwards is not seen. Never make them public.
+
+> ℹ️ **Note.** The link listens only on Docker's network inside the Codespace, with a random token:
+> Open WebUI reaches it, the Ports tab does not. Checked without a model by
+> `python3 -I ci/check_session.py`, in a local dev container; not yet tried with a real model, in a
+> real Codespace, nor on screen.
+
+### Step by step, on any computer
+
 1. With the simulator running, in a second terminal, start the link. The token is a secret of at
    least 32 characters; keep it for Open WebUI:
 
@@ -438,9 +489,16 @@ such way: they read `since_last_call`.
 About eight minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
 would, then gives missions to the Strategist with no model or a scripted one, then through the
 Interpreter's link over HTTP, as Open WebUI would, and reads in the simulator what really happened:
-210 checks, all passed in the image 2026.10.45 on 7 November 2026 (container with 2 processors, no
-network). A real Open WebUI (0.12.4) with a fake model, then with Albert's `gemma-4-31b-it` as the
+217 checks, all passed in the image 2026.11.5 on 7 November 2026 (a local dev container; the
+checks call nothing outside it). A real Open WebUI (0.12.4) with a fake model, then with Albert's `gemma-4-31b-it` as the
 Interpreter, was tried apart, not in these checks.
+
+In this guide's Codespace, `python3 -I ci/check_session.py` checks part 6 all at once
+(`robot-session`), with a fake model in the Codespace and no cost: Open WebUI, Feurisson and its six
+tools, a mission down to the robot, a second start refused, what stop erases, and what is left after
+a Codespace restart. About five minutes once Open WebUI is downloaded: 30 checks, all passed three
+times in a local dev container of the image 2026.11.5 on 7 November 2026. The public ports are
+checked only in a real Codespace, not by it.
 
 [ci/probe_tiers.py](ci/probe_tiers.py) goes further, one tier at a time (`--tier reflex`, `referee`,
 `cartographer`, `pilot`, `strategist`, `interpreter`; for the Interpreter, a model plays it with

@@ -1,15 +1,23 @@
 {
   "name": "Youth AI Lab: a robot driven by an agent",
   // The same image as the workshop kit: Python, and the `mcp` package in /opt/workshop/venv for
-  // stack/drive.py (an agent of your own through MCP). The simulator and the stack need nothing else.
+  // stack/drive.py and stack/interpreter_link.py; Docker and workshop-login, for robot-session
+  // (part 6: the whole robot with Open WebUI). The simulator and the stack need nothing else.
   // A pinned tag, never `latest`: each version of the guide is tested with one image.
-  "image": "ghcr.io/youth-ai-lab/yal-workshop-devcontainer:2026.10.45",
+  "image": "ghcr.io/youth-ai-lab/yal-workshop-devcontainer:2026.11.5",
   "remoteUser": "vscode",
   "portsAttributes": {
-    "8780": { "label": "Robot simulator", "onAutoForward": "openBrowser" }
+    "8780": { "label": "Robot simulator", "onAutoForward": "openBrowser" },
+    // robot-session says when Open WebUI is ready (no tab opened before).
+    "3000": { "label": "Open WebUI", "onAutoForward": "silent" },
+    // The Interpreter's link: for Open WebUI only, on Docker's network, never through the Ports tab.
+    "8790": { "label": "Interpreter's link (not for the browser)", "onAutoForward": "ignore" }
   },
   "remoteEnv": {
-    "WORKSHOP_WELCOME": "Welcome! Start the robot simulator with: python3 -I sim/robot_sim.py"
+    // The command robot-session (bin/ of this guide).
+    "PATH": "${containerWorkspaceFolder}/bin:${containerEnv:PATH}",
+    "WORKSHOP_WELCOME": "Welcome! Start the robot simulator with: python3 -I sim/robot_sim.py   (or the whole robot with Open WebUI: robot-session start)"
   },
-  "hostRequirements": { "cpus": 2 }
+  // Open WebUI takes about 1.5 GB of memory: 8 GB, as the kit.
+  "hostRequirements": { "cpus": 2, "memory": "8gb" }
 }

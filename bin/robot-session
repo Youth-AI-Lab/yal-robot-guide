@@ -1,0 +1,404 @@
+#!/usr/bin/env python3
+"""The whole robot in this Codespace, simulated: the simulator, the stack with the Strategist and its model, the
+Interpreter's link, and Open WebUI with Feurisson, the Interpreter, ready to chat.
+
+    robot-session start      everything, in order; then open the Ports tab: Robot simulator (8780), Open WebUI (3000)
+    robot-session status     what runs
+    robot-session stop       everything stops; Open WebUI's conversations are erased
+
+The key is the pair's, saved by workshop-login (an OpenRouter key, sk-or-...): never shown, never on a command line.
+It pays for both models, the Strategist's and Feurisson's (DeepSeek v4 Flash, whatever workshop-login --model chose,
+with OpenRouter told to avoid companies that may collect the data); the Strategist stops a mission at RUN_CAP_USD of
+stack/strategist.py. workshop-login --europe is refused for now: the Strategist has not been tried with its models.
+
+How it is laid out (the guide's README, part 6): the simulator and the stack run in the Codespace itself; Open WebUI
+runs in Docker, inside the Codespace, on a network of its own (robot-session). The Interpreter's link listens only on
+that network's address in the Codespace, with a random token: Open WebUI reaches it, the Ports tab does not. Open
+WebUI has no accounts (one person, or a pair, per Codespace): start refuses a public port 3000 or 8780 and status
+shows one, as the kit's openwebui does (checked when the command runs: a port made public later is not seen). Never
+with young people until the rules for that are decided.
+
+For the checks (ci/check_session.py) only: ROBOT_STRATEGIST (none, fake), ROBOT_MODEL, ROBOT_OPENAI_BASE_URL (a fake
+model in this Codespace).
+"""
+import json
+import os
+import secrets
+import shutil
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+import urllib.error
+import urllib.request
+from pathlib import Path
+
+GUIDE = Path(__file__).resolve().parent.parent
+STATE = GUIDE / ".robot-sim"
+SESSION = STATE / "session"
+PYTHON = "/opt/workshop/venv/bin/python" if Path("/opt/workshop/venv/bin/python").exists() else sys.executable
+OWUI_IMAGE = os.environ.get("ROBOT_OPENWEBUI_IMAGE", "ghcr.io/open-webui/open-webui:v0.12.5")  # as the kit
+OWUI, VOLUME, NETWORK = "robot-owui", "robot-owui-data", "robot-session"
+OWUI_PORT, SIM_PORT, LINK_PORT = 3000, 8780, 8790
+PORT_NAMES = {OWUI_PORT: "Open WebUI", SIM_PORT: "Robot simulator"}
+MODEL = os.environ.get("ROBOT_MODEL", "deepseek/deepseek-v4-flash")
+BOT, SERVER = "feurisson-robot", "robot-mission"
+SCRIPTS = {"simulator": "sim/robot_sim.py", "link": "stack/interpreter_link.py"}
+# The kit's choices (kit/.devcontainer/bin/openwebui): no built-in tool of Open WebUI (memories, other conversations,
+# notes, code…), so Feurisson has only the link's six tools; notes, automations and the calendar off for the instance.
+BUILTIN_CATEGORIES = ["automations", "calendar", "channels", "chats", "code_interpreter", "files",
+                      "image_generation", "knowledge", "memory", "notes", "notifications", "skills", "subagents",
+                      "tasks", "time", "user_input", "web_search"]
+NO_TOOLS = {"builtin_tools": False, "file_upload": False, "web_search": False, "image_generation": False,
+            "code_interpreter": False, "file_context": False, "citations": False}
+
+
+class Stop(Exception):
+    """A start that did not go through: what started is stopped."""
+
+
+def say(text):
+    print(text, flush=True)
+
+
+def fail(text):
+    sys.exit(text)
+
+
+def sh(*args, check=True, **kwargs):
+    done = subprocess.run(args, capture_output=True, text=True, **kwargs)
+    if check and done.returncode != 0:
+        raise Stop(f"{' '.join(args[:3])}…: {done.stderr.strip()[-400:]}")
+    return done
+
+
+def provider():
+    """The kit's workshop_provider (next to workshop-key in the image)."""
+    helper = shutil.which("workshop-key")
+    if helper is None:
+        fail("This needs the workshop image (workshop-key): open this guide in its Codespace.")
+    sys.path.insert(0, str(Path(helper).resolve().parent))
+    import workshop_provider
+    return workshop_provider
+
+
+def saved_key():
+    """The pair's key, as the kit's tools read it (by sudo when it belongs to root), and the routing of OpenRouter."""
+    wp = provider()
+    key = wp.read_key()
+    if not key:
+        fail("No key saved. Type: workshop-login   (an OpenRouter key, sk-or-...), then: robot-session start")
+    if not key.startswith("sk-or-"):
+        fail("This session needs an OpenRouter key (sk-or-...): the Strategist calls its model through OpenRouter. "
+             "Type: workshop-login")
+    if wp.europe():
+        fail("workshop-login --europe is not ready for the robot: the Strategist has not been tried with its models. "
+             "Type workshop-login --no-europe, or follow part 6 step by step.")
+    return key, wp.routing()
+
+
+def needs_key(strategist):
+    """As stack/interpreter_link.py: only a model of a provider reads a key."""
+    return strategist not in ("none", "fake") and not strategist.startswith("ollama:")
+
+
+# Processes of the session: a pid alone is not enough. pids.json stays in /workspaces when the Codespace stops, and
+# after a restart the same number can be another program. A pid counts only with its start time and its script.
+def start_time(pid):
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[19]
+    except (OSError, IndexError):
+        return None
+
+
+def is_ours(name, entry):
+    try:
+        pid = int(entry["pid"])
+        command = Path(f"/proc/{pid}/cmdline").read_bytes().replace(b"\0", b" ").decode(errors="replace")
+    except (OSError, KeyError, TypeError, ValueError):
+        return False
+    return start_time(pid) == entry.get("start") and SCRIPTS[name] in command
+
+
+def known():
+    try:
+        entries = json.loads((SESSION / "pids.json").read_text())
+    except (OSError, ValueError):
+        return {}
+    return {n: e for n, e in entries.items() if n in SCRIPTS and isinstance(e, dict)}
+
+
+def running():
+    return {name: entry for name, entry in known().items() if is_ours(name, entry)}
+
+
+def background(name, args, env=None, stdin=None):
+    """A process of the session, on its own (a new process group: stop ends it and its children), its output in a log."""
+    with (SESSION / f"{name}.log").open("w") as log:
+        process = subprocess.Popen(args, cwd=GUIDE, env=env, stdin=subprocess.PIPE if stdin else subprocess.DEVNULL,
+                                   stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+    if stdin:
+        process.stdin.write(stdin.encode())
+        process.stdin.close()
+    entries = known()
+    entries[name] = {"pid": process.pid, "start": start_time(process.pid)}
+    (SESSION / "pids.json").write_text(json.dumps(entries))
+    return process
+
+
+def wait_ready(name, process, word, seconds=60):
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        text = (SESSION / f"{name}.log").read_text(errors="replace")
+        if word in text:
+            return
+        if process.poll() is not None:
+            raise Stop(f"{name} stopped: {text.strip()[-400:]}")
+        time.sleep(0.3)
+    raise Stop(f"{name} did not start in {seconds} s: see {SESSION / (name + '.log')}")
+
+
+def wait_port(name, process, host, port, seconds=20):
+    """The link prints READY before it listens: it is ready when its port answers."""
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if process.poll() is not None:
+            raise Stop(f"{name} stopped: {(SESSION / (name + '.log')).read_text(errors='replace').strip()[-400:]}")
+        try:
+            socket.create_connection((host, port), timeout=1).close()
+            return
+        except OSError:
+            time.sleep(0.3)
+    raise Stop(f"{name} does not listen on {host}:{port}: see {SESSION / (name + '.log')}")
+
+
+def gateway():
+    """The address of the session's network in the Codespace: the only one the link listens on."""
+    if sh("docker", "network", "inspect", NETWORK, check=False).returncode != 0:
+        sh("docker", "network", "create", NETWORK)
+    address = sh("docker", "network", "inspect", NETWORK, "-f", "{{(index .IPAM.Config 0).Gateway}}").stdout.strip()
+    if not address:
+        raise Stop(f"The network {NETWORK} has no gateway address: docker network rm {NETWORK}, then try again.")
+    return address
+
+
+def api(method, path, body=None, token=None):
+    url = f"http://127.0.0.1:{OWUI_PORT}" + (path if path.startswith("/api/") else "/api/v1" + path)
+    headers = {"Accept": "application/json"}
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    data = None if body is None else json.dumps(body).encode()
+    if data:
+        headers["Content-Type"] = "application/json"
+    with urllib.request.urlopen(urllib.request.Request(url, data=data, method=method, headers=headers),
+                                timeout=60) as r:
+        text = r.read().decode()
+    return json.loads(text) if text else None
+
+
+def open_webui_runs():
+    return sh("docker", "inspect", "-f", "{{.State.Running}}", OWUI, check=False).stdout.strip() == "true"
+
+
+def start_openwebui(key, routing, link_url, token):
+    if sh("docker", "image", "inspect", OWUI_IMAGE, check=False).returncode != 0:
+        say(f"First time: downloading Open WebUI ({OWUI_IMAGE}, about 1.6 GB, a few minutes)…")
+        if subprocess.run(["docker", "pull", OWUI_IMAGE]).returncode != 0:
+            raise Stop("The download failed. Check the network, then type: robot-session start")
+    servers = [{"type": "mcp", "url": link_url, "path": "", "auth_type": "bearer", "key": token, "headers": None,
+                "forward_cookies": False, "config": {"enable": True, "function_name_filter_list": ""},
+                "info": {"id": SERVER, "name": "Robot mission",
+                         "description": "Give the robot a mission, pause it, stop it, read its report."}}]
+    routed = {"custom_params": {"provider": json.dumps(routing)}}  # as the kit's routed(): a text, read as JSON
+    env = {
+        "ENABLE_OLLAMA_API": "false", "OLLAMA_BASE_URL": "http://127.0.0.1:11434", "ENABLE_OPENAI_API": "true",
+        "OPENAI_API_BASE_URL": os.environ.get("ROBOT_OPENAI_BASE_URL", "https://openrouter.ai/api/v1"),
+        "OPENAI_API_CONFIGS": json.dumps({"0": {"enable": True, "model_ids": [MODEL]}}),
+        "DEFAULT_MODEL_PARAMS": json.dumps(routed), "DEFAULT_MODELS": BOT,
+        "ENABLE_PERSISTENT_CONFIG": "false", "ENABLE_TITLE_GENERATION": "false", "ENABLE_TAGS_GENERATION": "false",
+        "ENABLE_FOLLOW_UP_GENERATION": "false", "ENABLE_AUTOCOMPLETE_GENERATION": "false",
+        "ENABLE_RETRIEVAL_QUERY_GENERATION": "false", "ENABLE_SEARCH_QUERY_GENERATION": "false",
+        "ENABLE_EVALUATION_ARENA_MODELS": "false", "ENABLE_COMMUNITY_SHARING": "false",
+        "ENABLE_CODE_INTERPRETER": "false", "ENABLE_WEB_SEARCH": "false", "ENABLE_NOTES": "false",
+        "ENABLE_AUTOMATIONS": "false", "ENABLE_CALENDAR": "false", "OFFLINE_MODE": "true",
+        "SCARF_NO_ANALYTICS": "true", "DO_NOT_TRACK": "true", "ANONYMIZED_TELEMETRY": "false",
+        "WEBUI_AUTH": "False", "WEBUI_NAME": "Feurisson, the robot's voice",
+        "TOOL_SERVER_CONNECTIONS": json.dumps(servers),
+    }
+    # The key, and the link's token inside TOOL_SERVER_CONNECTIONS, go through a file read by docker and removed at
+    # once, never on the command line (docker inspect still shows them to this account, as in the kit).
+    with tempfile.NamedTemporaryFile("w", dir=SESSION, delete=False, prefix=".env-") as f:
+        os.chmod(f.name, 0o600)
+        f.write("".join(f"{k}={v}\n" for k, v in dict(env, OPENAI_API_KEY=key).items()))
+    try:
+        sh("docker", "run", "-d", "--name", OWUI, "--network", NETWORK, "-p", f"127.0.0.1:{OWUI_PORT}:8080",
+           "-v", f"{VOLUME}:/app/backend/data", "--env-file", f.name, OWUI_IMAGE)
+    finally:
+        os.unlink(f.name)
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < 600:
+        try:
+            with urllib.request.urlopen(f"http://127.0.0.1:{OWUI_PORT}/health", timeout=3):
+                break
+        except (urllib.error.URLError, OSError):
+            if not open_webui_runs():
+                raise Stop("Open WebUI stopped while starting")
+            time.sleep(2)
+    else:
+        raise Stop("Open WebUI did not answer in 10 minutes")
+    token_owui = api("POST", "/auths/signin", {"email": "", "password": ""})["token"]
+    system = (GUIDE / "interpreter" / "feurisson.md").read_text(encoding="utf-8")
+    api("POST", "/models/create", {  # a new volume each session: neither model is there yet
+        "id": BOT, "base_model_id": MODEL, "name": "Feurisson robot", "is_active": True,
+        "meta": {"description": "The voice of the robot: it gives the robot its missions.",
+                 "toolIds": [f"server:mcp:{SERVER}"], "capabilities": NO_TOOLS,
+                 "builtinTools": dict.fromkeys(BUILTIN_CATEGORIES, False)},
+        "params": dict(routed, system=system, function_calling="native")}, token=token_owui)
+    # The plain model, hidden from the list and without tools: chosen by its id, it still gets the routing.
+    api("POST", "/models/create", {
+        "id": MODEL, "base_model_id": None, "name": MODEL, "is_active": True,
+        "meta": {"hidden": True, "capabilities": NO_TOOLS, "builtinTools": dict.fromkeys(BUILTIN_CATEGORIES, False)},
+        "params": dict(routed, function_calling="legacy")}, token=token_owui)
+    return round(time.monotonic() - t0)
+
+
+# Public ports, as the kit's openwebui (port_is_public): asked from outside, a private port sends the visitor to
+# GitHub's sign-in, a public one lets the request through. Only in a Codespace; "Private to Organization" is not seen.
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+def is_public(port):
+    name, domain = os.environ.get("CODESPACE_NAME"), os.environ.get("GITHUB_CODESPACES_PORT_FORWARDING_DOMAIN")
+    if not name or not domain:
+        return None
+    try:
+        with urllib.request.build_opener(NoRedirect).open(f"https://{name}-{port}.{domain}/", timeout=15):
+            return True
+    except urllib.error.HTTPError as e:
+        return False if e.code in (301, 302, 303, 307, 308, 401, 403) else None
+    except OSError:
+        return None
+
+
+def public_ports():
+    """The ports of the session that are public, after asking GitHub to make them private (when gh may)."""
+    public = [port for port in PORT_NAMES if is_public(port)]
+    if public and shutil.which("gh"):
+        for port in public:
+            subprocess.run(["gh", "codespace", "ports", "visibility", f"{port}:private", "-c",
+                            os.environ["CODESPACE_NAME"]], capture_output=True, timeout=30)
+        time.sleep(3)
+        public = [port for port in public if is_public(port)]
+    return public
+
+
+def refuse_public(public):
+    lines = [f"Port {port} ({PORT_NAMES[port]}) is public: anyone with its link could use your key." for port in public]
+    stop(quiet=True)
+    fail("\n".join(lines) + "\nEverything was stopped. In the Ports tab (next to Terminal), right-click on each line "
+         "-> Port Visibility -> Private. Then type: robot-session start")
+
+
+def start():
+    if running():
+        fail("A session already runs: robot-session status, or robot-session stop first.")
+    key, routing = saved_key()
+    if shutil.which("docker") is None or sh("docker", "info", check=False).returncode != 0:
+        fail("Docker does not answer in this Codespace: wait a minute after it opens, then try again.")
+    stop(quiet=True)  # what an earlier session left (a Codespace stopped without robot-session stop)
+    SESSION.mkdir(parents=True, exist_ok=True)
+    os.chmod(SESSION, 0o700)
+    try:
+        begin(key, routing)
+    except BaseException as e:
+        if sh("docker", "container", "inspect", OWUI, check=False).returncode == 0:
+            (SESSION / "open-webui.log").write_text(sh("docker", "logs", OWUI, check=False).stdout[-20000:])
+        stop(quiet=True)
+        if isinstance(e, Stop):
+            fail(f"{e}\nThe session did not start: everything was stopped. Logs in {SESSION}.")
+        raise
+    public = public_ports()
+    if public:
+        refuse_public(public)
+
+
+def begin(key, routing):
+    say("1. The simulator…")
+    simulator = background("simulator", [sys.executable, "-I", "sim/robot_sim.py", "--port", str(SIM_PORT)])
+    wait_ready("simulator", simulator, "READY")
+    say("2. The stack and the Interpreter's link…")
+    address = gateway()
+    token = secrets.token_hex(24)
+    env = dict(os.environ, MCP_TOKEN=token)
+    strategist = os.environ.get("ROBOT_STRATEGIST", "openrouter:" + MODEL)  # "none", "fake": the checks
+    link = background("link", [PYTHON, "-I", "stack/interpreter_link.py", "--host", address, "--port", str(LINK_PORT),
+                               "--allowed-host", f"{address}:{LINK_PORT}", "--model", strategist],
+                      env=env, stdin=key if needs_key(strategist) else None)
+    wait_ready("link", link, "READY robot-mission")
+    wait_port("link", link, address, LINK_PORT)
+    say("3. Open WebUI, with Feurisson…")
+    seconds = start_openwebui(key, routing, f"http://{address}:{LINK_PORT}/mcp", token)
+    say(f"Ready (Open WebUI answered in {seconds} s).\n"
+        f"  The robot: Ports tab, Robot simulator ({SIM_PORT}).\n"
+        f"  Feurisson: Ports tab, Open WebUI ({OWUI_PORT}), then choose \"Feurisson robot\" and ask it a mission.\n"
+        "  Keep both ports private. To end: robot-session stop")
+
+
+def status():
+    alive = running()
+    link = "link" in alive
+    owui = sh("docker", "ps", "--filter", f"name=^{OWUI}$", "--format", "{{.Status}}", check=False).stdout.strip()
+    say(json.dumps({"simulator": "simulator" in alive, "link": link, "open_webui": owui or "not running",
+                    "robot_waits_for_an_adult": link and (STATE / "waiting.json").exists(),
+                    "public_ports": [port for port in PORT_NAMES if is_public(port)] if alive or owui else []},
+                   indent=1))
+
+
+def stop(quiet=False):
+    """Ends the processes of the session (only those: their pid, start time and script), removes Open WebUI, its
+    volume (the conversations) and its network. quiet: within start, the logs and the network stay."""
+    for entry in running().values():
+        try:
+            os.killpg(int(entry["pid"]), signal.SIGTERM)
+        except OSError:
+            pass
+    end = time.monotonic() + 10
+    while time.monotonic() < end and running():
+        time.sleep(0.2)
+    for entry in running().values():
+        try:
+            os.killpg(int(entry["pid"]), signal.SIGKILL)
+        except OSError:
+            pass
+    left = []
+    if shutil.which("docker"):
+        # The network stays within start: empty, it lets nothing through, and a fake model of the checks listens on it.
+        for what, name in (("container", OWUI), ("volume", VOLUME)) + ((("network", NETWORK),) if not quiet else ()):
+            if sh("docker", what, "inspect", name, check=False).returncode != 0:
+                continue  # not there
+            command = ["docker", "rm", "-f", name] if what == "container" else ["docker", what, "rm", name]
+            if sh(*command, check=False).returncode != 0:
+                left.append(f"{what} {name}")
+    (STATE / "waiting.json").unlink(missing_ok=True)  # the Strategist ended: nobody waits for an adult any more
+    if quiet:
+        (SESSION / "pids.json").unlink(missing_ok=True)
+        return
+    if left:
+        fail(f"Could not remove: {', '.join(left)}. Docker may still be starting: try robot-session stop again in a "
+             "minute.")
+    shutil.rmtree(SESSION, ignore_errors=True)
+    say("Stopped. Open WebUI's conversations are erased; the map of the terrain stays in .robot-sim "
+        "(robot-session start again, or delete that folder).")
+
+
+def main():
+    command = sys.argv[1] if len(sys.argv) == 2 else ""
+    {"start": start, "status": status, "stop": stop}.get(command, lambda: fail(__doc__.split("\n\n")[1]))()
+
+
+if __name__ == "__main__":
+    main()
