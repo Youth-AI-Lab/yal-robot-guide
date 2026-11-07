@@ -404,6 +404,14 @@ def reflex_unit():
           "Resume is heard", len(states) == 2 and "fault=error" in states[0] and "fault=none" in states[1]
           and hal.out.count("EVT FAULT:error") == 1 and "EVT RESUMED" in hal.out, hal.out)
 
+    # Found by ci/probe_tiers.py (random generator, 27 runs in 2000): a touch and a move in the same tick.
+    fw, hal, reflex = robot()
+    run(fw, hal, 100)
+    hal.touched()
+    run(fw, hal, 100, "MOVE R 3")
+    check("Reflex alone: a move asked in the very tick of a touch is refused (ERR bump), the wheels stay stopped",
+          "EVT BUMP" in hal.out and "ERR bump" in hal.out and hal.speeds == (0, 0, 0) and hal.odo[0] == 0, hal.out)
+
     fw, hal, reflex = robot(MAX_SPEED_CM_S="fast")
     run(fw, hal, 100, "MOVE F")
     check("Reflex alone: a constant of reflex.py that is not a number: FAULT:reflex, the wheels stay stopped",
@@ -1327,6 +1335,11 @@ async def scenarios(sim, env):
         cover = (await a.call("seen_cards"))["camera_coverage"]
         check("the same box seen from three points of view (C5, B5, A5 facing north): B3 stands apart",
               "B3" in cover["something_stands_there"] and sim.state()["robot"]["cell"] == "A5", cover)
+        poses = [json.loads(line) for line in (Path(env["ROBOT_STATE_DIR"]) / "poses.jsonl").read_text().splitlines()]
+        stood = [(p["cell"], p["facing"]) for p in poses if p["looked"] and not p["moving"]]
+        check("poses.jsonl keeps every pose, with where the robot stood and whether its camera looked",
+              ("C5", "north") in stood and ("B5", "north") in stood and ("A5", "north") in stood
+              and all(set(p) == {"pose", "cell", "facing", "looked", "moving", "at"} for p in poses), poses[-6:])
 
     # Every cell looked at: the agent hears it once, with the cards seen.
     state_file = Path(env["ROBOT_STATE_DIR"]) / "terrain.json"

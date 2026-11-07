@@ -216,6 +216,7 @@ class Firmware:
         self.still_since = self.last_heard  # when they were last told to stop
         self.paused_for = None  # "obstacle" or "sensor", while it waits with its motors stopped
         self.resume_pending = False  # Resume pressed while the stop button was still held: counted when it is let go
+        self.touched_now = False  # a touch was dealt with in this tick: a move asked in the same tick is refused
         # What the sensors gave in this tick: read once, at its start.
         self.dist, self.dist_at = None, self.last_heard
         self.battery = 100
@@ -337,6 +338,7 @@ class Firmware:
             self.remember("ESTOP")
             self.halt("estop")
         bumps = hal.bumps()
+        self.touched_now = bumps != self.bump_count
         if bumps != self.bump_count:
             # Counted by the board, which already cut the motors: even a touch shorter than a tick is here.
             self.bump_count = bumps
@@ -687,7 +689,8 @@ class Firmware:
             return "wait_adult"
         if self.motion is not None:
             return "busy"
-        if self.hal.bumper() or self.hal.bumps() != self.bump_count:
+        if self.hal.bumper() or self.touched_now or self.hal.bumps() != self.bump_count:
+            # touched now, or in this very tick: the computer has not heard of it yet when it asks
             return "bump"
         why = self.stop_reason(kind)
         if why and why not in ("obstacle", "sensor"):

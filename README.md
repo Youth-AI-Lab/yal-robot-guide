@@ -438,9 +438,20 @@ such way: they read `since_last_call`.
 About eight minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
 would, then gives missions to the Strategist with no model or a scripted one, then through the
 Interpreter's link over HTTP, as Open WebUI would, and reads in the simulator what really happened:
-192 checks, all passed in the image 2026.10.45 on 7 November 2026 (container with 2 processors, no
+194 checks, all passed in the image 2026.10.45 on 7 November 2026 (container with 2 processors, no
 network). A real Open WebUI (0.12.4) with a fake model, then with Albert's `gemma-4-31b-it` as the
 Interpreter, was tried apart, not in these checks.
+
+[ci/probe_tiers.py](ci/probe_tiers.py) goes further for one tier, the Reflex: a generator that only knows the
+protocol (random, or a small local model through Ollama) writes the commands, many times over, while a fake board
+draws touches, delays and sensor failures; rules are checked after every turn of the robot's loop, and a run that
+breaks one is kept, to replay without the model. `--mutants` checks the probe itself: ten copies of the firmware,
+each without one safety rule, must all be caught.
+
+```bash
+python3 -I ci/probe_tiers.py --generator random --runs 200
+python3 -I ci/probe_tiers.py --mutants --runs 600
+```
 
 ---
 

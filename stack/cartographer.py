@@ -157,6 +157,7 @@ class Cartographer:
             self.blocked = {c: v for c, v in saved.get("blocked", {}).items() if isinstance(v, list)}
             self.boxes = {c: v for c, v in saved.get("boxes", {}).items() if isinstance(v, list) and len(v) == 2}
             self.covered_said = saved.get("covered_said", False)
+            self.pose_logged = saved.get("pose_logged")
             self.frame = saved.get("frame")
             self.notices = saved.get("notices", [])
         except (OSError, ValueError, KeyError):
@@ -192,6 +193,7 @@ class Cartographer:
             self.blocked = {}  # cell -> [first, last] time the distance sensor met something there (a box, a ball)
             self.boxes = {}  # cell -> [when, [points of view]]: the camera saw a point of a box's side put a box there
             self.covered_said = False  # the caller was told the camera has looked at every cell it can
+            self.pose_logged = None  # the last line of poses.jsonl, not to write it twice
 
     def save(self):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -199,7 +201,7 @@ class Cartographer:
                  "resumes_at_stop": self.resumes_at_stop, "poses": self.poses, "seen": self.seen, "ball": self.ball,
                  "free": self.free, "lanes": self.lanes, "way": self.way, "back_fixed": self.back_fixed,
                  "placed": self.placed, "presses": self.presses, "looked": self.looked, "blocked": self.blocked,
-                 "boxes": self.boxes, "covered_said": self.covered_said, "frame": self.frame, "notices": self.notices}
+                 "boxes": self.boxes, "covered_said": self.covered_said, "pose_logged": self.pose_logged, "frame": self.frame, "notices": self.notices}
         (STATE_DIR / "terrain.json").write_text(json.dumps(saved) + "\n", encoding="utf-8")
 
     # Where the robot is on the mat --------------------------------------------------------------------------------
@@ -443,7 +445,25 @@ class Cartographer:
         if self.sure and fields.get("looked") == "1":
             self.note_looked(None if fields.get("dist", "none") == "none" else int(fields["dist"]),
                              self.box_points(fields))
+        self.log_pose(fields)
         return fields
+
+    def log_pose(self, fields):
+        """One line in .robot-sim/poses.jsonl for each pose of the robot (and when its camera's view comes to be
+        believed): where the Cartographer believes it is, for checking a session afterwards. All the poses, where
+        terrain.json keeps the last 100. Deleted with the session."""
+        if "pose" not in fields:
+            return
+        known = self.sure and not self.frame
+        line = {"pose": int(fields["pose"]) if fields["pose"].isdigit() else fields["pose"],
+                "cell": cell_name(self.col, self.row) if known else None,
+                "facing": FACING[self.facing] if known else None,
+                "looked": fields.get("looked") == "1", "moving": fields.get("moving") == "1"}
+        if line == self.pose_logged:
+            return
+        self.pose_logged = line
+        with (STATE_DIR / "poses.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(dict(line, at=time.strftime("%H:%M:%S"))) + "\n")
 
     def new_events(self):
         """What happened to the robot since this caller last heard, in words, with where on the mat."""
