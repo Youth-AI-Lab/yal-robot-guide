@@ -128,7 +128,10 @@ class Pilot:
                 self.note_distance(cell_xy(state["cell"]), state["facing"], state.get("distance_ahead_cm"))
                 if state.get("on_a_ball_lane"):
                     self.lanes.add(("cell", cell_xy(state["cell"])))
-            self.note_ball(state.get("ball_last_seen"))
+            if isinstance(state.get("ball_lanes"), list):
+                self.lanes = self.lanes_of(state["ball_lanes"])  # the Cartographer's, on each ball's own line
+            else:
+                self.note_ball(state.get("ball_last_seen"))
         return answer
 
     def note_ball(self, ball):
@@ -141,6 +144,34 @@ class Pilot:
             moving = ball.get("moving")
             self.lanes.add(("row", r) if moving in ("east", "west") else ("col", c) if moving in ("north", "south")
                            else ("cell", (c, r)))
+
+    @staticmethod
+    def lanes_of(names):
+        """The Cartographer's lanes ("row 4", "column E", "cell E3") as the Pilot keeps them."""
+        out = set()
+        for name in names:
+            kind, _, value = name.partition(" ")
+            if kind == "row":
+                out.add(("row", int(value) - 1))
+            elif kind == "column":
+                out.add(("col", ord(value) - ord("A")))
+            elif kind == "cell":
+                out.add(("cell", cell_xy(value)))
+        return out
+
+    def off_lane_near(self, cell):
+        """The nearest cell off every lane (two steps at most), not a card, not seen blocked, the closest to the robot
+        first, or None."""
+        cards = self.card_cells()
+        (rc, rr), _ = self.here()
+        for d in (1, 2):
+            near = [(cell[0] + dc, cell[1] + dr) for dc in range(-d, d + 1) for dr in range(-d, d + 1)
+                    if abs(dc) + abs(dr) == d]
+            for c, r in sorted(near, key=lambda p: (abs(p[0] - rc) + abs(p[1] - rr), p)):
+                if 0 <= c < COLS and 0 <= r < ROWS and not self.on_lane((c, r)) and (c, r) not in cards \
+                        and not self.is_blocked((c, r)):
+                    return c, r
+        return None
 
     def on_lane(self, cell):
         return ("col", cell[0]) in self.lanes or ("row", cell[1]) in self.lanes or ("cell", cell) in self.lanes
@@ -554,6 +585,12 @@ def go_to_cell(cell):
     PILOT.here()  # the cells of the record mean something once the robot knows where it is on the mat
     if target in PILOT.card_cells():
         return refused
+    if PILOT.on_lane(target):
+        # The robot would stop where a ball rolls (two bumps and two adults in C4, balls mission, 7 November).
+        near = PILOT.off_lane_near(target)
+        return {"result": "refused", "why": f"{cell} is on the lane of a ball: the robot never stops where a ball rolls",
+                "what_to_do": (f"go to {cell_name(*near)} instead, next to it and off every lane" if near else
+                               "wait for the ball to go (wait_for_event), look around, then choose again")}
     there = PILOT.travel({target})
     (c, r), facing = PILOT.here()
     answer = {"result": "done" if there else "not there", "cell": cell_name(c, r), "facing": facing, "state": PILOT.state}

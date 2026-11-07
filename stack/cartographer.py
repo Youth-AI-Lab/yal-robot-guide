@@ -484,6 +484,10 @@ class Cartographer:
                 if text is None:
                     continue
             else:
+                if kind == "BUMP" and self.sure and not self.frame:
+                    # Something touched the robot standing on its cell: a ball rolls there (a ball seen only by its
+                    # bump left no lane, 6 November). The cell stays a lane for LANE_FOR_S.
+                    self.lanes[f"cell:{cell_name(self.col, self.row)}"] = time.time() - age / 1000
                 text = EVENTS.get(kind, kind + (":" + reason if reason else ""))
                 if kind == "STOP":
                     text += REASONS.get(reason, reason)
@@ -575,9 +579,12 @@ class Cartographer:
         if self.frame:
             in_cell = "where on the mat: not known yet"
             going = ""
-        # Its lane, for every cell it could be on (from far, the estimate can fall on the next row).
+        # Its lane: the line it rolls on, through the cells of its two sightings (one line, or two when they fall on
+        # either side of a border). Not every cell the estimate could fall on: from far, that gave 10 to 15 cells of
+        # lanes on rows and columns no ball rolled on (bench of 7 November, balls mission).
         moving, when = going[9:], time.time() - age_ms / 1000
-        for name in [cell] + others:
+        first = self.cells_near(x1, y1, 0)[0]
+        for name in ([first, cell] if moving else [cell]):
             lane = (f"row:{int(name[1:]) - 1}" if moving in ("east", "west") else
                     f"col:{ord(name[0]) - ord('A')}" if moving in ("north", "south") else f"cell:{name}")
             self.lanes[lane] = when
@@ -745,6 +752,17 @@ class Cartographer:
         sure = {s["cell"] for s in self.seen if caution or not s.get("could_also_be")}
         return sure | {c for c, t in self.placed.items() if now - t < LANE_FOR_S}
 
+    def lane_names(self):
+        """The lanes balls were seen on in the last LANE_FOR_S, in words: "row 4", "column E", "cell E3"."""
+        now, out = time.time(), []
+        for key, when in sorted(self.lanes.items()):
+            kind, _, value = key.partition(":")
+            if now - when > LANE_FOR_S or not value:
+                continue
+            out.append(f"row {int(value) + 1}" if kind == "row" else f"column {chr(65 + int(value))}" if kind == "col"
+                       else f"cell {value}")
+        return out
+
     def on_lane(self, cell):
         """A cell on the lane of a ball seen in the last LANE_FOR_S (its row or column, or the cell)."""
         col, row = cell
@@ -831,8 +849,25 @@ class Cartographer:
             while k > 0 and self.on_lane(self.way[k]):
                 k -= 1  # never put it back on a ball's lane: on the last cell before it
             col, row = self.way[k]
+            if self.on_lane((col, row)):
+                # Its start cell is on a lane too (a quarter turn has no other cell): the nearest cell off every lane.
+                col, row = self.off_lane_near((col, row)) or (col, row)
             self.back = (col, row, self.back[2])
             self.back_fixed = True
+
+    def off_lane_near(self, cell):
+        """The nearest cell off every ball's lane where an adult can put the robot down (two steps at most, known free,
+        no card, nothing standing there), or None."""
+        cards = {cell_xy(c) for c in self.card_cells(caution=True)}
+        for d in (1, 2):
+            near = [(cell[0] + dc, cell[1] + dr) for dc in range(-d, d + 1) for dr in range(-d, d + 1)
+                    if abs(dc) + abs(dr) == d]
+            for c, r in sorted(near, key=lambda p: (abs(p[0] - cell[0]), p)):
+                name = cell_name(c, r) if 0 <= c < self.cols and 0 <= r < self.rows else None
+                if name and not self.on_lane((c, r)) and (c, r) not in cards and name not in self.blocked \
+                        and (name in self.free or name in self.looked):
+                    return c, r
+        return None
 
     def interrupted(self, why):
         self.sure = False
@@ -963,6 +998,7 @@ class Cartographer:
             "warning_light_on": fields.get("warning") == "1",
             "ball_last_seen": self.ball_seen(),
             "on_a_ball_lane": self.on_lane((self.col, self.row)) if known else None,
+            "ball_lanes": self.lane_names() if not self.frame else [],
             "cells_not_looked_at_yet": None if self.frame else len(self.coverage()["not_looked_at_yet"]),
             "last_stop": "none" if fields.get("last_stop", "none") == "none"
                          else REASONS.get(fields["last_stop"], fields["last_stop"]),

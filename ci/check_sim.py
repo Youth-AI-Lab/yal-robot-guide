@@ -874,6 +874,51 @@ async def scenarios(sim, env):
         lanes = json.loads((Path(env["ROBOT_STATE_DIR"]) / "terrain.json").read_text()).get("lanes", {})
         check("a ball rolling along row 3: row 3 is noted as its lane, the robot on C5 is not on it",
               "row:2" in lanes and reply.get("on_a_ball_lane") is False, (lanes, reply.get("on_a_ball_lane")))
+        check("the lane is the line the ball rolls on (rows only, at most the two of its sightings), and robot_state "
+              "names it", all(k.startswith("row:") for k in lanes) and len(lanes) <= 2 and "row 3" in reply.get(
+              "ball_lanes", []), (lanes, reply.get("ball_lanes")))
+
+    # A ball seen only by its bump: the robot's cell becomes a lane.
+    sim.fresh(balls=[{"from": [15, 135], "to": [145, 135], "radius": 7, "speed_cm_s": 20}])
+    async with agent(env) as a:
+        await asyncio.sleep(3.0)
+        await a.call("robot_state")
+        lanes = json.loads((Path(env["ROBOT_STATE_DIR"]) / "terrain.json").read_text()).get("lanes", {})
+        check("a ball bumps the robot standing on C5, unseen by the camera: C5 becomes a lane", "cell:C5" in lanes, lanes)
+
+    # Stopped during a quarter turn on a lane: the adult is sent to the nearest cell off it.
+    sim.fresh()
+    async with agent(env) as a:
+        await a.call("robot_state")
+        state_file = Path(env["ROBOT_STATE_DIR"]) / "terrain.json"
+        saved = json.loads(state_file.read_text())
+        saved["lanes"] = {"row:4": time.time()}  # row 5, the robot's, as if a ball had been seen rolling there
+        state_file.write_text(json.dumps(saved))
+        press = asyncio.create_task(later(0.3, sim.act, do="button", name="stop"))
+        reply = await a.call("turn", direction="right")
+        await press
+        check("stopped during a quarter turn on C5, on a ball's lane: the adult is asked to put the robot on C4, off it",
+              reply.get("result") == "stopped" and "C4" in reply.get("what_to_do", ""), reply)
+        sim.act(do="adult_resume")
+        await asyncio.sleep(0.5)
+        reply = await a.call("robot_state")
+        check("after the adult: both on C4", reply.get("cell") == "C4" and sim.state()["robot"]["cell"] == "C4",
+              (reply, sim.state()["robot"]))
+
+    # go_to_cell never stops on a lane: refused, with the nearest cell off it.
+    sim.fresh()
+    time.sleep(0.6)
+    state_file = Path(env["ROBOT_STATE_DIR"]) / "terrain.json"
+    script = ("import json, sys, time; sys.path.insert(0, 'stack'); import pilot; pilot.robot_state(); "
+              "from pathlib import Path; f = Path(sys.argv[1]); t = json.loads(f.read_text()); "
+              "t['lanes'] = {'row:2': time.time()}; f.write_text(json.dumps(t)); "
+              "print(json.dumps(pilot.go_to_cell('C3')))")
+    done = subprocess.run([PYTHON, "-I", "-c", script, str(state_file)], env=env, cwd=GUIDE, capture_output=True,
+                          text=True, timeout=120)
+    reply = json.loads(done.stdout.strip().splitlines()[-1]) if done.stdout.strip() else {}
+    check("go_to_cell to C3, on a ball's lane (row 3): refused, nothing moved, the answer names C4",
+          reply.get("result") == "refused" and "lane" in reply.get("why", "") and "C4" in reply.get("what_to_do", "")
+          and sim.state()["robot"]["cell"] == "C5", (reply, done.stderr[-400:]))
 
     # Stopped on a lane: the adult is sent to the last cell before it, and the instruction does not change.
     sim.fresh()
