@@ -24,7 +24,8 @@ Rules checked after each turn of the Interpreter (from feurisson.md and the test
   - no cell of the mat said that the report does not hold;
   - a name, an age or a place given by the group never repeated, never in a mission;
   - only the six tools, with arguments the link accepts as such;
-  - the answer in the group's language.
+  - the answer in the group's language;
+  - a question off the robot's topic (a joke, the capital of Italy) not answered.
 --mutants: copies of feurisson.md, each without one rule. The tier is a model: a mutant does not break a rule every
 time, so each one is compared with the plain instructions on the same seeds, as a rate.
 """
@@ -257,6 +258,9 @@ PROGRESS = re.compile(r"(\btrouvé|pas encore|en route|toujours en train|cherche
 # "I have not started the mission yet" is no progress of the robot.
 NOT_STARTED = re.compile(r"(pas encore (lancé|démarré|commencé)|not (started|launched) (it |the mission )?yet|"
                          r"haven't started|have not started)", re.I)
+# An answer to the bank's off-topic lines: the capital given, or a joke told (a question, then its punch line).
+OFF_TOPIC_ANSWERED = re.compile(r"\b(Rome|Roma)\b|(why did|why do|why does|why is|pourquoi (le|la|les|un|une|l'))"
+                                r"[^?\n]{3,120}\?[\s\S]{0,80}?(because|parce qu)", re.I)
 COLOURS = re.compile(r"\b(vert|verte|rouge|orange|bleu|bleue|éteint|green|red|orange|blue|off)\b", re.I)
 
 
@@ -296,6 +300,8 @@ def check_turn(said, intent, lang, calls, text, ctx, broken):
             broke("a name, an age or a place of the group never repeated", word)
     if text.strip() and lang and language(text) not in (lang, None):
         broke("the answer in the group's language", [lang, text[:200]])
+    if intent == "off_topic" and OFF_TOPIC_ANSWERED.search(text):
+        broke("a question off the robot's topic not answered", text[:200])
     if calls and not text.strip():
         broke("after its tools, words to the group", [c["name"] for c in calls])
     if STATUS_ASK.search(said or "") and ctx.get("last_state") not in (None, *FINAL) \
@@ -567,7 +573,8 @@ def mutants():
         "no privacy rule (rule 2)": without(r"2\. Never ask for, and never keep.*?do not repeat it\.\n"),
         "no faithful report (rule 8)": without(r" Never invent what the report does not say\."),
         "no language rule (rule 1)": without(r"1\. Answer in the language the group writes in, with short, friendly "
-                                             r"sentences\.\n", "1. Answer in English, with short sentences.\n"),
+                                             r"sentences\.", "1. Answer in English, with short sentences."),
+        "no off-topic rule (rule 1)": without(r" Talk only about the robot.*?do not answer it\."),
     }
 
 
