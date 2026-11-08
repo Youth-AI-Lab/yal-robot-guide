@@ -124,6 +124,32 @@ check("the brackets written back by the model are taken out of its answer",
       f.outlet(answer)["messages"][-1]["content"] == "Bonjour ! Tu as, super. Hi, let's go.",
       answer["messages"][-1]["content"])
 
+# The group's language when the small model names nothing: asked once more, then guessed from the common words.
+for text, language in [("My name is [name], I am [age] and I live [place].", "English"),
+                       ("Est-ce que le robot peut aller jusqu'à la caserne ?", "French"),
+                       ("Ve a la estación de bomberos y busca el barbecue", "Spanish"),
+                       ("Vés a la caserna i troba el barbecue", "Catalan"),
+                       ("Vai al barbecue e cerca il punto d'acqua", "Italian"),
+                       ("Ga naar het waterpunt en zoek de kaart", "Dutch"),
+                       ("Yes!", None), ("Oui !", None), ("Tell us a joke.", None)]:
+    check(f"guessed language: {text}", flt.guess_language(text) == language, flt.guess_language(text))
+asked = []
+g = flt.Filter()
+g.turn_hook = lambda asked_to_stop: '{"state": "no mission yet"}'
+g.name_language = lambda text: asked.append(text) or (None if len(asked) == 1 else "English")
+out = g.inlet({"messages": [{"role": "system", "content": "Feurisson"}, {"role": "user", "content": "Look for the barbecue"}]},
+              {"chat_id": "c3"})
+check("the small model named nothing: asked once more", len(asked) == 2 and "in English only" in out["messages"][0]["content"],
+      asked)
+g.name_language = lambda text: None
+out = g.inlet({"messages": [{"role": "system", "content": "Feurisson"},
+                            {"role": "user", "content": "Look for the water point and go to the barbecue"}]}, {"chat_id": "c4"})
+check("the small model named nothing twice: the language guessed", "in English only" in out["messages"][0]["content"],
+      out["messages"][0]["content"][-300:])
+out = g.inlet({"messages": [{"role": "system", "content": "Feurisson"}, {"role": "user", "content": "Look for the water point"},
+                            {"role": "assistant", "content": "OK?"}, {"role": "user", "content": "Oui !"}]}, {"chat_id": "c4"})
+check("nothing named nor guessed: the language named before stays", "in English only" in out["messages"][0]["content"])
+
 for text, details in KNOWN_MISSES:
     masked, _ = flt.mask(text)
     print(f"KNOWN {'missed' if any(d in masked for d in details) else 'caught'}: {text!r} -> {masked!r}")

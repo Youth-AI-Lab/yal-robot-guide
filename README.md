@@ -364,7 +364,8 @@ group, outside the model:
 - the state of the mission, read just then, goes into Feurisson's instructions;
 - a small, cheap model of the same provider (Mistral Small 3.2 through OpenRouter, Ministral 8B with
   Albert) names the group's language, and the instructions say to answer in it. The group's message goes to
-  that small model too;
+  that small model too. If it names nothing, the filter asks once more, then guesses from common words
+  ("the", "le", "el"…); if it still cannot tell, the language named before stays;
 - the link refuses `stop_mission` unless the group asked to stop, or the mission was paused at an earlier
   message (the group was asked first).
 

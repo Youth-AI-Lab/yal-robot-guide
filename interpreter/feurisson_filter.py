@@ -96,6 +96,30 @@ def mask(text, known=()):
     return text, names
 
 
+# The commonest short words of each language of the partners: a guess, used only when the small model names nothing.
+COMMON = {
+    "French": {"le", "la", "les", "un", "une", "des", "est", "et", "je", "tu", "il", "on", "va", "pas", "du", "au",
+               "avec", "pour", "que", "qui", "où", "oui", "non", "robot", "carte", "cherche", "trouve", "aller"},
+    "English": {"the", "a", "an", "is", "and", "i", "you", "it", "go", "to", "not", "of", "with", "for", "what",
+                "where", "yes", "no", "can", "find", "look", "card", "my", "am", "we", "are"},
+    "Spanish": {"el", "la", "los", "las", "un", "una", "es", "y", "yo", "tú", "va", "no", "del", "al", "con", "para",
+                "qué", "dónde", "sí", "busca", "encuentra", "ve", "mi", "soy", "tengo"},
+    "Catalan": {"el", "la", "els", "les", "un", "una", "és", "i", "jo", "tu", "va", "no", "del", "al", "amb", "per",
+                "què", "on", "sí", "busca", "troba", "vés", "em", "sóc", "tinc"},
+    "Italian": {"il", "lo", "la", "gli", "le", "un", "una", "è", "e", "io", "tu", "va", "non", "del", "al", "con",
+                "per", "che", "dove", "sì", "cerca", "trova", "vai", "mi", "sono", "ho"},
+    "Dutch": {"de", "het", "een", "is", "en", "ik", "jij", "je", "ga", "naar", "niet", "van", "met", "voor", "wat",
+              "waar", "ja", "nee", "zoek", "vind", "kaart", "mijn", "ben"},
+}
+
+
+def guess_language(text):
+    """The language whose common words the message uses most, when it leads by two words at least; else None."""
+    words = re.findall(r"[a-zà-ÿ']+", text.lower().replace("’", "'"))
+    counts = sorted(((sum(w in common for w in words), name) for name, common in COMMON.items()), reverse=True)
+    return counts[0][1] if counts[0][0] >= 2 and counts[0][0] - counts[1][0] >= 2 else None
+
+
 NAMING = ("Name the language the user's message is written in, in English, in one word (for example French, English, "
           "Spanish, Catalan, Italian, Dutch). If the message is too short to tell, answer: unknown.")
 
@@ -192,7 +216,9 @@ class Filter:
         said = next((m.get("content") for m in reversed(messages) if m.get("role") == "user"), "")
         said = said if isinstance(said, str) else " ".join(p.get("text", "") for p in said if isinstance(p, dict))
         if len(said.split()) >= 2:
-            named = self.name_language(said)
+            # The small model sometimes names nothing (1 conversation in 80 on 8 November 2026, answered in French to
+            # a group writing in English from its first message on): ask once more, then guess from the common words.
+            named = self.name_language(said) or self.name_language(said) or guess_language(said)
             if named:
                 if len(self.languages) > 500:
                     self.languages.clear()
