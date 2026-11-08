@@ -149,8 +149,14 @@ def circle_box(cx, cy, r, x0, y0, x1, y1):
 
 
 class World:
-    def __init__(self, mat, world, state_dir, seed=None):
+    def __init__(self, mat, world, state_dir, seed=None, ball_phase="start"):
         self.state_dir = Path(state_dir)
+        # Where each ball starts: "start" (the default), at its "from" point, or "t0" seconds of the world further on
+        # its way when the world gives it; "random", at a point of its round trip drawn with the seed. With "start",
+        # every seed replays the same timing of the balls.
+        if ball_phase not in ("start", "random"):
+            raise ValueError(f"ball_phase {ball_phase!r}: start or random")
+        self.seed, self.ball_phase = seed, ball_phase
         self.lock = threading.RLock()
         self.random = random.Random(seed)
         self.camera_seed = self.random.random()
@@ -182,7 +188,7 @@ class World:
             self.heading = float(HEADINGS[mat["start"]["facing"]])
             self.cards = {tuple(cell_xy(c["cell"])): c["label"] for c in world.get("cards", [])}
             self.boxes = [dict(b, id=i) for i, b in enumerate(world.get("boxes", []))]
-            self.balls = [dict(b, t=0.0) for b in world.get("balls", [])]
+            self.balls = [dict(b, t=self.ball_start(i, b)) for i, b in enumerate(world.get("balls", []))]
             self.next_box = len(self.boxes)
             self.time = 0.0
             self.speed, self.strafe, self.turn = 0.0, 0.0, 0.0
@@ -241,6 +247,15 @@ class World:
             r = ball["radius"]
             out.append((bx - r, by - r, bx + r, by + r))
         return out
+
+    def ball_start(self, i, ball):
+        """The world's seconds the ball has already rolled when the world starts (see ball_phase)."""
+        if self.ball_phase == "random":
+            (x0, y0), (x1, y1) = ball["from"], ball["to"]
+            round_trip_s = 2 * (math.hypot(x1 - x0, y1 - y0) or 1) / (ball["speed_cm_s"] or 1)
+            # A draw of its own: the camera's and the noise's draws stay those of the seed without ball_phase.
+            return random.Random(f"{self.seed}:ball{i}").uniform(0, round_trip_s)
+        return float(ball.get("t0", 0.0))
 
     def ball_xy(self, ball):
         (x0, y0), (x1, y1) = ball["from"], ball["to"]
@@ -869,13 +884,16 @@ def main():
     parser.add_argument("--world", default=str(HERE / "worlds" / "forest.json"))
     parser.add_argument("--state-dir", default=os.environ.get("ROBOT_STATE_DIR", str(GUIDE / ".robot-sim")))
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--ball-phase", default="start", choices=["start", "random"],
+                        help="where each ball starts: its 'from' point (or its t0), or a point drawn with --seed")
     parser.add_argument("--speed", type=float, default=1.0, help="how many times faster than real time the world runs")
     args = parser.parse_args()
 
     mat = json.loads(Path(args.mat).read_text(encoding="utf-8"))
     state = Path(args.state_dir)
     state.mkdir(parents=True, exist_ok=True)
-    world = World(mat, json.loads(Path(args.world).read_text(encoding="utf-8")), state, seed=args.seed)
+    world = World(mat, json.loads(Path(args.world).read_text(encoding="utf-8")), state, seed=args.seed,
+                  ball_phase=args.ball_phase)
     world.time_factor = max(0.1, min(50.0, args.speed))
     # Where the Referee finds the cable of the simulated robot.
     (state / "serial").write_text(world.link.path + "\n", encoding="utf-8")

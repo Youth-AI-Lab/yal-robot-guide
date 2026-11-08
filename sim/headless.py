@@ -144,6 +144,8 @@ def main():
     parser.add_argument("--mat", default=str(GUIDE / "mat.json"))
     parser.add_argument("--world", default=str(HERE / "worlds" / "forest.json"))
     parser.add_argument("--seed", type=int, default=1)
+    parser.add_argument("--ball-phase", default="start", choices=["start", "random"],
+                        help="where each ball starts: its 'from' point (or its t0), or a point drawn with --seed")
     parser.add_argument("--adult-s", type=float, default=10.0, help="world seconds before the adult puts the robot back")
     parser.add_argument("--limit-s", type=float, default=1800.0, help="world seconds a mission may last")
     parser.add_argument("--script", help="a model written in advance (a JSON file, see above); the model is then fake")
@@ -162,7 +164,8 @@ def main():
     # The simulated robot first: it writes the mat in use, which the stack reads when it is imported.
     sim = load_module("robot_sim", HERE / "robot_sim.py")
     world = sim.World(json.loads(Path(args.mat).read_text(encoding="utf-8")),
-                      json.loads(Path(args.world).read_text(encoding="utf-8")), state, seed=args.seed)
+                      json.loads(Path(args.world).read_text(encoding="utf-8")), state, seed=args.seed,
+                      ball_phase=args.ball_phase)
     wire = Wire()
     os.close(world.link.master)  # the simulator's pseudo-terminal is not used: the wire in memory takes its place
     os.close(world.link.slave)

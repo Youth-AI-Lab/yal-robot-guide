@@ -184,6 +184,31 @@ def clock_only():
         check(f"{path.name} counts the world's time with stack/clock.py only", not bad, ", ".join(bad))
 
 
+def ball_phase():
+    """Where the balls start: by default at their "from" point whatever the seed (the measures made before keep their
+    timing), at their "t0" when the world gives one, at a point drawn with the seed with ball_phase "random": the same
+    point for the same seed, another for another seed, always within the ball's round trip."""
+    spec = importlib.util.spec_from_file_location("robot_sim_phase", GUIDE / "sim" / "robot_sim.py")
+    sim = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(sim)
+    forest = json.loads((GUIDE / "sim" / "worlds" / "forest.json").read_text(encoding="utf-8"))
+    ball = forest["balls"][0]
+    round_trip = 2 * math.hypot(ball["to"][0] - ball["from"][0], ball["to"][1] - ball["from"][1]) / ball["speed_cm_s"]
+    with tempfile.TemporaryDirectory() as tmp:
+        def start(world, seed, phase="start"):
+            w = sim.World(MAT, world, tmp, seed=seed, ball_phase=phase)
+            os.close(w.link.master)
+            os.close(w.link.slave)
+            return w.balls[0]["t"]
+        check("balls: by default every seed starts the ball at its 'from' point",
+              start(forest, 1) == start(forest, 2) == 0.0)
+        check("balls: a world's t0 starts the ball that far on its way",
+              start(dict(forest, balls=[dict(ball, t0=5)]), 1) == 5.0)
+        drawn = [start(forest, seed, "random") for seed in (1, 1, 2)]
+        check("balls: ball_phase random draws the start with the seed, within the round trip",
+              drawn[0] == drawn[1] != drawn[2] and all(0 <= t < round_trip for t in drawn), drawn)
+
+
 def stepped_mode():
     """sim/headless.py: the simulator and the stack in one process, on the stepped clock. A mission ends as in real time
     (the barbecue in F3, seed 1 of the forest), much faster; the same seed gives the same journals; a mission past its
@@ -711,6 +736,7 @@ async def timing_scenarios(sim, env):
 async def main():
     micropython_subset()
     clock_only()
+    ball_phase()
     pilot_asks_strategist()
     stepped_mode()
     strategist_in_steps()
