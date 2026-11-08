@@ -439,7 +439,8 @@ def begin(use):
     say("2. The stack and the Interpreter's link…")
     address = gateway()
     token = secrets.token_hex(24)
-    env = dict(os.environ, MCP_TOKEN=token)
+    # The stack on the simulator's time: if someone picks a faster Speed on the page, the stack keeps pace with the world
+    env = dict(os.environ, MCP_TOKEN=token, ROBOT_CLOCK="sim")
     strategist = os.environ.get("ROBOT_STRATEGIST", use["strategist"])  # "none", "fake": the checks
     link = background("link", [PYTHON, "-I", "stack/interpreter_link.py", "--host", address, "--port", str(LINK_PORT),
                                "--allowed-host", f"{address}:{LINK_PORT}", "--model", strategist]
