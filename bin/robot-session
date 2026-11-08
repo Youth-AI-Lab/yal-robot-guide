@@ -352,7 +352,7 @@ def start(albert=None):
     SESSION.mkdir(parents=True, exist_ok=True)
     os.chmod(SESSION, 0o700)
     try:
-        begin(use)
+        seconds = begin(use)
     except BaseException as e:
         if sh("docker", "container", "inspect", OWUI, check=False).returncode == 0:
             (SESSION / "open-webui.log").write_text(sh("docker", "logs", OWUI, check=False).stdout[-20000:])
@@ -360,9 +360,10 @@ def start(albert=None):
         if isinstance(e, Stop):
             fail(f"{e}\nThe session did not start: everything was stopped. Logs in {SESSION}. Then: {use['again']}")
         raise
-    public = public_ports()
+    public = public_ports()  # read once Open WebUI answers: a public port then lets the request through
     if public:
         refuse_public(public, use["again"])
+    ready(seconds)
 
 
 def begin(use):
@@ -381,7 +382,10 @@ def begin(use):
     wait_ready("link", link, "READY robot-mission")
     wait_port("link", link, address, LINK_PORT)
     say("3. Open WebUI, with Feurisson…")
-    seconds = start_openwebui(use, f"http://{address}:{LINK_PORT}/mcp", token)
+    return start_openwebui(use, f"http://{address}:{LINK_PORT}/mcp", token)
+
+
+def ready(seconds):
     say(f"Ready (Open WebUI answered in {seconds} s).\n"
         f"  The robot: Ports tab, Robot simulator ({SIM_PORT}).\n"
         f"  Feurisson: Ports tab, Open WebUI ({OWUI_PORT}), then choose \"Feurisson robot\" and ask it a mission.\n"
