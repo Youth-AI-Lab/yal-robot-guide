@@ -266,9 +266,9 @@ with the chatbot "Feurisson robot" (the same Open WebUI as the workshops, withou
 models, the Strategist's and Feurisson's, are DeepSeek v4 Flash through OpenRouter, paid with the
 pair's key; OpenRouter is asked to avoid companies that may collect the data, which does not stop a
 provider from keeping what it receives. The Strategist stops a mission at 0.25 US dollars, counted
-from the costs OpenRouter sends back; with DeepSeek v4 Flash, the key's own counter rose about three
-times faster than these (8 November 2026). Set a limit on the key itself, on OpenRouter: it is the only
-cap that holds, for Feurisson too.
+from the costs OpenRouter sends back; on 8 November 2026 the key's own counter sometimes rose faster
+than these, for reasons not found. Set a limit on the key itself, on OpenRouter: it is the only cap that
+holds, for Feurisson too.
 
 1. Save an OpenRouter key (`sk-or-...`), as in the workshops:
 
@@ -345,8 +345,13 @@ group, outside the model:
 - the link refuses `stop_mission` unless the group asked to stop, or the mission was paused at an earlier
   message (the group was asked first).
 
+And, with or without the filter, when Feurisson reads `mission_status` again in the same answer while the
+mission runs, the link adds: tell the group now. DeepSeek used to read it in a loop until the mission
+ended, saying nothing.
+
 On 48 conversations with DeepSeek v4 Flash, played by a script: answers in the wrong language went from
-25 to 0 in 198 turns, missions stopped without asking from 4 to 0.
+25 to 0 in 198 turns, missions stopped without asking from 4 to 0; with the note on `mission_status`,
+answers that said nothing to the group from 6 to 1.
 
 ### Step by step, on any computer
 

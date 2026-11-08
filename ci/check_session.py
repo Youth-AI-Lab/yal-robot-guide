@@ -220,6 +220,10 @@ def first_session(key, gateway, env):
                       f'{{"do": "set_light", "color": "green"}}]}}')
     check("the mission starts", any('"started"' in r for c in seen for r in c["tool_results"]),
           [r[:200] for c in seen for r in c["tool_results"]])
+    seen = ask(token, f"@call {SERVER}_mission_status {{}} @call {SERVER}_mission_status {{}}")
+    told = [r for c in seen for r in c["tool_results"]]
+    check("mission_status read twice in one answer while the mission runs: the second says to tell the group now",
+          len(told) == 2 and "a moment ago" not in told[0] and "a moment ago" in told[1], told)
     n0 = len(NAMED)
     seen = ask(token, "Bonjour Feurisson, il en est où le robot ?")
     system = " ".join(c["system"] for c in seen)

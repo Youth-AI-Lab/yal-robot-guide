@@ -52,7 +52,13 @@ SETUP = {"model": "none", "key": "", "tools": "route", "cap": strategist.RUN_CAP
 RUN = {"thread": None, "id": None, "report": None, "error": None, "started": None, "task": None}
 # The turns of the conversation, told by the filter: n counts the group's messages (0: no filter), paused_in is the
 # turn of the last pause_mission, stop_asked whether the group's message asked to stop.
-TURN = {"n": 0, "paused_in": None, "stop_asked": False}
+TURN = {"n": 0, "paused_in": None, "stop_asked": False, "read_in": None, "read_at": 0.0, "ordered": False}
+# mission_status read again in the same answer while the mission runs: DeepSeek v4 Flash polled it right after
+# start_mission until the end of the mission and said nothing to the group (5 turns in 198, 2026-11-08). Same answer:
+# the same turn of the filter, or, without the filter, 10 seconds. Not after a pause, a stop or a resume of this turn:
+# then waiting for "paused" or "stopped" is right.
+READ_AGAIN = ("You read mission_status a moment ago in this same answer, and a mission takes minutes: tell the group "
+              "now, in a few words, what it says. Read it again only when they ask.")
 ASK_FIRST = ("you paused the mission in this same answer: ask the group first whether to change it, add to it, or let "
              "it go on, and call stop_mission only once they have answered")
 PAUSE_FIRST = ("the group did not ask to stop: call pause_mission first, ask the group whether to change the mission, "
@@ -139,7 +145,7 @@ def pause_mission() -> str:
         return json.dumps({"result": "refused", "why": f"no mission running ({state()})"})
     if state() in ("running", "waiting for an adult"):
         say("pause")
-    TURN["paused_in"] = TURN["n"]
+    TURN["paused_in"], TURN["ordered"] = TURN["n"], True
     return json.dumps({"result": state(), "mission": RUN["id"],
                        "what_to_do": "call mission_status: it says paused, with the cell where the robot stopped, once "
                                      "nothing moves; until then, the robot is still finishing its cell"})
@@ -151,6 +157,7 @@ def resume_mission() -> str:
         return json.dumps({"result": "refused", "why": f"no mission paused ({state()})"})
     say("go")
     TURN["paused_in"] = None  # the group chose to go on: a later stop needs a new pause, and a new question
+    TURN["ordered"] = True
     return json.dumps({"result": "running", "mission": RUN["id"]})
 
 
@@ -165,13 +172,14 @@ def stop_mission() -> str:
         if TURN["paused_in"] is None:
             return json.dumps({"result": "refused", "why": PAUSE_FIRST})
     say("stop")
+    TURN["ordered"] = True
     return json.dumps({"result": "stopping", "mission": RUN["id"]})
 
 
 def turn(group_asked_to_stop=False):
     """A new message of the group (the filter of Open WebUI): the turns start again, and the mission as it is now."""
-    TURN.update(n=TURN["n"] + 1, stop_asked=bool(group_asked_to_stop))
-    return mission_status()
+    TURN.update(n=TURN["n"] + 1, stop_asked=bool(group_asked_to_stop), ordered=False)
+    return json.dumps(status(), ensure_ascii=False)
 
 
 def mission_status() -> str:
@@ -181,6 +189,16 @@ def mission_status() -> str:
     yet"; when it ended, the report: outcome
     (done, impossible, stopped…), the cards asked about with their cells, why, the moves left. Say the report to the
     group in their words."""
+    answer, now = status(), time.monotonic()
+    again = TURN["read_in"] == TURN["n"] if TURN["n"] else now - TURN["read_at"] < 10
+    if again and not TURN["ordered"] and answer["state"] in ("running", "waiting for an adult"):
+        answer["note"] = READ_AGAIN
+    TURN.update(read_in=TURN["n"], read_at=now)
+    return json.dumps(answer, ensure_ascii=False)
+
+
+def status():
+    """mission_status's answer, as a table (the filter reads it too, without counting as a read of the model)."""
     answer = {"mission": RUN["id"], "state": state(), "what_the_strategist_was_told": RUN["task"]}
     if answer["state"] == "paused":
         answer["robot_stands_on"] = common.held_where()
@@ -192,7 +210,7 @@ def mission_status() -> str:
         answer["report"] = RUN["report"]
     if RUN["error"]:
         answer["why"] = RUN["error"]
-    return json.dumps(answer, ensure_ascii=False)
+    return answer
 
 
 TOOLS = (mission_options, start_mission, pause_mission, resume_mission, stop_mission, mission_status)
