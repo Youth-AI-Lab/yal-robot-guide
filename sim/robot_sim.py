@@ -11,6 +11,10 @@ The camera gives a card label, never an image: this is what the camera of the ro
 Usage (the folder of the guide is the current folder):
     python3 -I sim/robot_sim.py            then open http://127.0.0.1:8780 (Ports tab in a Codespace)
     python3 -I sim/robot_sim.py --port 0   any free port, printed on the line "READY port=… serial=…"
+    python3 -I sim/robot_sim.py --speed 5  the world 5 times faster than real time (the page can change it)
+
+The simulator publishes its world's time in .robot-sim/clock; a stack started with ROBOT_CLOCK=sim waits for that time
+instead of the computer's (stack/clock.py), so that it keeps pace with a faster world. The Drive buttons of the page do.
 
 Only the standard library. The page listens on 127.0.0.1 only.
 """
@@ -22,6 +26,7 @@ import json
 import math
 import os
 import random
+import struct
 import subprocess
 import sys
 import threading
@@ -34,6 +39,7 @@ HERE = Path(__file__).resolve().parent
 GUIDE = HERE.parent
 STATIC = HERE / "static"
 TICK_S = 0.01
+CLOCK_RECORD = struct.Struct("<ddd")  # world seconds, date the world started at, speed factor (stack/clock.py, RECORD)
 # The simulated robot. The real robot's sizes are TO BE COMPLETED.
 ROBOT_RADIUS_CM = 10
 SENSOR_RANGE_CM = 400  # VL53L1X of the STeaMi board: 0 to 4 m (wiki.steami.cc)
@@ -156,6 +162,8 @@ class World:
         # size of the card in the image grows worse with distance).
         self.noise = {"distance_cm": 0.0, "slip": 0.0, "camera_miss": 0.0, "camera_distance": 0.1, "compass_deg": 0.0}
         self.timing = dict(TIMING)
+        self.time_factor = 1.0  # how many times faster than real time the world runs (--speed, the page)
+        self.elapsed = 0.0  # the world's seconds since the simulator started: never back, even after "Start again"
         self.crash = None  # an error of the simulator itself, or of the firmware outside its own guard
         self.reflex_error = None
         self.load(mat, world)
@@ -376,6 +384,7 @@ class World:
     def step(self, dt):
         with self.lock:
             self.time += dt
+            self.elapsed += dt
             self.sense()
             # A stalled program (injected by the page or the checks): no tick, the wheels keep their last order.
             if self.time >= self.stall_until:
@@ -449,7 +458,7 @@ class World:
         with self.lock:
             fw = self.firmware
             return {
-                "time": round(self.time, 2), "mode": self.mode, "noise": self.noise, "timing": self.timing,
+                "time": round(self.time, 2), "mode": self.mode, "time_factor": self.time_factor, "noise": self.noise, "timing": self.timing,
                 "crash": self.crash,
                 "mat": {"cols": self.mat["cols"], "rows": self.mat["rows"], "cell_cm": self.cell},
                 "robot": {"x": round(self.x, 2), "y": round(self.y, 2), "heading": round(self.heading, 2),
@@ -593,6 +602,11 @@ class World:
                 if data["mode"] not in ("realtime", "frozen"):
                     return {"error": "unknown mode"}
                 self.mode = data["mode"]
+            elif do == "time_factor":
+                factor = float(data["factor"])
+                if not 0.1 <= factor <= 50:
+                    return {"error": "a speed from 0.1 to 50 times real time"}
+                self.time_factor = factor
             elif do == "noise":
                 for key in self.noise:
                     if key in data:
@@ -703,15 +717,20 @@ def tail_context(world, path, stop):
 
 
 def physics(world, stop):
+    """The world's ticks, paced on the computer's clock: one tick of TICK_S every TICK_S / time_factor real seconds.
+    After each tick, the world's time is published for the stack (.robot-sim/clock, see stack/clock.py)."""
+    clock = os.open(world.state_dir / "clock", os.O_RDWR | os.O_CREAT, 0o644)
+    epoch = time.time()
     next_tick = time.monotonic()
     while not stop.is_set():
         try:
             world.step(TICK_S)
+            os.pwrite(clock, CLOCK_RECORD.pack(world.elapsed, epoch, world.time_factor), 0)
         except Exception as e:  # never a dead thread with the wheels turning: the page shows the error
             with world.lock:
                 world.speed, world.strafe, world.turn = 0.0, 0.0, 0.0
                 world.crash = f"{type(e).__name__}: {e}"
-        next_tick += TICK_S
+        next_tick += TICK_S / world.time_factor
         delay = next_tick - time.monotonic()
         if delay > 0:
             time.sleep(delay)
@@ -749,7 +768,7 @@ def drive(world, data):
 def drive_stack(world, args):
     """One command of the stack, in a process of its own, exactly as typed in a terminal."""
     env = dict(os.environ, ROBOT_STATE_DIR=str(world.state_dir), ROBOT_SERIAL=world.link.path,
-               ROBOT_MAT=str(world.state_dir / "mat.json"), ROBOT_CALLER="page")
+               ROBOT_MAT=str(world.state_dir / "mat.json"), ROBOT_CALLER="page", ROBOT_CLOCK="sim")
     done = subprocess.run([sys.executable, "-I", str(GUIDE / "stack" / "drive.py"), *args],
                           env=env, capture_output=True, text=True, timeout=max(world.mat["move_timeout_s"], 30) + 5)
     if done.returncode != 0:
@@ -850,12 +869,14 @@ def main():
     parser.add_argument("--world", default=str(HERE / "worlds" / "forest.json"))
     parser.add_argument("--state-dir", default=os.environ.get("ROBOT_STATE_DIR", str(GUIDE / ".robot-sim")))
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--speed", type=float, default=1.0, help="how many times faster than real time the world runs")
     args = parser.parse_args()
 
     mat = json.loads(Path(args.mat).read_text(encoding="utf-8"))
     state = Path(args.state_dir)
     state.mkdir(parents=True, exist_ok=True)
     world = World(mat, json.loads(Path(args.world).read_text(encoding="utf-8")), state, seed=args.seed)
+    world.time_factor = max(0.1, min(50.0, args.speed))
     # Where the Referee finds the cable of the simulated robot.
     (state / "serial").write_text(world.link.path + "\n", encoding="utf-8")
     context = state / "context.jsonl"
@@ -876,6 +897,7 @@ def main():
     finally:
         stop.set()
         (state / "serial").unlink(missing_ok=True)
+        (state / "clock").unlink(missing_ok=True)  # no simulator, no world's time: a stack on ROBOT_CLOCK=sim says so
 
 
 if __name__ == "__main__":

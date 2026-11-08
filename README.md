@@ -183,14 +183,22 @@ This is why the reflexes are on the robot: a study in a simulator measured that 
 combined with a slower model do better
 ([Zheng et al., arXiv 2506.07223](https://arxiv.org/abs/2506.07223)).
 
+**Faster than real time.** The **Speed** list (or `python3 -I sim/robot_sim.py --speed 5`) runs the
+world up to 10 times faster. The stack must then follow the world's time, not the computer's: start
+it with `ROBOT_CLOCK=sim` in front of the command, for example
+`ROBOT_CLOCK=sim python3 -I stack/mission.py …`. The Drive buttons of the page already do. To try a
+mission as fast as the computer can go, without the page, use
+[sim/headless.py](sim/headless.py): the simulator and the stack in one program, the same run again
+with the same seed.
+
 ---
 
 ## Part 5 - Give it a mission
 
 The Strategist takes a mission in a closed format: a list of steps, each one an action from a short
 list with one argument from a short list, and a personality. It never receives the group's words: it
-builds the sentences its model reads from these fields alone, and the model ends the mission with
-`report`, whose fields are closed too. Until the Interpreter (the chatbot that turns the group's words
+builds the sentences its model reads from these fields alone. The model closes each step with
+`step_done`, or the whole mission with `report`, whose fields are closed too. Until the Interpreter (the chatbot that turns the group's words
 into a mission) is written, [stack/mission.py](stack/mission.py) stands in for it.
 
 | Step | Argument | What the robot does |

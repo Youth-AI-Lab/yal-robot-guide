@@ -9,7 +9,9 @@ ROBOT_CLOCK chooses the clock:
 - "real" (the default, and always with the real robot): the time module;
 - "stepped": the simulator and the stack in one process (sim/headless.py). The world's time only moves when the stack
   waits: each wait makes the simulated world step forward until the answer comes or the wait is over. As fast as the
-  computer can go, and the same run again with the same seed.
+  computer can go, and the same run again with the same seed;
+- "sim": the time the simulator publishes in .robot-sim/clock (sim/robot_sim.py, which may run k times faster than
+  real time: --speed, or the page). The stack waits for the world's time, not the computer's.
 
 While a model thinks (a call to its provider), the world goes on: in real time by itself; stepped, ROBOT_THINK says by
 how much: "real" (the default: as long as the call took), "zero" (the world waits for the model), or a number of
@@ -19,11 +21,17 @@ import contextlib
 import datetime
 import os
 import select
+import struct
 import time
+from pathlib import Path
 
 MODE = os.environ.get("ROBOT_CLOCK", "real")
-if MODE not in ("real", "stepped"):
-    raise SystemExit(f"ROBOT_CLOCK={MODE!r}: real or stepped")
+if MODE not in ("real", "stepped", "sim"):
+    raise SystemExit(f"ROBOT_CLOCK={MODE!r}: real, stepped or sim")
+# What the simulator publishes, at each tick: the world's seconds since it started (never going back, even after
+# "Start again"), the date the world started at (seconds since 1970), and how many times faster than real time it runs.
+RECORD = struct.Struct("<ddd")
+STALE_S = 5.0  # real seconds without the world's time moving: the simulator is gone, say so rather than wait forever
 
 _world = {"step": None, "tick_s": 0.01, "seconds": 0.0, "epoch": time.time()}
 THINK = os.environ.get("ROBOT_THINK", "real")
@@ -55,19 +63,69 @@ def _advance(seconds):
         _tick()
 
 
+_sim = {"fd": None, "seconds": None, "moved_at": 0.0}
+
+
+def _published():
+    """Sim clock: (world seconds, date the world started at, speed factor), as the simulator last wrote them."""
+    path = Path(os.environ.get("ROBOT_STATE_DIR", Path(__file__).resolve().parent.parent / ".robot-sim")) / "clock"
+    for attempt in (1, 2):
+        if _sim["fd"] is None:
+            try:
+                _sim["fd"] = os.open(path, os.O_RDONLY)
+            except OSError:
+                raise RuntimeError(f"ROBOT_CLOCK=sim, but no simulator publishes its time ({path})") from None
+        data = os.pread(_sim["fd"], RECORD.size, 0)
+        if len(data) == RECORD.size:
+            seconds, epoch, factor = RECORD.unpack(data)
+            if seconds != _sim["seconds"]:
+                _sim.update(seconds=seconds, moved_at=time.monotonic())
+                return seconds, epoch, factor
+            if time.monotonic() - _sim["moved_at"] < STALE_S:
+                return seconds, epoch, factor
+        os.close(_sim["fd"])  # a simulator started again writes a new file: open it once more
+        _sim["fd"] = None
+    raise RuntimeError("ROBOT_CLOCK=sim: the simulator's time has not moved for "
+                       f"{STALE_S:.0f} s; is the simulator still running?")
+
+
+def _sim_wait(ready, seconds):
+    """Sim clock: True as soon as ready() is, within `seconds` of the world's time; real time goes by in small naps."""
+    start, _, factor = _published()
+    end = start + seconds
+    while True:
+        if ready():
+            return True
+        world, _, factor = _published()
+        if world >= end - 1e-9:
+            return bool(ready())
+        time.sleep(min(0.005, max(0.0005, (end - world) / max(factor, 1e-3))))
+
+
 def monotonic():
     """Seconds, for durations: how long something took, how long a wait may still go on."""
-    return time.monotonic() if MODE == "real" else _world["seconds"]
+    if MODE == "real":
+        return time.monotonic()
+    if MODE == "sim":
+        return _published()[0]
+    return _world["seconds"]
 
 
 def now():
     """Seconds since 1970, for the age of what the robot knows (a sighting, a free cell)."""
-    return time.time() if MODE == "real" else _world["epoch"] + _world["seconds"]
+    if MODE == "real":
+        return time.time()
+    if MODE == "sim":
+        seconds, epoch, _ = _published()
+        return epoch + seconds
+    return _world["epoch"] + _world["seconds"]
 
 
 def sleep(seconds):
     if MODE == "real":
         time.sleep(seconds)
+    elif MODE == "sim":
+        _sim_wait(lambda: False, seconds)
     else:
         _advance(seconds)
 
@@ -83,6 +141,8 @@ def iso():
 
 def wait_for(ready, timeout):
     """True as soon as ready() is true, within `timeout` seconds of the world's time; with 0, look once."""
+    if MODE == "sim":
+        return _sim_wait(ready, timeout)
     if MODE == "real":
         end = time.monotonic() + timeout
         while not ready():
@@ -108,7 +168,7 @@ def readable(fd, timeout):
     if MODE == "real":
         ready, _, _ = select.select([fd], [], [], timeout)
         return bool(ready)
-    return wait_for(lambda: bool(select.select([fd], [], [], 0)[0]), timeout)
+    return wait_for(lambda: bool(select.select([fd], [], [], 0)[0]), timeout)  # stepped or sim: the world's time
 
 
 @contextlib.contextmanager

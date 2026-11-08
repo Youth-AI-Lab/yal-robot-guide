@@ -355,6 +355,39 @@ def pilot_asks_strategist():
     check("the Pilot asks the Strategist for the mission's word, never the Interpreter's file", not found, found)
 
 
+def faster_world():
+    """sim/robot_sim.py --speed 5: the world five times faster than real time, with its page; a stack on ROBOT_CLOCK=sim
+    keeps pace (the same mission as in real time). Without a simulator, such a stack says so instead of waiting."""
+    with tempfile.TemporaryDirectory() as tmp:
+        state = Path(tmp) / "state"
+        state.mkdir()
+        (Path(tmp) / "mission.json").write_text(json.dumps({"steps": [{"do": "reach_card", "card": "barbecue"}]}))
+        env = dict(os.environ, ROBOT_STATE_DIR=str(state), ROBOT_MAT=str(state / "mat.json"), ROBOT_CLOCK="sim")
+        alone = subprocess.run([PYTHON, "-I", str(GUIDE / "stack" / "strategist.py"), str(Path(tmp) / "mission.json"),
+                                "none"], env=dict(env, ROBOT_MAT=str(GUIDE / "mat.json")), stdin=subprocess.DEVNULL,
+                               capture_output=True, text=True, timeout=60)
+        check("sim clock without a simulator: the stack says so, it does not wait",
+              alone.returncode != 0 and "no simulator publishes its time" in alone.stderr, alone.stderr[-300:])
+        sim = subprocess.Popen([PYTHON, "-I", str(GUIDE / "sim" / "robot_sim.py"), "--port", "0", "--state-dir",
+                                str(state), "--seed", "1", "--speed", "5"], stdout=subprocess.PIPE, text=True)
+        try:
+            for line in sim.stdout:
+                if line.startswith("READY "):
+                    break
+            started = time.monotonic()
+            done = subprocess.run([PYTHON, "-I", str(GUIDE / "stack" / "strategist.py"), str(Path(tmp) / "mission.json"),
+                                   "none"], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                  timeout=600)
+            wall = time.monotonic() - started
+            report = json.loads(done.stdout.strip().splitlines()[-1]) if done.stdout.strip() else {"error": done.stderr}
+            check("simulator 5 times faster, stack on its clock: the barbecue in F3, at least 3 times faster",
+                  report.get("outcome") == "done" and report.get("cards") == [{"card": "barbecue", "cell": "F3"}]
+                  and report.get("seconds", 0) > 3 * wall, dict(report, wall=round(wall, 1)))
+        finally:
+            sim.terminate()
+            sim.wait(timeout=10)
+
+
 def micropython_subset():
     """The program of the robot must also run on the board, under MicroPython: keep to its part of
     Python (checked by reading the code; it is not run under MicroPython here)."""
@@ -664,6 +697,7 @@ async def main():
     pilot_asks_strategist()
     stepped_mode()
     strategist_in_steps()
+    faster_world()
     reflex_unit()
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp)

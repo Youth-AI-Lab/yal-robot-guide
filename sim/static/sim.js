@@ -196,6 +196,8 @@ function panels() {
   document.getElementById("estop").classList.toggle("on", r.estop);
   const mode = document.getElementById("mode");
   if (document.activeElement !== mode) mode.value = state.mode;
+  const speed = document.getElementById("speed");
+  if (document.activeElement !== speed) speed.value = String(state.time_factor);
 
   const reflex = document.getElementById("reflex");
   reflex.replaceChildren(Object.entries(state.reflex).map(([k, v]) => k + " = " + v).join("\n"));
@@ -369,6 +371,7 @@ on("addbox", () => act({ do: "add_box", x: state.mat.cols * state.mat.cell_cm / 
 on("reset", () => act({ do: "reset" }));
 on("reload", () => act({ do: "reload_reflex" }));
 document.getElementById("mode").addEventListener("change", (e) => act({ do: "mode", mode: e.target.value }));
+document.getElementById("speed").addEventListener("change", (e) => act({ do: "time_factor", factor: Number(e.target.value) }));
 for (const [id, out, key, factor] of [["noise-dist", "n-dist", "distance_cm", 1], ["noise-slip", "n-slip", "slip", 100],
                                        ["noise-cam", "n-cam", "camera_miss", 100], ["noise-camd", "n-camd", "camera_distance", 100]]) {
   const input = document.getElementById(id);
