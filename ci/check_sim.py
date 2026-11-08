@@ -1781,6 +1781,28 @@ def stack_scenarios(sim, env):
               and "upstream busy" in (usage.get("api_errors") or [""])[0] and "upstream busy" not in json.dumps(final)
               and (errors == 1 or "upstream busy" in usage.get("api_error", "")), (final, usage, done.stderr[-400:]))
 
+    # A report done that does not name the card the mission looks for is refused (Qwen 3 Coder on Albert reported done
+    # with the water point on B4 when looking for the picnic); the model then reports impossible, taken at the second try.
+    out = Path(tempfile.mkdtemp(dir=env["ROBOT_STATE_DIR"]))
+    script = "\n".join([
+        "import json, sys",
+        "sys.path.insert(0, 'stack')",
+        "import strategist",
+        "calls = iter([{'cards': [{'card': 'water-point', 'cell': 'B4'}], 'outcome': 'done'},"
+        " {'cards': [], 'outcome': 'impossible', 'why': 'no way there'}])",
+        "strategist.api_model = lambda *a, **k: ({'tool_calls': [{'id': 'r', 'type': 'function', 'function': "
+        "{'name': 'report', 'arguments': json.dumps(next(calls))}}]}, {}, 'tool_calls')",
+        f"print(json.dumps(strategist.run({{'steps': [{{'do': 'reach_card', 'card': 'barbecue'}}]}}, "
+        f"model='other-card', out={str(out)!r})))"])
+    done = subprocess.run([PYTHON, "-I", "-c", script], env=env, cwd=GUIDE, capture_output=True, text=True, timeout=120)
+    other = json.loads(done.stdout.strip().splitlines()[-1]) if done.stdout.strip() else {}
+    told = [json.loads(line)["content"] for line in (out / "transcript.jsonl").read_text().splitlines()
+            if json.loads(line).get("role") == "tool"] if (out / "transcript.jsonl").exists() else []
+    check("a report done naming another card than the one looked for (barbecue) is refused; the next report is taken",
+          other.get("outcome") == "impossible" and len(told) == 2
+          and told[0].startswith('{"result": "refused", "why": "the report does not name the card the mission looks for: '
+                                 'barbecue') and '"done"' in told[1], (other, told, done.stderr[-400:]))
+
     # A card seen while the place on the mat is unknown has no cell in the record yet: the Pilot finds its place first,
     # then refuses a cell that holds a card.
     unknown = with_rules("unknown", start="unknown")

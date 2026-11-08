@@ -150,6 +150,24 @@ TOO_EARLY = "the camera has not looked at every cell of the mat yet"
 CARD_STEPS = {"reach_card", "find_card", "survey"}
 
 
+NOT_NAMED = "the report does not name the card the mission looks for"
+
+
+def missing_card(mission, arguments):
+    """Why a report "done" cannot be taken: it does not name a card the mission looks for; or None. Qwen 3 Coder (Albert,
+    2026-11-08) reported the picnic on B4, was refused (never seen there), then reported done with the water point that
+    is on B4: the group would have heard "done" for another card."""
+    if arguments.get("outcome") != "done":
+        return None
+    named = {c.get("card") for c in arguments.get("cards") or [] if isinstance(c, dict)}
+    missing = [s["card"] for s in mission.get("steps", []) if s.get("do") in ("reach_card", "find_card")
+               and s.get("card") not in named]
+    if not missing:
+        return None
+    return (f"{NOT_NAMED}: {', '.join(missing)}. A report done names each card the mission looks for, with its cell "
+            "from seen_cards; if one was not found, report impossible")
+
+
 def read_record():
     """The Cartographer's record (seen_cards), three tries if the stack is busy; None if the robot cannot be reached."""
     for attempt in range(3):
@@ -497,7 +515,9 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
                 if why:
                     why = f"invalid arguments: {why}: nothing was sent"
                 elif name == "report" and outcome != "limit":
-                    why, record = record_check(arguments.get("cards") or [])
+                    why, record = missing_card(mission, arguments), None
+                    if not why:
+                        why, record = record_check(arguments.get("cards") or [])
                     if not why and not questioned and early_report(mission, arguments):
                         # Giving up on a card with cells the camera has not looked at: refused once, with the cells;
                         # the next report is taken (the model may know they cannot be reached).

@@ -76,6 +76,7 @@ BUSY = ("another_command", "one_move_at_a_time")  # the stack held by another pr
 NOT_PLACED, PLACE_LOST = "the record does not place ", "the robot does not know where it is now"
 UNREAD = "the record of the cards could not be read now"
 TOO_EARLY = "the camera has not looked at every cell of the mat yet"
+NOT_NAMED = "the report does not name the card the mission looks for"
 ENDED = f"the mission ended: the same call was refused {SAME_REFUSAL_MAX} times in a row"
 NUDGE = "Call report to end the mission."
 REPORT = {"required": ["outcome"], "properties": {
@@ -618,6 +619,15 @@ def early_report(mission, arguments):
                                               for s in mission.get("steps", []) if isinstance(s, dict))
 
 
+def missing_card(mission, arguments):
+    """The cards a report done must name and does not (stack/strategist.py, missing_card)."""
+    if arguments.get("outcome") != "done" or not isinstance(mission, dict):
+        return []
+    named = {c.get("card") for c in arguments.get("cards") or [] if isinstance(c, dict)}
+    return [s.get("card") for s in mission.get("steps", []) if isinstance(s, dict)
+            and s.get("do") in ("reach_card", "find_card") and s.get("card") not in named]
+
+
 def cells_left(shown):
     """The cells the record says the camera has not looked at, or [] (none, or the place not known)."""
     if not isinstance(shown, dict) or "cards_seen" not in shown:
@@ -1014,8 +1024,12 @@ def check_response(ctx, messages):
             ctx.kinds["answer refused: mission ended"] += 1
             continue
         expected, shown = None, None
-        early = name == "report" and not why and not ctx.questioned and early_report(ctx.mission, arguments)
-        if name == "report" and not why and (arguments.get("cards") or early):
+        unnamed = name == "report" and not why and missing_card(ctx.mission, arguments)
+        early = name == "report" and not why and not unnamed and not ctx.questioned and early_report(ctx.mission,
+                                                                                                     arguments)
+        if unnamed:
+            expected = NOT_NAMED  # refused before the record is read
+        elif name == "report" and not why and (arguments.get("cards") or early):
             if not ctx.records_given:  # the fake robot always answers: a report with cards is always compared
                 ctx.broke("a report with cards, or giving up on a card, is compared with the record (seen_cards)",
                           [arguments, said])
@@ -1030,7 +1044,7 @@ def check_response(ctx, messages):
             if expected is None and early and cells_left(shown):
                 expected = TOO_EARLY
         refused_report = name == "report" and said.get("result") == "refused" and \
-            bare_why.startswith((NOT_PLACED, PLACE_LOST, UNREAD, TOO_EARLY))
+            bare_why.startswith((NOT_PLACED, PLACE_LOST, UNREAD, TOO_EARLY, NOT_NAMED))
         if why and not (invalid and bare_why.endswith(": nothing was sent")):
             ctx.broke("a call that does not fit its schema is refused, and nothing is sent", [name, raw, said])
         if not why and invalid:
@@ -1050,7 +1064,8 @@ def check_response(ctx, messages):
             if (repeated is None) != (ctx.same_refused < 2) or (repeated and int(repeated[1]) != ctx.same_refused):
                 ctx.broke("from the second time in a row, a refused call says how many times", [ctx.same_refused, said])
         if refused_report:
-            kind = "refused: " + next(k for k in (NOT_PLACED, PLACE_LOST, UNREAD, TOO_EARLY) if bare_why.startswith(k)).strip()
+            kind = "refused: " + next(k for k in (NOT_PLACED, PLACE_LOST, UNREAD, TOO_EARLY, NOT_NAMED)
+                                      if bare_why.startswith(k)).strip()
             if bare_why.startswith(TOO_EARLY):
                 ctx.questioned = True
         elif name == "report" and not why:
@@ -1446,6 +1461,7 @@ def mutants():
     def repeats_ignored(m): m.SAME_REFUSAL_MAX = 10 ** 6
     def unseen_accepted(m): m.record_check = lambda cards: (None, None)
     def early_accepted(m): m.too_early = lambda record: None
+    def other_card_accepted(m): m.missing_card = lambda mission, arguments: None
     def cost_ignored(m):
         run_ = m.run
         m.run = lambda mission, model="fake", key="", tools="route", out=None, cap_usd=0.25: run_(
@@ -1486,6 +1502,7 @@ def mutants():
             "the same refused call repeated without end": repeats_ignored,
             "a report with a card never seen accepted": unseen_accepted,
             "giving up on a card with cells left accepted": early_accepted,
+            "done with another card than the one looked for accepted": other_card_accepted,
             "cost cap ignored": cost_ignored, "two moves in one answer": two_moves,
             "invalid arguments sent to the Pilot": invalid_passed, "model calls not counted": calls_uncounted,
             "a refused mission is counted": begins_first, "none: a card found left out": no_report_cards,
