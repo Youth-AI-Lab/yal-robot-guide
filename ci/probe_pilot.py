@@ -1315,7 +1315,7 @@ def mutants():
     def not_acknowledged(m):
         def patched():
             while m.common.mission_control() == "pause":
-                m.time.sleep(0.5)
+                m.clock.sleep(0.5)
         m.hold_still = patched
 
     def cards_ignored(m):

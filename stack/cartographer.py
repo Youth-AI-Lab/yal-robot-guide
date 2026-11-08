@@ -20,6 +20,7 @@ To the Referee: moves of the robot (forwards, backwards, to its left, to its rig
 """
 import json
 import math
+import re
 
 import clock
 import common
@@ -805,7 +806,7 @@ class Cartographer:
         self.free[before] = self.free[cell_name(self.col, self.row)] = clock.now()  # it went through them
         self.went(self.col, self.row)
         self.poses[pose] = [self.col, self.row, self.facing]
-        if not self.on_lane((self.col, self.row)):
+        if not self.on_lane((self.col, self.row)) and not self.frame:
             self.back = (self.col, self.row, self.facing)  # an adult would put it back here
 
     # Where the robot is ------------------------------------------------------------------------------------------
@@ -842,7 +843,13 @@ class Cartographer:
         self.save()
 
     def reached_by_count(self, fields):
-        """Where an interrupted slide left the robot: the last cell it reached, by its own count."""
+        """Where an interrupted slide left the robot: the last cell it reached, by its own count. While the place on
+        the mat is not known, the adult is told to put the robot back where its last move started (no cell to name):
+        that is where the Cartographer believes it then (the probe, seed 154, 2026-11-08: a cell off a lane was kept
+        instead, and the true place left the places possible)."""
+        if self.frame:
+            self.back_fixed = True
+            return
         if self.back and self.way and fields.get("slid", "").isdigit():
             k = min(int(fields["slid"]), len(self.way) - 1)
             while k > 0 and self.on_lane(self.way[k]):
@@ -1117,16 +1124,34 @@ class Cartographer:
         return {"result": "done", "cells_moved": answer["cells_done"], "cells_asked": cells, "stopped_because": reason,
                 "state": self.robot_state()}
 
+    def blind(self, looked):
+        """The quarter turns of a look around, told again without a cell when the place on the mat was lost during
+        it: what the camera saw before was written with cells of a belief the Cartographer has just left (the probe of
+        the Cartographer, seed 40, 2026-11-08)."""
+        if not self.frame:
+            return looked
+        lost = "where on the mat: not known any more (the Cartographer lost the robot's place since)"
+        for one in looked:
+            texts = []
+            for text in one.get("what_the_camera_saw", []):
+                text = re.sub(r"seen from [A-Z][0-9]+ facing \w+", "seen from where the robot stood then", text)
+                text = re.sub(r": (probably )?[A-Z][0-9]+( \(could also be [^)]*\))?(, moving \w+)?", ": " + lost, text)
+                text = re.sub(r"last (probably )?[A-Z][0-9]+( \(could also be [^)]*\))?", "last " + lost, text)
+                texts.append(text if not re.search(r"\b[A-Z][0-9]{1,2}\b", text) else
+                             "the camera saw something before the robot lost its place; " + lost)
+            one["what_the_camera_saw"] = texts
+        return looked
+
     def look_around(self):
         """Four quarter turns to the right, a pause after each one for the camera: one move in all."""
         looked = []
         for n in range(4):
             if n > 0 and self.hold_wanted():
                 return {"result": "paused", "why": "the mission was paused or stopped: the robot stopped turning",
-                        "looked_before_it_stopped": looked, "state": self.robot_state()}
+                        "looked_before_it_stopped": self.blind(looked), "state": self.robot_state()}
             result = self.turn("right", counted=n == 0)
             if result.get("result") != "done":
-                result["looked_before_it_stopped"] = looked
+                result["looked_before_it_stopped"] = self.blind(looked)
                 return result
             # result["state"] waited for the camera to look, facing this way (seen_cards counts it); a ball needs a
             # second sighting
@@ -1134,7 +1159,7 @@ class Cartographer:
             looked.append({"facing": FACING[self.facing], "card_ahead": result["state"]["card_ahead"],
                            "distance_ahead_cm": result["state"]["distance_ahead_cm"],
                            "what_the_camera_saw": [e["event"] for e in self.new_events()]})
-        return {"result": "done", "looked": looked, "state": self.robot_state()}
+        return {"result": "done", "looked": self.blind(looked), "state": self.robot_state()}
 
     def face(self, direction):
         """Turn on the spot until the robot faces north, east, south or west: one move, or none."""
@@ -1193,6 +1218,9 @@ class Cartographer:
                     self.covered_said = False
                 if events:
                     result["since_last_call"] = events
+                for key in ("looked", "looked_before_it_stopped"):  # the place may be lost after the turns, too
+                    if isinstance(result.get(key), list):
+                        result[key] = self.blind(result[key])
             except RobotNotConnected as e:
                 self.referee.close()
                 result = {"result": "error", "why": str(e)}

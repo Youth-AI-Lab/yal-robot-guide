@@ -575,15 +575,25 @@ def go_to_card(card):
     seen this card yet, explore the mat first. Answers where the robot stopped, or why it could not."""
     # A card seen from far may be on a neighbour of its probable cell (could_also_be): the cells are tried from the
     # surest, and a cell faced from next to it without that card is ruled out.
+    # A place with no way to it now (a ball keeps its lane) is not ruled out: before (8 November 2026, seeds 10 and
+    # 18 of the forest), the barbecue on F3 was ruled out with its two neighbours because the ball kept column E, and
+    # the robot gave up. The ways are tried again once the ball has had time to pass.
     PILOT.here()  # the cells of the record mean something once the robot knows where it is on the mat
+    unreachable = set()
     for attempt in range(8):
         candidates = {}
         for s in PILOT.records():
             if s["card"] != card:
                 continue
             for cell, far in [(s["cell"], s["distance_cm"])] + [(c, s["distance_cm"] + CELL_CM) for c in s["could_also_be"]]:
-                if (card, cell) not in PILOT.ruled_out and not PILOT.is_blocked(cell_xy(cell)):
+                if (card, cell) not in PILOT.ruled_out and cell not in unreachable and \
+                        not PILOT.is_blocked(cell_xy(cell)):
                     candidates[cell] = min(far, candidates.get(cell, 1e9))
+        if not candidates and unreachable:
+            command("wait_for_event", 10)  # no way to any of its places now: let the ball pass, then try again
+            PILOT.read(command("robot_state"))
+            unreachable.clear()
+            continue
         if not candidates:
             if PILOT.short(2):
                 break
@@ -601,7 +611,7 @@ def go_to_card(card):
         goals = set(fronts) - PILOT.card_cells()
         goals = {f for f in goals if not PILOT.on_lane(f)} or goals  # never wait in a ball's lane if it can be helped
         if not PILOT.travel(goals):
-            PILOT.ruled_out.add((card, cell))  # no way there: try the next place
+            unreachable.add(cell)  # no way there now: try the next place, and this one again later
             continue
         (c, r), _ = PILOT.here()
         PILOT.face(fronts[(c, r)])
@@ -610,6 +620,8 @@ def go_to_card(card):
         if (state.get("card_ahead") or {}).get("card") == card:
             return {"result": "done", "cell": state["cell"], "facing": state["facing"], "card_ahead": card}
         PILOT.ruled_out.add((card, cell))
+    if unreachable:
+        return {"result": "gave up", "why": f"no way to the card {card} now (a ball's lane, or something in the way)"}
     return {"result": "gave up", "why": f"the robot did not find itself in front of the card {card}"}
 
 
