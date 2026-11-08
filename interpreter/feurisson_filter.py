@@ -1,8 +1,8 @@
 """
 title: Feurisson robot
 author: Youth AI Lab
-description: Before each message of the group, adds to Feurisson's instructions the mission as it is now and the group's language (named by a small model), and tells the robot's link that a new turn starts.
-version: 1
+description: Before each message of the group, takes out the names, ages and places a young person gives, adds to Feurisson's instructions the mission as it is now and the group's language (named by a small model), and tells the robot's link that a new turn starts.
+version: 2
 """
 # An Open WebUI filter (Functions), installed on the chatbot "Feurisson robot" by bin/robot-session. On 7 and
 # 8 November 2026, DeepSeek v4 Flash as Feurisson answered in French to groups writing in English (about 13 % of the
@@ -13,9 +13,16 @@ version: 1
 #   - the link learns that a new turn starts: it then refuses a stop_mission that follows a pause_mission in the same
 #     answer, unless the group asked to stop (stack/interpreter_link.py);
 #   - a small, cheap model names the group's language; the last one named stays for the conversation, written in the
-#     instructions.
-# Nothing is kept on disk; the languages stay in memory, per conversation, while Open WebUI runs. The group's
-# message goes to the small model (the same provider and the same rules as Feurisson's model) and to no one else.
+#     instructions;
+#   - first of all, a name, an age, a place where someone lives, a school, an e-mail or a phone number in the group's
+#     messages is replaced by [name], [age], [place], [school] or [contact], with patterns, without any model: the
+#     detail never leaves the Codespace (Open WebUI keeps the message as typed, in its own base). Asked to say that it
+#     does not keep such details, or to refuse what is off its topic, DeepSeek greeted the young person by the name
+#     5 or 6 times out of 13 (facilitator/workshops/measures/2026-11-08-robot-feurisson-tweaks/). The patterns miss
+#     what they do not know (a name given without "my name is", a nickname): a help, not a guarantee.
+# Nothing is kept on disk; the languages and the names found stay in memory, per conversation, while Open WebUI runs.
+# The group's message, once the details are taken out, goes to the small model (the same provider and the same rules
+# as Feurisson's model) and to no one else.
 # ci/probe_interpreter.py --filter loads this file too, to measure what it changes.
 import json
 import os
@@ -39,6 +46,56 @@ MARK = "\n\n## Right now (from the robot, not from the group)\n"
 # The group asks to stop, in the languages of the partners: then a pause and a stop in the same answer are right.
 STOP_ASK = re.compile(r"\b(stop|stoppe?|arrête|arrêter|annule|cancel|abort|para|detente|cancela|atura|fermati|ferma|"
                       r"basta|annulla|halt|annuleer)\b|laisse tomber la mission", re.I)
+# What a young person may say about themselves, in the languages of the partners (French, English, Spanish, Catalan,
+# Italian, Dutch). Each pattern keeps the words before the detail and replaces the detail.
+WORD = r"[A-Za-zÀ-ÖØ-öø-ÿ'’-]+"
+NAME = rf"(?:[A-ZÀ-ÖØ-Þ]{WORD}(?:\s+[A-ZÀ-ÖØ-Þ]{WORD})?|{WORD})"
+CLAUSE = r"[^,.;!?\n]+?(?=\s+(?:et|and|y|i|e|en)\s|[,.;!?\n]|$)"
+PERSONAL = [
+    ("name", re.compile(rf"(\b(?i:je m'appelle|je m’appelle|mon nom (?:c'est|est)|mon prénom (?:c'est|est)|moi c'est|"
+                        rf"my name is|my name's|i'm called|i am called|me llamo|mi nombre es|em dic|el meu nom "
+                        rf"és|mi chiamo|il mio nome è|ik heet|mijn naam is)\s+)({NAME})")),
+    ("name", re.compile(rf"(\b(?i:I'm|I am|I’m|je suis|c'est|soy|sóc|sono|ik ben)\s+)([A-ZÀ-ÖØ-Þ][a-zà-öø-ÿ'’-]+"
+                        rf"(?:\s+[A-ZÀ-ÖØ-Þ][a-zà-öø-ÿ'’-]+)?)(?=\s*(?:[,.;!?\n]|$|\s+(?:et|and|y|i|e|en)\s))")),
+    ("age", re.compile(r"(\b(?:j'ai|j’ai|i am|i'm|i’m|tengo|tinc|ho|ik ben)\s+)(\d{1,2}(?!\d)(?:\s*(?:ans|an|years?(?:\s+old)?|"
+                       r"y/?o|años|anys|anni|jaar)\b)?)(?!\s*(?:cells?|cases?|squares?|steps?|pas\b|cm|m\b|min|s\b|sec|fois|times?|"
+                       r"casillas?|caselle|vakjes?|%))", re.I)),
+    ("age", re.compile(r"()(\b\d{1,2}\s*(?:ans|years old|años|anys|anni|jaar)\b)", re.I)),
+    ("place", re.compile(rf"(\b(?:j'habite|j’habite|je vis|i live|vivo|visc|abito|ik woon)\s+)({CLAUSE})", re.I)),
+    ("school", re.compile(rf"(\b(?:mon école|mon collège|mon lycée|ma classe|my school|i go to|mi escuela|mi colegio|"
+                          rf"la meva escola|la mia scuola|mijn school)\s*(?:c'est|est|s'appelle|is|es|és|è|is called|"
+                          rf"heet)?\s*)({CLAUSE})", re.I)),
+    ("contact", re.compile(r"()([\w.+-]+@[\w-]+\.[\w.-]+|\+?\d[\d .-]{7,}\d)")),
+]
+BRACKETS = re.compile(r"\s*\[(?:name|age|place|school|contact)\]")
+# Words after "I'm" or "je suis" that are not names, so that "I'm Ready" or "C'est Parti" stay as typed.
+NOT_NAMES = {"ok", "okay", "ready", "here", "back", "sure", "sorry", "done", "prêt", "prête", "parti", "partie", "bon",
+             "bien", "fini", "the", "le", "la", "les", "un", "une", "a", "an", "it", "ça", "pas", "not", "feurisson",
+             "robot"}
+
+
+def mask(text, known=()):
+    """The text with the personal details replaced, and the names found (to take out of later messages too)."""
+    names = set()
+
+    def replace(kind):
+        def one(m):
+            detail = m.group(2)
+            if kind == "name":
+                if detail.split()[0].lower() in NOT_NAMES:
+                    return m.group(0)
+                names.add(detail.split()[0])
+            return m.group(1) + f"[{kind}]"
+        return one
+
+    for kind, pattern in PERSONAL:
+        text = pattern.sub(replace(kind), text)
+    for name in set(known) | names:
+        if len(name) > 1:
+            text = re.sub(rf"\b{re.escape(name)}\b", "[name]", text)
+    return text, names
+
+
 NAMING = ("Name the language the user's message is written in, in English, in one word (for example French, English, "
           "Spanish, Catalan, Italian, Dutch). If the message is too short to tell, answer: unknown.")
 
@@ -51,6 +108,7 @@ class Filter:
     def __init__(self):
         self.valves = self.Valves()
         self.languages = {}  # conversation -> the language named last
+        self.names = {}  # conversation -> the names found in its messages, taken out of the later ones too
         # Set by the probe; in Open WebUI, read from the environment of the container.
         self.language_url, self.language_key, self.turn_hook = None, None, None
 
@@ -104,11 +162,35 @@ class Filter:
         word = re.sub(r"[^A-Za-z]", "", (said.split() or [""])[0]).capitalize()
         return None if not word or word == "Unknown" else word
 
+    def take_out(self, messages, chat):
+        """Replace the personal details in every message of the group: Open WebUI sends the whole conversation, as
+        typed, each time."""
+        known = self.names.setdefault(chat, set())
+        if len(self.names) > 500:
+            self.names.clear()
+            self.names[chat] = known
+        for m in messages:
+            if m.get("role") != "user":
+                continue
+            if isinstance(m.get("content"), str):
+                m["content"], found = mask(m["content"], known)
+                known |= found
+            elif isinstance(m.get("content"), list):
+                for part in m["content"]:
+                    if isinstance(part, dict) and isinstance(part.get("text"), str):
+                        part["text"], found = mask(part["text"], known)
+                        known |= found
+        if known:  # a name found later is taken out of the earlier messages too
+            for m in messages:
+                if m.get("role") == "user" and isinstance(m.get("content"), str):
+                    m["content"], _ = mask(m["content"], known)
+
     def inlet(self, body, __metadata__=None):
         messages = body.get("messages") or []
+        chat = (__metadata__ or {}).get("chat_id") or "-"
+        self.take_out(messages, chat)
         said = next((m.get("content") for m in reversed(messages) if m.get("role") == "user"), "")
         said = said if isinstance(said, str) else " ".join(p.get("text", "") for p in said if isinstance(p, dict))
-        chat = (__metadata__ or {}).get("chat_id") or "-"
         if len(said.split()) >= 2:
             named = self.name_language(said)
             if named:
@@ -116,7 +198,8 @@ class Filter:
                     self.languages.clear()
                 self.languages[chat] = named
         status = self.group_turn(bool(STOP_ASK.search(said)))
-        lines = []
+        lines = ["- The group's messages reach you with names, ages and places replaced by [name], [age], [place], "
+                 "[school] or [contact]. Never write these brackets, never ask for what they replace."]
         language = self.languages.get(chat)
         if language:
             lines.append(f"- The group writes in {language}. Write every answer in {language} only, even when cards, "
@@ -133,4 +216,12 @@ class Filter:
         else:
             messages.insert(0, {"role": "system", "content": block.lstrip()})
         body["messages"] = messages
+        return body
+
+    def outlet(self, body, __metadata__=None):
+        """The brackets of take_out written back by the model ("Bonjour [name] !", 3 answers in 160 conversations on
+        8 November 2026) are taken out of its answer before the group reads it."""
+        for m in (body.get("messages") or [])[-1:]:
+            if m.get("role") == "assistant" and isinstance(m.get("content"), str):
+                m["content"] = BRACKETS.sub("", m["content"])
         return body

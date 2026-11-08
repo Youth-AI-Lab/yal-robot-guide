@@ -354,6 +354,13 @@ Rewording Feurisson's instructions did not stop it from answering in the wrong l
 mission without asking. So `robot-session` gives Feurisson a filter,
 [interpreter/feurisson_filter.py](interpreter/feurisson_filter.py), which runs before each message of the
 group, outside the model:
+- first, a name, an age, a place where someone lives, a school, an e-mail or a phone number in the
+  group's messages becomes `[name]`, `[age]`, `[place]`, `[school]` or `[contact]`. This is done with
+  patterns, in French, English, Spanish, Catalan, Italian and Dutch, without any model: the detail never
+  leaves the Codespace. A name found once is taken out of the whole conversation. If Feurisson writes a
+  bracket back ("Hello [name]!"), the filter takes it out of the answer. The patterns miss a name given
+  without "my name is" ("Léa and Tom want…"): it is a help, not a guarantee. Check it with
+  `python3 -I ci/check_filter.py`;
 - the state of the mission, read just then, goes into Feurisson's instructions;
 - a small, cheap model of the same provider (Mistral Small 3.2 through OpenRouter, Ministral 8B with
   Albert) names the group's language, and the instructions say to answer in it. The group's message goes to
