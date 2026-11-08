@@ -14,6 +14,12 @@ and presses Resume, after --adult-s seconds of the world's time. Each mission ha
 
 Usage (the folder of the guide is the current folder):
     python3 -I sim/headless.py --mission mission.json [--model none|fake] [--world sim/worlds/forest.json] [--seed 1]
+--script answers.json plays a model written in advance (the checks): a list of answers, each one a text, or
+{"calls": [{"name": <tool>, "arguments": {…}}, …]}, with "say": "pause" or "stop" to give the Interpreter's word as
+that answer comes, "add": [steps] to add steps to the mission as the Interpreter's add_to_mission does, and, with
+"pause", "resume": {"add": [steps]} to play the rest of the Interpreter's part: once the Pilot has acknowledged the
+pause (held.json), add those steps (or none), then resume ("go"). Past the end of the list, the model answers in words.
+
 A model of a provider works too (its key on stdin, as for stack/strategist.py). While it thinks, the world goes on
 (--think): as long as each call took (real, the default), not at all (zero), or a fixed number of seconds per call.
 
@@ -140,6 +146,7 @@ def main():
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--adult-s", type=float, default=10.0, help="world seconds before the adult puts the robot back")
     parser.add_argument("--limit-s", type=float, default=1800.0, help="world seconds a mission may last")
+    parser.add_argument("--script", help="a model written in advance (a JSON file, see above); the model is then fake")
     parser.add_argument("--think", default="real", help="real, zero, or seconds: how far the world goes on while the "
                                                         "model thinks")
     parser.add_argument("--out", help="the folder of this run (by default a new one in .robot-sim/headless/)")
@@ -166,13 +173,41 @@ def main():
     import clock  # noqa: E402  (after ROBOT_CLOCK: it reads it once)
     import link  # noqa: E402
     link.Link = stack_end(link, clock, wire)  # before the Referee is imported: it takes Link from here
+    import common  # noqa: E402
     import strategist  # noqa: E402
+    if args.script:
+        script = json.loads(Path(args.script).read_text(encoding="utf-8"))
+        args.model = "fake"
+
+        def scripted(mission, messages):
+            """The answers of the script, one per call of the model."""
+            n = sum(1 for m in messages if m["role"] == "assistant")
+            answer = script[n] if n < len(script) else "(the script has no more answers)"
+            if isinstance(answer, str):
+                return {"role": "assistant", "content": answer}, {}, "stop"
+            if answer.get("say"):
+                (state / "control.json").write_text(json.dumps({"do": answer["say"]}) + "\n", encoding="utf-8")
+            if answer.get("add"):
+                common.add_steps(answer["add"])
+            if "resume" in answer:
+                interpreter["resume"] = answer["resume"]
+            calls = [{"id": f"call_{n}_{k}", "type": "function",
+                      "function": {"name": c["name"], "arguments": json.dumps(c.get("arguments", {}))}}
+                     for k, c in enumerate(answer["calls"])]
+            return {"role": "assistant", "content": None, "tool_calls": calls}, {}, "tool_calls"
+
+        strategist.fake_model = scripted
 
     adult = {"since": None, "resumes": 0, "stop_asked_at": None}
+    interpreter = {"resume": None}  # the scripted Interpreter's resume, waiting for the Pilot's acknowledgement
 
     def step(dt):
         """One tick of the world, then what the people around the mat do."""
         world.step(dt)
+        if interpreter["resume"] is not None and (state / "held.json").exists():
+            common.add_steps(interpreter["resume"].get("add") or [])  # as add_to_mission, while paused
+            (state / "control.json").write_text(json.dumps({"do": "go"}) + "\n", encoding="utf-8")
+            interpreter["resume"] = None
         if world.firmware.wait_adult and world.firmware.motion is None:
             adult["since"] = world.time if adult["since"] is None else adult["since"]
             if world.time - adult["since"] >= args.adult_s:
@@ -191,6 +226,9 @@ def main():
     started, cut = time.monotonic(), False
     try:
         report = strategist.run(mission, args.model, key, args.tools, out=out / "mission")
+    except strategist.Refused as e:
+        print(json.dumps({"refused": str(e)}, ensure_ascii=False), flush=True)
+        sys.exit(2)
     except WorldTimeOver:
         report, cut = {"outcome": "cut", "cards": [], "why": "the mission did not stop when asked"}, True
     computer_s = time.monotonic() - started

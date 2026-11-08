@@ -255,9 +255,9 @@ the cautious one failed twice in ten runs, for lack of moves. Not yet run with t
 The Interpreter is a chatbot: Feurisson, the voice of the robot. It talks with the group in the
 group's words, turns their request into a mission in the closed format, says it back, and starts it
 only after the group says yes. It reaches the stack through one door,
-[stack/interpreter_link.py](stack/interpreter_link.py): an MCP server over HTTP with a token, six
-tools (the closed lists, start, pause, resume, stop, the mission's state and report), none of which
-drives the robot. Its instructions are [interpreter/feurisson.md](interpreter/feurisson.md).
+[stack/interpreter_link.py](stack/interpreter_link.py): an MCP server over HTTP with a token, seven
+tools (the closed lists, start, pause, add steps to a paused mission, resume, stop, the mission's state, progress
+and report), none of which drives the robot. Its instructions are [interpreter/feurisson.md](interpreter/feurisson.md).
 
 ### All at once, in this guide's Codespace
 
@@ -538,7 +538,7 @@ checks call nothing outside it). A real Open WebUI (0.12.4) with a fake model, t
 Interpreter, was tried apart, not in these checks.
 
 In this guide's Codespace, `python3 -I ci/check_session.py` checks part 6 all at once
-(`robot-session`), with a fake model in the Codespace and no cost: Open WebUI, Feurisson and its six
+(`robot-session`), with a fake model in the Codespace and no cost: Open WebUI, Feurisson and its seven
 tools, a mission down to the robot, a second start refused, what stop erases, and what is left after
 a Codespace restart. About five minutes once Open WebUI is downloaded: 30 checks, all passed three
 times in a local dev container of the image 2026.11.5 on 7 November 2026. The public ports are

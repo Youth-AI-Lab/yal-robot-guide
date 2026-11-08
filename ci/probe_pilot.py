@@ -120,7 +120,7 @@ class Clock:
 
 class Mission:
     """The Interpreter's go, pause or stop (control.json), on the run's clock. obey: a mission runs (the Strategist
-    set OBEY_MISSION_CONTROL); else drive.py, and a pause left written must change nothing."""
+    gave the Pilot obey()); else drive.py, and a pause left written must change nothing."""
 
     def __init__(self, clock, obey):
         self.clock, self.obey = clock, obey
@@ -1110,7 +1110,7 @@ def run(seed, generator, persona, steps, replay=None, patch=None, defects=True):
         fake.read_moves_left = fake.limit  # configure forgets the count read before, refused or not
         missions["configure " + how] += 1
         missions["missions"] += 1
-        pilot.OBEY_MISSION_CONTROL = True
+        pilot.obey(pilot.common.mission_control, pilot.common.say_held)  # as the Strategist does
 
     if obey:
         begin_mission(True)
@@ -1262,9 +1262,9 @@ def mutants():
         def patched(name, *args):
             if name == "wait_for_event":
                 return command(name, *args)
-            if m.OBEY_MISSION_CONTROL and name in m.MOVES | {"set_light"}:
+            if m.ASK is not None and name in m.MOVES | {"set_light"}:
                 m.hold_still()
-                if m.common.mission_control() == "stop":
+                if m.word() == "stop":
                     raise m.Stuck("the mission was stopped")
             return m.CART.call(lambda: getattr(m.CART, name)(*args), is_move=False)
         m.command = patched
@@ -1314,7 +1314,7 @@ def mutants():
 
     def not_acknowledged(m):
         def patched():
-            while m.common.mission_control() == "pause":
+            while m.word() == "pause":
                 m.clock.sleep(0.5)
         m.hold_still = patched
 

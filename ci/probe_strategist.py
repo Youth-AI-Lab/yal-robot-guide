@@ -78,7 +78,9 @@ UNREAD = "the record of the cards could not be read now"
 TOO_EARLY = "the camera has not looked at every cell of the mat yet"
 NOT_NAMED = "the report does not name the card the mission looks for"
 ENDED = f"the mission ended: the same call was refused {SAME_REFUSAL_MAX} times in a row"
-NUDGE = "Call report to end the mission."
+NUDGE = "Call step_done for each step when it is closed, or report to end the mission."
+# A report taken, or the Interpreter's stop, earlier in the same answer: the calls after it are not run (S9, S17).
+ENDED_AFTER = "the mission has ended: nothing after it in this answer runs"
 REPORT = {"required": ["outcome"], "properties": {
     "outcome": {"type": "string", "enum": ["done", "impossible"]},
     "cards": {"type": "array", "items": {"type": "object", "required": ["card", "cell"], "properties": {
@@ -118,6 +120,12 @@ class Ctx:
         self.messages, self.model_report, self.lies, self.stop_in_call = None, None, [], None
         self.records_given, self.last_refused, self.same_refused, self.most_same = [], None, 0, 0
         self.questioned = False  # a report giving up on a card was refused once for cells left
+        # A light step closes by itself when set_light sets its colour; a mission of light steps only then ends by
+        # itself once they are all set.
+        steps = mission.get("steps") if isinstance(mission, dict) else None
+        self.lights = [s.get("color") for s in steps or [] if isinstance(s, dict) and s.get("do") == "set_light"]
+        self.only_lights = bool(steps) and len(self.lights) == len(steps)
+        self.closed_by_lights = False
         self.secrets = sorted({s for k2, v in (mission.items() if isinstance(mission, dict) else [])
                                if k2 not in ("steps", "personality") for s in strings(v) if len(s) >= 6})
         self.kinds = collections.Counter()
@@ -267,29 +275,41 @@ def tick(where):
         deliver(*ctx.queue.pop(0))
 
 
+def obey(ask=None, held=None):
+    """As pilot.obey: the Strategist gives the Pilot the mission's word (ask) and takes its acknowledgement (held)."""
+    FAKE.ASK, FAKE.HELD = ask, held
+
+
+def word():
+    """As pilot.word: what the mission wants, as the Strategist says; the Pilot never reads the Interpreter itself."""
+    return FAKE.ASK() if FAKE.ASK is not None else "go"
+
+
 def hold_still():
     """As pilot.hold_still: while the mission is paused, nothing moves; the acknowledgement up the chain, then the
     probe plays the Interpreter: its next order, or a resume when it has none left."""
-    if common.mission_control() != "pause":
+    if word() != "pause":
         return
     ctx = CTX
     ctx.holds += 1
-    common.say_held({"cell": None if WORLD.frame else WORLD.cell, "facing": None if WORLD.frame else WORLD.facing,
-                     "since": "probe"})
-    while common.mission_control() == "pause":
+    FAKE.HELD({"cell": None if WORLD.frame else WORLD.cell, "facing": None if WORLD.frame else WORLD.facing,
+               "since": "probe"})
+    if common.held_where() is None:
+        ctx.broke("the Strategist passes the Pilot's acknowledgement of a pause up to the Interpreter", "no held.json")
+    while word() == "pause":
         if ctx.queue:
             deliver(*ctx.queue.pop(0))
         else:
             write_control("go")
             ctx.probe_resumes += 1
-    common.say_held(None)
+    FAKE.HELD(None)
 
 
 def hold_point():
     """What pilot.command does before a command that acts, while a mission runs."""
-    if FAKE.OBEY_MISSION_CONTROL:
+    if FAKE.ASK is not None:
         hold_still()
-        if common.mission_control() == "stop":
+        if word() == "stop":
             raise Stuck("the mission was stopped")
 
 
@@ -558,8 +578,8 @@ def operate(fn, **arguments):
     ctx.clock += 1
     common.count("operations")
     name = fn.__name__
-    if not FAKE.OBEY_MISSION_CONTROL:
-        ctx.broke("while a mission runs the Pilot obeys pause and stop (OBEY_MISSION_CONTROL)", name)
+    if FAKE.ASK is None:
+        ctx.broke("while a mission runs the Pilot obeys pause and stop (the Strategist gave it obey())", name)
     if ctx.stop_at is not None:
         ctx.broke("no tool of the Pilot after the mission was stopped", [name, arguments])
     if ctx.model != "none":
@@ -651,8 +671,8 @@ def report_refusal(cards, shown):
 
 
 for _name, _value in dict(_FNS, MAT=MAT, CELLS=list(REAL.CELLS), STEP=dict(REAL.STEP), MOVES=set(REAL.MOVES),
-                          PILOT=FakePilotSettings(), OBEY_MISSION_CONTROL=False, operate=operate,
-                          hold_still=hold_still, Stuck=Stuck, CART=_CART, command=_command).items():
+                          PILOT=FakePilotSettings(), ASK=None, HELD=None, obey=obey, word=word,
+                          operate=operate, hold_still=hold_still, Stuck=Stuck, CART=_CART, command=_command).items():
     setattr(FAKE, _name, _value)
 sys.modules["pilot"] = FAKE  # what `import pilot` in the Strategist gets
 REF = probe_tiers.load("strategist_reference", GUIDE / "stack" / "strategist.py")
@@ -847,7 +867,7 @@ def checked(inner):
         if ctx.texts >= 2:
             ctx.broke("after a second answer in words, the model is not called again", ctx.calls)
         if ctx.texts == 1 and sum(1 for m in messages if m["role"] == "user" and m["content"] == NUDGE) != 1:
-            ctx.broke("an answer in words is followed once by \"Call report to end the mission.\"", ctx.calls)
+            ctx.broke("an answer in words is followed once by the nudge to close the steps", ctx.calls)
         text = json.dumps([m.get("content") for m in messages], ensure_ascii=False)
         for secret in ctx.secrets:
             if secret in text:
@@ -1001,7 +1021,7 @@ def check_response(ctx, messages):
         return
     pilot = [json.dumps(o["result"], ensure_ascii=False) for o in ctx.ops
              if o["response"] == ctx.response and o["result"] is not None]
-    reported_at, limit_hit, counted = None, False, set()
+    reported_at, limit_hit, counted, ended = None, False, set(), False
     for j, (call, answer) in enumerate(zip(calls, answers)):
         name = (call.get("function") or {}).get("name", "")
         word_for_word = (name, (call.get("function") or {}).get("arguments") or "")
@@ -1018,6 +1038,17 @@ def check_response(ctx, messages):
         repeated = REPEATED.search(said_why) if said.get("result") == "refused" else None
         bare_why = said_why[:repeated.start()] if repeated else said_why
         invalid = said.get("result") == "refused" and bare_why.startswith("invalid arguments: ")
+        if not ended and said == {"result": "refused", "why": "the mission was stopped"}:
+            if ctx.stop_at is None:
+                ctx.broke("a call is refused as stopped only after the Interpreter's stop", [name, said])
+            ctx.kinds["answer refused: stopped"] += 1
+            ended = True
+            continue
+        if ended:
+            if said != {"result": "refused", "why": ENDED_AFTER}:
+                ctx.broke("after a report taken or a stop, nothing else of that answer runs", [name, said])
+            ctx.kinds["answer refused: after the end"] += 1
+            continue
         if limit_hit:
             if said != {"result": "refused", "why": ENDED}:
                 ctx.broke("after the fourth same refusal, nothing else of that answer runs", [name, said])
@@ -1074,6 +1105,7 @@ def check_response(ctx, messages):
                 ctx.broke("a report is answered done", said)
             ctx.model_report = arguments
             reported_at = j if reported_at is None else reported_at
+            ended = True
             if not all((c["card"], c["cell"]) in ctx.reported for c in arguments.get("cards", [])):
                 ctx.lies.append(arguments.get("cards"))
             kind = "report"
@@ -1081,13 +1113,16 @@ def check_response(ctx, messages):
             pilot.remove(content)
             ctx.last_refused = None
             kind = "pilot answer"
-            if reported_at is not None:
-                ctx.known.append({"known": "S17: a tool after report, in the same answer, still runs",
-                                  "mission": ctx.k, "detail": name})
+            if name == "set_light" and said.get("result") not in ("refused", "error") and \
+                    (arguments or {}).get("color") in ctx.lights:
+                ctx.lights.remove(arguments["color"])
+                if ctx.only_lights and not ctx.lights:
+                    ctx.closed_by_lights, ended = True, True
         elif invalid:
             kind = "refused: invalid arguments"
         elif said == {"result": "refused", "why": "the mission was stopped"}:
             kind = "refused: stopped"
+            ended = True
         elif said == {"result": "refused", "why": ANOTHER_MOVE}:
             kind = "refused: another move"
             if name not in MOVES:
@@ -1167,9 +1202,13 @@ def check_report(ctx, report, out):
         if outcome != given.get("outcome") or report.get("cards", None) != given.get("cards", None) or \
                 report.get("why", None) != given.get("why", None):
             broke("the report is the model's report", [given, report])
-        if ctx.stop_at is not None:
-            ctx.known.append({"known": "S9: the model's report wins over a stop that came during its last answer",
+        if ctx.stop_at is not None:  # the stop came after the report was taken, later in the same answer
+            ctx.noted.append({"noted": "a stop given after the model's report, in the same answer: the report stands",
                               "mission": ctx.k, "detail": outcome})
+        return
+    if ctx.closed_by_lights:
+        if (outcome, report.get("cards"), report.get("why")) != ("done", [], ""):
+            broke("a mission of light steps ends done once every light is set", report)
         return
     if report.get("cards") != [] or report.get("why") != "":
         broke("without a report of the model, no cards and no why", report)
@@ -1226,6 +1265,10 @@ def check_without_model(ctx, report):
                                               else "not seen yet" if left else "not on the mat")
         elif do == "reach_card" and result.get("result") == "done":
             cards.append({"card": value, "cell": WORLD.front(result["cell"], result["facing"])})
+        elif do == "reach_card" and result.get("result") == "not found":  # S16: impossible, as for find_card
+            left = coverage.pop(0) if coverage else "?"
+            outcome, why = "impossible", ("the robot does not know where it is" if left is None
+                                          else "not seen yet" if left else "not on the mat")
         if op["stopped_after"]:
             outcome, why = "stopped", ""
             break
@@ -1237,9 +1280,6 @@ def check_without_model(ctx, report):
             if why is None:
                 why = report.get("why") if report.get("why") not in ("", None) else "a reason"
             break
-        if do == "reach_card" and result.get("result") == "not found":
-            ctx.known.append({"known": "S16: without a model, reach_card of a card not on the mat does not make the "
-                                       "mission impossible", "mission": ctx.k, "detail": value})
     if used != len(ctx.ops) or (ran < len(ctx.mission["steps"]) and outcome not in ("stopped", "impossible")):
         ctx.broke("none: the steps run in order, until a failure or a stop", [len(ctx.mission["steps"]), len(ctx.ops)])
     if ran < len(ctx.mission["steps"]) and not (ctx.ops and (ctx.ops[-1]["stopped_after"] or
@@ -1275,7 +1315,7 @@ def run(seed, generator, persona, steps, replay=None, mutate=None):
     if mutate:
         mutate(module)
     FAKE.PILOT = FakePilotSettings()
-    FAKE.OBEY_MISSION_CONTROL = False
+    FAKE.ASK = FAKE.HELD = None
     WORLD = World(world)
     broken, known, noted, sent, answers, history, kinds = [], [], [], [], [], [], collections.Counter()
     pending, error = None, None
@@ -1486,12 +1526,12 @@ def mutants():
         m.run = patched
     def none_stop_ignored(m):
         without = m.without_model
-        def patched(mission):
+        def patched(mission, progress):  # the same signature as without_model: the mutant must run, not crash
             saved = m.common
             m.common = Proxy(common, mission_control=lambda: "go" if common.mission_control() == "stop"
                              else common.mission_control())
             try:
-                return without(mission)
+                return without(mission, progress)
             finally:
                 m.common = saved
         m.without_model = patched

@@ -51,20 +51,36 @@ SETTINGS = {
 }
 
 
-# True while the Strategist runs a mission: then the Pilot obeys the Interpreter's pause and stop, and has the robot
-# stop on the next cell as soon as possible: before each move, and during one (the Cartographer asks hold_wanted
-# during a slide and between quarter turns; the Referee then sends HOLD to the Reflex). Never for stack/drive.py: a
-# person or an agent drives by hand.
-OBEY_MISSION_CONTROL = False
-CART.hold_wanted = lambda: OBEY_MISSION_CONTROL and common.mission_control() in ("pause", "stop")
+# While the Strategist runs a mission, the Pilot obeys the mission's pause and stop, and has the robot stop on the next
+# cell as soon as possible: before each move, and during one (the Cartographer asks hold_wanted during a slide and
+# between quarter turns; the Referee then sends HOLD to the Reflex). The Pilot asks its Strategist, which relays the
+# Interpreter's word: it never reads the Interpreter itself. Never for stack/drive.py: a person or an agent drives by
+# hand, and nobody gives the Pilot a word.
+ASK, HELD = None, None
+
+
+def obey(ask=None, held=None):
+    """The Strategist runs a mission: ask() says what the mission wants now, "go", "pause" or "stop"; held(where) takes
+    the acknowledgement of a pause (where the robot stands still, or None once it moves again). obey() with nothing: no
+    mission, no pause, no stop."""
+    global ASK, HELD
+    ASK, HELD = ask, held
+
+
+def word():
+    """What the mission wants now, as the Strategist says: "go" when no mission runs."""
+    return ASK() if ASK is not None else "go"
+
+
+CART.hold_wanted = lambda: word() in ("pause", "stop")
 
 
 def command(name, *args):
     """One command of the mat, through the Cartographer (and the Referee's door)."""
     moves = {"step_forward", "move", "turn", "look_around", "face", "set_light"}
-    if OBEY_MISSION_CONTROL and name in moves:
+    if ASK is not None and name in moves:
         hold_still()
-        if common.mission_control() == "stop":
+        if word() == "stop":
             raise Stuck("the mission was stopped")
     if name == "wait_for_event":
         return CART.wait_for(*args)
@@ -80,15 +96,16 @@ class AdultNeeded(Stuck):
 
 
 def hold_still():
-    """While the mission is paused, nothing moves: say so up the chain once (where the robot stands), then wait."""
-    if common.mission_control() != "pause":
+    """While the mission is paused, nothing moves: say so up the chain once, to the Strategist (where the robot stands),
+    then wait."""
+    if word() != "pause":
         return
     known = CART.sure and not CART.frame  # in a frame relative to the start, a cell name would mean nothing
-    common.say_held({"cell": cell_name(CART.col, CART.row) if known else None,
-                     "facing": FACING[CART.facing] if known else None, "since": clock.stamp()})
-    while common.mission_control() == "pause":
+    HELD({"cell": cell_name(CART.col, CART.row) if known else None,
+          "facing": FACING[CART.facing] if known else None, "since": clock.stamp()})
+    while word() == "pause":
         clock.sleep(0.5)
-    common.say_held(None)
+    HELD(None)
 
 
 class Pilot:
@@ -256,7 +273,7 @@ class Pilot:
         return cell_xy(self.state["cell"]), self.state["facing"]
 
     def wait_for_adult(self):
-        if OBEY_MISSION_CONTROL:
+        if ASK is not None:  # under the Strategist, whose loop waits for the adult without its model
             self.state = {}  # the adult will put the robot somewhere: the next tool reads where
             raise AdultNeeded("the robot waits for an adult")
         end = clock.monotonic() + ADULT_WAIT_S

@@ -229,6 +229,132 @@ def stepped_mode():
               and abs(thirty.get("world_s", 0) - zero.get("world_s", 0) - 30 * turns) <= 1, thought)
 
 
+def headless(tmp, name, mission, *extra, world=None, script=None):
+    """One mission of sim/headless.py (the stepped clock): its last line, as JSON."""
+    (tmp / f"{name}.json").write_text(json.dumps(mission))
+    command = [PYTHON, "-I", str(GUIDE / "sim" / "headless.py"), "--mission", str(tmp / f"{name}.json"),
+               "--out", str(tmp / name), *extra]
+    if world is not None:
+        (tmp / f"{name}-world.json").write_text(json.dumps(world))
+        command += ["--world", str(tmp / f"{name}-world.json")]
+    if script is not None:
+        (tmp / f"{name}-script.json").write_text(json.dumps(script))
+        command += ["--script", str(tmp / f"{name}-script.json")]
+    done = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300)
+    try:
+        return json.loads(done.stdout.strip().splitlines()[-1])
+    except (IndexError, ValueError):
+        return {"error": done.stderr[-500:]}
+
+
+def tool_answers(tmp, name):
+    """What each tool answered the model, from the mission's transcript: [(tool, answer)]."""
+    lines = (tmp / name / "mission" / "transcript.jsonl").read_text(encoding="utf-8").splitlines()
+    return [(m["name"], json.loads(m["content"])) for m in map(json.loads, lines) if m["role"] == "tool"]
+
+
+def strategist_in_steps():
+    """The Strategist's loop with a model written in advance (sim/headless.py --script), on the stepped clock."""
+    reach = {"steps": [{"do": "reach_card", "card": "barbecue"}]}
+    give_up = {"name": "report", "arguments": {"outcome": "impossible", "why": "other"}}
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        r = headless(tmp, "s17", reach, script=[{"calls": [give_up, {"name": "go_to_cell", "arguments": {"cell": "A1"}}]}])
+        answers = tool_answers(tmp, "s17") if "report" in r else []
+        check("strategist: after a report taken, nothing else of the same answer runs (S17)",
+              r.get("report", {}).get("outcome") == "impossible" and r["report"]["counts"]["moves"] == 0
+              and answers[-1][0] == "go_to_cell" and answers[-1][1]["result"] == "refused", (r, answers))
+        r = headless(tmp, "s9", reach, script=[{"say": "stop", "calls": [{"name": "robot_state"}, give_up]}])
+        answers = tool_answers(tmp, "s9") if "report" in r else []
+        check("strategist: after the Interpreter's stop, a report of the same answer is refused (S9)",
+              r.get("report", {}).get("outcome") == "stopped" and answers[-1][0] == "report"
+              and answers[-1][1]["result"] == "refused", (r, answers))
+        r = headless(tmp, "s14", reach, "--model", "gpt")
+        check("strategist: an unknown model is refused before anything is written (S14)",
+              "no model 'gpt'" in r.get("refused", "") and not (tmp / "s14" / "mission").exists(), r)
+        world = json.loads((GUIDE / "sim" / "worlds" / "forest.json").read_text(encoding="utf-8"))
+        world["cards"] = [c for c in world["cards"] if c["label"] != "water-point"]
+        r = headless(tmp, "s16", {"steps": [{"do": "reach_card", "card": "water-point"}]}, world=world)
+        check("strategist: without a model, reaching a card that is not on the mat is impossible (S16)",
+              r.get("report", {}).get("outcome") == "impossible"
+              and r["report"]["why"] in ("not on the mat", "not seen yet"), r)
+        # step_done closes one step, checked like report; a light step closes by itself; a step the group adds while
+        # the mission runs reaches the model as an event, and the mission ends when every step is closed.
+        script = [
+            {"calls": [{"name": "step_done", "arguments": {"step": 1, "outcome": "done"}}]},
+            {"calls": [{"name": "set_light", "arguments": {"color": "green"}}]},
+            {"calls": [{"name": "look_around"}]},
+            {"calls": [{"name": "step_done", "arguments": {"step": 2, "outcome": "done",
+                                                           "cards": [{"card": "barbecue", "cell": "F3"}]}}]},
+            {"add": [{"do": "set_light", "color": "blue"}], "calls": [{"name": "seen_cards"}]},
+            {"calls": [{"name": "step_done", "arguments": {"step": 2, "outcome": "done",
+                                                           "cards": [{"card": "water-point", "cell": "B4"}]}}]},
+            {"calls": [{"name": "set_light", "arguments": {"color": "blue"}}, {"name": "look_around"}]}]
+        r = headless(tmp, "steps", {"steps": [{"do": "set_light", "color": "green"},
+                                              {"do": "find_card", "card": "water-point"}]}, script=script)
+        answers = tool_answers(tmp, "steps") if "report" in r else []
+        said = [a[1].get("result") for a in answers]
+        progress = json.loads((tmp / "steps" / "state" / "progress.json").read_text()) if "report" in r else []
+        events = [json.loads(line)["content"] for line in (tmp / "steps" / "mission" / "transcript.jsonl").read_text()
+                  .splitlines() if json.loads(line)["role"] == "user"] if "report" in r else []
+        check("strategist: step_done closes a step as report would, a light closes by itself, an added step is heard",
+              r.get("report", {}).get("outcome") == "done"
+              and r["report"]["cards"] == [{"card": "water-point", "cell": "B4"}]
+              and said == ["refused", "done", "done", "refused", None, "done", "done", "refused"]
+              and len(said) == 8 and [line["status"] for line in progress] == ["done", "done", "done"]
+              and "Event: the group added to the mission. Step 3: Set the light blue." in events,
+              (r, said, progress, events))
+        # Two card steps: step_done is checked for its own step (step 2 done while step 1 is open), a closed step does
+        # not reopen, giving up too early is refused with step_done's own words, and the report comes from the steps.
+        script = [
+            {"calls": [{"name": "look_around"}]},
+            {"calls": [{"name": "step_done", "arguments": {"step": 2, "outcome": "done",
+                                                           "cards": [{"card": "water-point", "cell": "B4"}]}}]},
+            {"calls": [{"name": "step_done", "arguments": {"step": 2, "outcome": "impossible", "why": "other"}}]},
+            {"calls": [{"name": "step_done", "arguments": {"step": 1, "outcome": "impossible", "why": "not on the mat"}}]},
+            {"calls": [{"name": "step_done", "arguments": {"step": 1, "outcome": "impossible", "why": "no way there"}}]}]
+        r = headless(tmp, "two", {"steps": [{"do": "find_card", "card": "barbecue"},
+                                            {"do": "find_card", "card": "water-point"}]}, script=script)
+        answers = tool_answers(tmp, "two") if "report" in r else []
+        whys = [a[1].get("why", a[1].get("result")) for a in answers]
+        check("strategist: step_done for its own step; a closed step does not reopen; too early refused with its words",
+              r.get("report", {}).get("outcome") == "impossible" and r["report"].get("why") == "no way there"
+              and r["report"]["cards"] == [{"card": "water-point", "cell": "B4"}] and len(whys) == 5
+              and whys[1] == "done" and whys[2] == "step 2 is already closed: done"
+              and str(whys[3]).startswith("the camera has not looked at every cell") and "report" not in str(whys[3])
+              and whys[4] == "done", (r, whys))
+        # A pause acknowledged in the middle of an answer, steps added, then resume: the answer that closes the last
+        # step does not end the mission; the model hears the added step and does it.
+        script = [
+            {"calls": [{"name": "set_light", "arguments": {"color": "green"}}]},
+            {"say": "pause", "resume": {"add": [{"do": "set_light", "color": "blue"}]},
+             "calls": [{"name": "set_light", "arguments": {"color": "red"}}]},
+            {"calls": [{"name": "set_light", "arguments": {"color": "blue"}}]}]
+        r = headless(tmp, "added-late", {"steps": [{"do": "set_light", "color": "green"},
+                                                   {"do": "set_light", "color": "red"}]}, "--think", "zero", script=script)
+        progress = json.loads((tmp / "added-late" / "state" / "progress.json").read_text()) if "report" in r else []
+        check("strategist: steps added during a pause in the middle of an answer are done, never lost",
+              r.get("report", {}).get("outcome") == "done" and r["report"]["turns"] == 3
+              and [line.get("color") for line in progress] == ["green", "red", "blue"]
+              and not (tmp / "added-late" / "state" / "additions.json").exists(), (r, progress))
+        # The Interpreter's stop while the model thinks: a report first in the answer is refused, the mission stops.
+        r = headless(tmp, "stop-first", reach, script=[{"say": "stop", "calls": [give_up, {"name": "robot_state"}]}])
+        answers = tool_answers(tmp, "stop-first") if "report" in r else []
+        check("strategist: a stop given while the model thinks refuses even a report that comes first (S9)",
+              r.get("report", {}).get("outcome") == "stopped"
+              and [a[1].get("why") for a in answers] == ["the mission was stopped",
+                                                        "the mission has ended: nothing after it in this answer runs"],
+              (r, answers))
+
+
+def pilot_asks_strategist():
+    """The Pilot never reads the Interpreter's word nor writes its acknowledgement: it asks its Strategist (obey). A
+    probe hands the Pilot that same reader as its ask, so only the code itself can show it."""
+    text = (GUIDE / "stack" / "pilot.py").read_text(encoding="utf-8")
+    found = [w for w in ("mission_control", "say_held", "control.json", "held.json") if w in text]
+    check("the Pilot asks the Strategist for the mission's word, never the Interpreter's file", not found, found)
+
+
 def micropython_subset():
     """The program of the robot must also run on the board, under MicroPython: keep to its part of
     Python (checked by reading the code; it is not run under MicroPython here)."""
@@ -535,7 +661,9 @@ async def timing_scenarios(sim, env):
 async def main():
     micropython_subset()
     clock_only()
+    pilot_asks_strategist()
     stepped_mode()
+    strategist_in_steps()
     reflex_unit()
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp)
@@ -1669,7 +1797,7 @@ def stack_scenarios(sim, env):
     sim.act(do="load_world", mat=big, world={"cards": [], "boxes": [], "balls": []})
     script = ("import json, sys, threading; sys.path.insert(0, 'stack'); import common, pilot; "
               "say = lambda do: (common.STATE_DIR / 'control.json').write_text(json.dumps({'do': do})); "
-              "say('go'); pilot.OBEY_MISSION_CONTROL = True; threading.Timer(2.0, say, ['pause']).start(); "
+              "say('go'); pilot.obey(common.mission_control, common.say_held); threading.Timer(2.0, say, ['pause']).start(); "
               "print(json.dumps(pilot.move('north', 4)))")
     done = subprocess.run([PYTHON, "-I", "-c", script], env=env, cwd=GUIDE, capture_output=True, text=True, timeout=60)
     reply = json.loads(done.stdout or "{}")
@@ -1762,7 +1890,7 @@ def stack_scenarios(sim, env):
     sim.act(do="load_world", mat=big, world=world)
     script = ("import json, sys; sys.path.insert(0, 'stack'); import pilot, strategist; "
               "one = {'steps': [{'do': 'reach_card', 'card': 'barbecue'}]}; first = strategist.run(one, model='none'); "
-              "pilot.OBEY_MISSION_CONTROL = False; pilot.move('south', 2); pilot.PILOT.moves_left = 0; "
+              "pilot.obey(); pilot.move('south', 2); pilot.PILOT.moves_left = 0; "
               "print(json.dumps([first, strategist.run(one, model='none')]))")
     done = subprocess.run([PYTHON, "-I", "-c", script], env=six, cwd=GUIDE, capture_output=True, text=True, timeout=120)
     first, second = (json.loads(done.stdout) if done.stdout else [{}, {}])
@@ -1780,7 +1908,7 @@ def stack_scenarios(sim, env):
               "'arguments': '{\"seconds\": 1}'}}]}; "
               "strategist.api_model = lambda *a, **k: (dict(bad), {}, 'tool_calls'); "
               f"print(json.dumps(strategist.run({{'steps': [{{'do': 'find_card', 'card': 'barbecue'}}]}}, "
-              f"model='loop', out={str(out)!r})))")
+              f"model='openrouter:loop', out={str(out)!r})))")
     done = subprocess.run([PYTHON, "-I", "-c", script], env=env, cwd=GUIDE, capture_output=True, text=True, timeout=120)
     looped = json.loads(done.stdout or "{}")
     told = [json.loads(line)["content"] for line in (out / "transcript.jsonl").read_text().splitlines()
@@ -1802,7 +1930,7 @@ def stack_scenarios(sim, env):
               "strategist.api_model = lambda *a, **k: ({'tool_calls': [{'id': 'r', 'type': 'function', 'function': "
               "{'name': 'report', 'arguments': json.dumps(next(calls))}}]}, {}, 'tool_calls'); "
               f"print(json.dumps(strategist.run({{'steps': [{{'do': 'find_card', 'card': 'water-point'}}]}}, "
-              f"model='invents', out={str(out)!r})))")
+              f"model='openrouter:invents', out={str(out)!r})))")
     done = subprocess.run([PYTHON, "-I", "-c", script], env=env, cwd=GUIDE, capture_output=True, text=True, timeout=120)
     invented = json.loads(done.stdout or "{}")
     told = [json.loads(line)["content"] for line in (out / "transcript.jsonl").read_text().splitlines()
@@ -1865,7 +1993,7 @@ def stack_scenarios(sim, env):
         "strategist.api_model = lambda *a, **k: ({'tool_calls': [{'id': 'r', 'type': 'function', 'function': "
         "{'name': 'report', 'arguments': json.dumps(next(calls))}}]}, {}, 'tool_calls')",
         f"print(json.dumps(strategist.run({{'steps': [{{'do': 'reach_card', 'card': 'barbecue'}}]}}, "
-        f"model='other-card', out={str(out)!r})))"])
+        f"model='openrouter:other-card', out={str(out)!r})))"])
     done = subprocess.run([PYTHON, "-I", "-c", script], env=env, cwd=GUIDE, capture_output=True, text=True, timeout=120)
     other = json.loads(done.stdout.strip().splitlines()[-1]) if done.stdout.strip() else {}
     told = [json.loads(line)["content"] for line in (out / "transcript.jsonl").read_text().splitlines()
@@ -2070,9 +2198,9 @@ async def interpreter_scenarios(sim, env):
                     return json.loads(result.content[0].text)
 
                 names = {t.name for t in (await session.list_tools()).tools}
-                check("interpreter link: six tools, none of them drives the robot",
-                      names == {"mission_options", "start_mission", "pause_mission", "resume_mission", "stop_mission",
-                                "mission_status"}, names)
+                check("interpreter link: seven tools, none of them drives the robot",
+                      names == {"mission_options", "start_mission", "pause_mission", "add_to_mission", "resume_mission",
+                                "stop_mission", "mission_status"}, names)
                 options = await call("mission_options")
                 check("interpreter link: the closed lists (steps, cards, colours, personalities)",
                       "barbecue" in options["cards"] and "reach_card" in options["steps"]
@@ -2099,6 +2227,7 @@ async def interpreter_scenarios(sim, env):
                 sim.act(do="load_world", mat=big, world={"cards": [], "boxes": [], "balls": []})
                 reply = await call("start_mission", steps=[{"do": "survey", "card": "dry-grass"}])
                 await asyncio.sleep(2.0)
+                early = await call("add_to_mission", steps=[{"do": "set_light", "color": "blue"}])
                 paused = await call("pause_mission")
                 # A move under way ends first (a look around finishes its four quarter turns): wait until the robot
                 # has sent nothing for 3 s, then watch 5 s more.
@@ -2118,6 +2247,15 @@ async def interpreter_scenarios(sim, env):
                       paused.get("result") in ("pausing", "paused") and status["state"] == "paused"
                       and (status.get("robot_stands_on") or {}).get("cell") and before == after,
                       (paused, status, before, after))
+                added = await call("add_to_mission", steps=[{"do": "set_light", "color": "blue"}])
+                wrong = await call("add_to_mission", steps=[{"do": "set_light", "color": "pink"}])
+                status = await call("mission_status")
+                check("interpreter link: steps are added to a paused mission only, with closed values; the progress "
+                      "has one line per step",
+                      early.get("result") == "refused" and added.get("result") == "added"
+                      and added["what_the_strategist_was_told"].endswith("Then Set the light blue.")
+                      and wrong.get("result") == "refused" and [line["do"] for line in status.get("progress") or []]
+                      == ["survey"], (early, added, wrong, status))
                 await call("resume_mission")
                 await asyncio.sleep(2.0)
                 stopping = await call("stop_mission")

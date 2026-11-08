@@ -77,6 +77,47 @@ def waiting_info():
         return None
 
 
+def say_progress(progress):
+    """Where the mission stands, one line per step, for the Interpreter (.robot-sim/progress.json). Written by the
+    Strategist's loop, which keeps it; None when no mission has begun."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    path = STATE_DIR / "progress.json"
+    if progress is None:
+        path.unlink(missing_ok=True)
+    else:
+        path.write_text(json.dumps(progress, ensure_ascii=False) + "\n", encoding="utf-8")
+
+
+def progress_now():
+    try:
+        return load_json(STATE_DIR / "progress.json")
+    except (OSError, ValueError):
+        return None
+
+
+def add_steps(steps):
+    """Steps the group adds to the paused mission (the Interpreter's add_to_mission), for the Strategist's loop to take
+    (.robot-sim/additions.json)."""
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    path = STATE_DIR / "additions.json"
+    try:
+        waiting = load_json(path)
+    except (OSError, ValueError):
+        waiting = []
+    path.write_text(json.dumps(waiting + list(steps)) + "\n", encoding="utf-8")
+
+
+def take_additions():
+    """The steps added since the last look, which are then gone from the file."""
+    path = STATE_DIR / "additions.json"
+    try:
+        steps = load_json(path)
+    except (OSError, ValueError):
+        return []
+    path.unlink(missing_ok=True)
+    return steps if isinstance(steps, list) else []
+
+
 def mission_control():
     """What the Interpreter asks of the mission running: "go", "pause" or "stop" (.robot-sim/control.json)."""
     try:

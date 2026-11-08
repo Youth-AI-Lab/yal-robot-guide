@@ -151,6 +151,27 @@ def pause_mission() -> str:
                                      "nothing moves; until then, the robot is still finishing its cell"})
 
 
+def add_to_mission(steps: list[dict[str, str]]) -> str:
+    """Add steps at the end of the paused mission, when the group wants to add to it (not to change it): after
+    resume_mission, the robot goes on with the same mission, then does the new steps. Only while mission_status says
+    "paused". steps: made like start_mission's. Call it only after you said the whole mission back to the group and
+    they said yes: steps added cannot be taken back. To change the mission instead, stop it and start a new one."""
+    if state() != "paused":
+        return json.dumps({"result": "refused", "why": f"no mission paused ({state()}): pause it first, and wait until "
+                                                       "mission_status says paused"})
+    if not isinstance(steps, list) or not steps:
+        return json.dumps({"result": "refused", "why": "no step to add"})
+    try:
+        words = [strategist.step_words(step) for step in steps]
+    except strategist.Refused as e:
+        return json.dumps({"result": "refused", "why": str(e)})
+    common.add_steps(steps)
+    RUN["task"] = (RUN["task"] or "") + " Then " + " Then ".join(words)
+    TURN["ordered"] = True
+    return json.dumps({"result": "added", "mission": RUN["id"], "what_the_strategist_was_told": RUN["task"],
+                       "what_to_do": "call resume_mission: the robot goes on, then does the new steps"})
+
+
 def resume_mission() -> str:
     """Resume the paused mission, unchanged."""
     if state() not in ("pausing", "paused"):
@@ -186,7 +207,8 @@ def mission_status() -> str:
     """Where the mission is: "running", "waiting for an adult" (a move stopped on the way: an adult must put the robot
     back and press Resume, as what_to_do says; the mission goes on after that), "pausing" (asked, the robot is finishing
     its cell), "paused" (nothing moves: with the cell where it stands), "ended", "stopped", "failed" or "no mission
-    yet"; when it ended, the report: outcome
+    yet"; progress: each step of the mission, "to do", "doing", "done" or "impossible", with the cards found; when it
+    ended, the report: outcome
     (done, impossible, stopped…), the cards asked about with their cells, why, the moves left. Say the report to the
     group in their words."""
     answer, now = status(), clock.monotonic()
@@ -206,6 +228,7 @@ def status():
         answer["what_to_do"] = (common.waiting_info() or {}).get("what_to_do")
     if RUN["started"] is not None:
         answer["seconds"] = round(clock.monotonic() - RUN["started"])
+        answer["progress"] = common.progress_now()
     if RUN["report"] is not None and state() in ("ended", "stopped"):
         answer["report"] = RUN["report"]
     if RUN["error"]:
@@ -213,7 +236,7 @@ def status():
     return answer
 
 
-TOOLS = (mission_options, start_mission, pause_mission, resume_mission, stop_mission, mission_status)
+TOOLS = (mission_options, start_mission, pause_mission, add_to_mission, resume_mission, stop_mission, mission_status)
 
 
 async def answer(send, status, body, kind=b"application/json"):
@@ -286,6 +309,8 @@ def main():
     parser.add_argument("--cap", type=float, default=strategist.RUN_CAP_USD, help="the most a mission may cost, in US "
                                                                                   "dollars")
     args = parser.parse_args()
+    if not strategist.known_model(args.model):
+        parser.error(f"no model {args.model!r} for the Strategist")
     token = os.environ.pop("MCP_TOKEN", "")
     if len(token) < 32:
         sys.exit("interpreter_link: MCP_TOKEN missing or too short (32 characters at least)")

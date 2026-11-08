@@ -6,7 +6,7 @@ Pilot's goal tools).
 
 What it checks:
   - robot-session start brings up the simulator, the Interpreter's link and Open WebUI, with "Feurisson robot";
-  - the model sees Feurisson's instructions and exactly the link's six tools, receives the saved key, and is asked
+  - the model sees Feurisson's instructions and exactly the link's seven tools, receives the saved key, and is asked
     to route away from companies that may collect data; the plain model is hidden, and routed the same way;
   - a mission asked through Open WebUI reaches the robot and ends with its report;
   - the filter (interpreter/feurisson_filter.py): the group's language, named by the small model, and the mission as
@@ -42,8 +42,8 @@ PIDS = GUIDE / ".robot-sim" / "session" / "pids.json"
 SERVER, BOT, MODEL, FAKE_PORT = "robot-mission", "feurisson-robot", "fake-model", 18116
 OWUI, VOLUME, NETWORK = "robot-owui", "robot-owui-data", "robot-session"
 OWUI_IMAGE = os.environ.get("ROBOT_OPENWEBUI_IMAGE", "ghcr.io/open-webui/open-webui:v0.12.5")
-TOOLS = {f"{SERVER}_{n}" for n in ("mission_options", "start_mission", "pause_mission", "resume_mission",
-                                   "stop_mission", "mission_status")}
+TOOLS = {f"{SERVER}_{n}" for n in ("mission_options", "start_mission", "pause_mission", "add_to_mission",
+                                   "resume_mission", "stop_mission", "mission_status")}
 DENY = {"data_collection": "deny"}
 RESULTS = []
 CALLS = []
@@ -196,7 +196,7 @@ def first_session(key, gateway, env):
     seen = ask(token, f"@call {SERVER}_mission_options {{}}")
     check("the model sees Feurisson's instructions", any("Feurisson" in c["system"] for c in seen))
     offered = {t for c in seen for t in c["tools"]}
-    check("the model is offered the link's six tools, nothing else", offered == TOOLS, sorted(offered))
+    check("the model is offered the link's seven tools, nothing else", offered == TOOLS, sorted(offered))
     check("mission_options answers through Open WebUI",
           any("barbecue" in r for c in seen for r in c["tool_results"]))
     check("the model receives the saved key", seen and all(c["authorization"] == f"Bearer {key}" for c in seen))
