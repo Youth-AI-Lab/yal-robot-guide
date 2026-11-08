@@ -99,6 +99,11 @@ BOX_VIEWS = 3
 # A ball rolls back and forth on a line: once seen moving along a row or a column, that line is its lane for
 # LANE_FOR_S. A card placed for sure stays on its cell this long when it leaves the camera's view (a box hides it).
 LANE_FOR_S = 600
+# A bump that stops a slide: where the robot's centre was, from the time since it left its last cell. The speeds of the
+# simulator's reflex.py (forwards; sideways or backwards it goes blind, slower) and the time it stands on each cell of a
+# slide to look; on the real robot TO BE COMPLETED. Past half a cell, it was on the next cell.
+SLIDE_CM_S = {"forwards": 10, "blind": 5}
+CELL_STAND_S = 0.3
 # A cell counts as free when the sensor sees nothing up to its far side plus this margin (as
 # reflex.STOP_DISTANCE_CM). The beam is narrower than the robot (5 degrees each side in the simulator, TO BE
 # COMPLETED on the robot): a free reading only says the line in front of it is clear.
@@ -160,6 +165,7 @@ class Cartographer:
             self.pose_logged = saved.get("pose_logged")
             self.frame = saved.get("frame")
             self.notices = saved.get("notices", [])
+            self.hit = saved.get("hit")
         except (OSError, ValueError, KeyError):
             # Where the robot starts: the rule "start" of the Referee's rules (adults), else the start of the mat.
             # "unknown": the Cartographer works relative to where it started, every place of the mat still possible.
@@ -194,6 +200,7 @@ class Cartographer:
             self.boxes = {}  # cell -> [when, [points of view]]: the camera saw a point of a box's side put a box there
             self.covered_said = False  # the caller was told the camera has looked at every cell it can
             self.pose_logged = None  # the last line of poses.jsonl, not to write it twice
+            self.hit = None  # the lanes a bump that stopped the last move gave, while the robot waits for an adult
 
     def save(self):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
@@ -201,7 +208,8 @@ class Cartographer:
                  "resumes_at_stop": self.resumes_at_stop, "poses": self.poses, "seen": self.seen, "ball": self.ball,
                  "free": self.free, "lanes": self.lanes, "way": self.way, "back_fixed": self.back_fixed,
                  "placed": self.placed, "presses": self.presses, "looked": self.looked, "blocked": self.blocked,
-                 "boxes": self.boxes, "covered_said": self.covered_said, "pose_logged": self.pose_logged, "frame": self.frame, "notices": self.notices}
+                 "boxes": self.boxes, "covered_said": self.covered_said, "pose_logged": self.pose_logged, "frame": self.frame, "notices": self.notices,
+                 "hit": self.hit}
         (STATE_DIR / "terrain.json").write_text(json.dumps(saved) + "\n", encoding="utf-8")
 
     # Where the robot is on the mat --------------------------------------------------------------------------------
@@ -389,6 +397,7 @@ class Cartographer:
                                                              cells(self.blocked))
         self.boxes = cells(self.boxes)
         self.lanes = {line(k): v for k, v in self.lanes.items() if line(k)}
+        self.hit = None
         if self.ball and self.ball.get("from"):
             b = dict(self.ball, **{"from": list(pose(*self.ball["from"]))})
             if b.get("cell"):
@@ -476,7 +485,10 @@ class Cartographer:
         events = []
         if lost:
             events.append({"event": "some older events were lost (the robot keeps only the last ones)"})
-        for age, kind, reason in entries:
+        # A bump before an adult's Resume in this batch was felt while the robot waited, where the move stopped, not on
+        # the cell the adult put it back on (the Cartographer may already believe that cell).
+        resumed = max((i for i, entry in enumerate(entries) if entry[1] == "RESUMED"), default=-1)
+        for i, (age, kind, reason) in enumerate(entries):
             if kind == "BALL":
                 text = self.saw_ball(reason, age)
             elif kind in ("SEEN", "GONE"):
@@ -484,10 +496,15 @@ class Cartographer:
                 if text is None:
                     continue
             else:
-                if kind == "BUMP" and self.sure and not self.frame:
+                if kind == "BUMP" and (i < resumed or not self.sure) and not self.frame:
+                    # Touched again while it waited for the adult, where the first bump stopped it: the same ball.
+                    for lane in self.hit or []:
+                        self.lanes[lane] = max(self.lanes.get(lane, 0), clock.now() - age / 1000)
+                elif kind == "BUMP" and self.sure and not self.frame:
                     # Something touched the robot standing on its cell: a ball rolls there (a ball seen only by its
                     # bump left no lane, 6 November). The cell stays a lane for LANE_FOR_S.
                     self.lanes[f"cell:{cell_name(self.col, self.row)}"] = clock.now() - age / 1000
+                    self.lines_from_cells()
                 text = EVENTS.get(kind, kind + (":" + reason if reason else ""))
                 if kind == "STOP":
                     text += REASONS.get(reason, reason)
@@ -588,6 +605,8 @@ class Cartographer:
             lane = (f"row:{int(name[1:]) - 1}" if moving in ("east", "west") else
                     f"col:{ord(name[0]) - ord('A')}" if moving in ("north", "south") else f"cell:{name}")
             self.lanes[lane] = when
+        if not moving:
+            self.lines_from_cells()
         if trend == "gone":
             return f"the ball the camera was watching left its sight, last {in_cell}, seen from {seen_from}"
         return f"the camera sees a ball, seen from {seen_from}, about {c2} cm away: {in_cell}{going}, {how}"
@@ -763,6 +782,51 @@ class Cartographer:
                        else f"cell {value}")
         return out
 
+    def lines_from_cells(self):
+        """Two cells where a ball was met in the last LANE_FOR_S, on one column or one row: a ball rolls on that line
+        (a bump on E5 then another on E4: column E). It is a lane as long as the newer of the two cells is."""
+        now = clock.now()
+        cells = [(cell_xy(k[5:]), t) for k, t in self.lanes.items()
+                 if k.startswith("cell:") and k[5:] and now - t <= LANE_FOR_S]
+        for i, ((c1, r1), t1) in enumerate(cells):
+            for (c2, r2), t2 in cells[i + 1:]:
+                lane = f"col:{c1}" if c1 == c2 else f"row:{r1}" if r1 == r2 else None
+                if lane:
+                    self.lanes[lane] = max(self.lanes.get(lane, 0), max(t1, t2))
+
+    def bump_lanes(self, fields):
+        """A bump stopped a move or a quarter turn: a ball rolls where the robot was. Before (8 November 2026), the
+        bump left nothing, as the place was no longer sure: the adult put the robot back where the move started, and
+        the Pilot planned the same leg again into the same ball (30 of the 193 adults of the bench of the varied
+        balls). A quarter turn: its cell (no way to tell the ball's line). A slide or a step: the cell its centre was
+        on (the cells it reached by its own count, then half a cell by the time since it left the last one), and the
+        line across the move (the column for a move east or west): a ball straight ahead stops the robot as an
+        obstacle first, so this one came from the side. A bump that came along the move marks a wrong line, for
+        LANE_FOR_S: the bench measured it (phantom lanes)."""
+        if self.frame or not self.way or not fields.get("slid", "").isdigit():
+            return
+        way = self.way
+        k = min(int(fields["slid"]) + 1, len(way) - 1)  # 0 for a quarter turn (the way is its cell)
+        left = getattr(self, "left_cell", None)
+        if k > 0 and left is not None and k == int(fields["slid"]) + 1:
+            # Less than half a cell from the cell it left: still on it (a ball rolling across that cell hits it as it
+            # leaves), not on the next one.
+            forwards = (way[k][0] - way[k - 1][0], way[k][1] - way[k - 1][1]) == FACING_STEP[self.facing]
+            gone = (clock.monotonic() - left[0] - (CELL_STAND_S if left[1] else 0)) * \
+                SLIDE_CM_S["forwards" if forwards else "blind"]
+            if gone < self.mat["cell_cm"] / 2:
+                k -= 1
+        col, row = way[k]
+        keys = [f"cell:{cell_name(col, row)}"]
+        if len(way) > 1:
+            dc = way[1][0] - way[0][0]
+            keys.append(f"col:{col}" if dc else f"row:{row}")
+        now = clock.now()
+        for lane in keys:
+            self.lanes[lane] = now
+        self.hit = keys
+        self.lines_from_cells()
+
     def on_lane(self, cell):
         """A cell on the lane of a ball seen in the last LANE_FOR_S (its row or column, or the cell)."""
         col, row = cell
@@ -795,6 +859,7 @@ class Cartographer:
         the robot's own count (STATE slid=) says which one it reached."""
         start = (self.col, self.row, self.facing)
         self.sure, self.back, self.way = False, start, [list(start[:2])] + [list(c) for c in cells]
+        self.left_cell = (clock.monotonic(), False)  # when it left its last cell, and whether it stood there first
         self.back_fixed = False
         self.resumes_at_stop = self.presses
         self.save()
@@ -802,6 +867,7 @@ class Cartographer:
     def reached(self, cell, pose):
         """A slide reached one more cell (EVT CELL)."""
         before = cell_name(self.col, self.row)
+        self.left_cell = (clock.monotonic(), True)
         self.col, self.row = cell
         self.free[before] = self.free[cell_name(self.col, self.row)] = clock.now()  # it went through them
         self.went(self.col, self.row)
@@ -835,11 +901,11 @@ class Cartographer:
             self.reached_by_count(fields)
         if resumed:
             self.col, self.row, self.facing = self.back
-            self.sure, self.back, self.way, self.resumes_at_stop = True, None, None, None
+            self.sure, self.back, self.way, self.resumes_at_stop = True, None, None, None  # self.hit: until the events
 
     def ended(self):
         """The move ended on a cell the Cartographer knows (done, or refused without moving)."""
-        self.sure, self.back, self.way, self.resumes_at_stop = True, None, None, None
+        self.sure, self.back, self.way, self.resumes_at_stop, self.hit = True, None, None, None, None
         self.save()
 
     def reached_by_count(self, fields):
@@ -865,21 +931,31 @@ class Cartographer:
         """The nearest cell off every ball's lane where an adult can put the robot down (two steps at most, known free,
         no card, nothing standing there), or None."""
         cards = {cell_xy(c) for c in self.card_cells(caution=True)}
-        for d in (1, 2):
-            near = [(cell[0] + dc, cell[1] + dr) for dc in range(-d, d + 1) for dr in range(-d, d + 1)
-                    if abs(dc) + abs(dr) == d]
-            for c, r in sorted(near, key=lambda p: (abs(p[0] - cell[0]), p)):
-                name = cell_name(c, r) if 0 <= c < self.cols and 0 <= r < self.rows else None
-                if name and not self.on_lane((c, r)) and (c, r) not in cards and name not in self.blocked \
-                        and (name in self.free or name in self.looked):
-                    return c, r
+        # A lane known only as a cell (a bump during a quarter turn): its ball rolls on its row or on its column. A
+        # cell on neither comes first, then the others.
+        now = clock.now()
+        met = [cell_xy(k[5:]) for k, t in self.lanes.items()
+               if k.startswith("cell:") and k[5:] and now - t <= LANE_FOR_S]
+        for wary in (True, False):
+            for d in (1, 2):
+                near = [(cell[0] + dc, cell[1] + dr) for dc in range(-d, d + 1) for dr in range(-d, d + 1)
+                        if abs(dc) + abs(dr) == d]
+                for c, r in sorted(near, key=lambda p: (abs(p[0] - cell[0]), p)):
+                    name = cell_name(c, r) if 0 <= c < self.cols and 0 <= r < self.rows else None
+                    if wary and any(c == mc or r == mr for mc, mr in met):
+                        continue
+                    if name and not self.on_lane((c, r)) and (c, r) not in cards and name not in self.blocked \
+                            and (name in self.free or name in self.looked):
+                        return c, r
         return None
 
     def interrupted(self, why):
-        self.sure = False
+        self.sure, self.hit = False, None
         try:
             fields = self.fields()
             self.resumes_at_stop = int(fields.get("resumes", 0))
+            if why == "bump":
+                self.bump_lanes(fields)  # before the adult's cell: never put back into the ball that hit it
             self.reached_by_count(fields)  # an EVT CELL may have been lost on a loose cable
         except (RobotNotConnected, ValueError):
             self.resumes_at_stop = None  # the cable is loose: counted when the robot answers again

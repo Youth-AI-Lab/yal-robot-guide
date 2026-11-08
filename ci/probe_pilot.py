@@ -66,7 +66,9 @@ HOURS_PER_TOOL = 4      # hours on the probe's clock in one tool, at most
 GIVE_UP = ("the mission was stopped", "no moves left", "the robot still waits for an adult",
            "the robot waits for an adult",  # under the Strategist: its loop waits for the adult, without the model
            "the robot could not find where it is on the mat", "the Cartographer did not give the cards seen",
-           "the robot did not find itself in front of the card")
+           "the robot did not find itself in front of the card",
+           "no way to the card",  # go_to_card, a ball's lane in the way (5-pilote.md, since 8 November 2026)
+           "the battery is too low")  # the robot refuses every move (P25)
 FORMAT = ("One tool call per line: the name of a tool, then its arguments as a JSON object (nothing when there are "
           "none), for example:\n" + __doc__[__doc__.index("    go_to_cell"):__doc__.index("The tools are")].rstrip())
 PERSONAS = {

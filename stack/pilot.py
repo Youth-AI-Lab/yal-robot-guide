@@ -115,6 +115,8 @@ class Pilot:
         self.free = set()      # cells the robot went through or the distance sensor saw free
         self.ruled_out = set() # (card, cell): the robot faced the cell from next to it, and that card was not there
         self.looked_from = set()
+        self.pending = set()   # cells the Cartographer says the camera has not looked at yet (camera_coverage)
+        self.tried = set()     # vantages chosen once already for them
         self.lanes = set()     # ("col", c), ("row", r) or ("cell", (c, r)): where a ball was seen rolling
         self.leaving = False
         self.covered = set()   # cells the camera has looked at
@@ -130,6 +132,7 @@ class Pilot:
         # from zero: the state read before is not the robot's any more.
         self.state = {}
         self.moves_left = (RULES.get("limits") or {}).get("moves")
+        self.tried, self.pending = set(), set()  # the extra look for the Cartographer's cells: once per mission
         for key, value in (settings or {}).items():
             if key not in SETTINGS:
                 raise ValueError(f"no setting {key} for the Pilot")  # checked first: no setting changed
@@ -146,6 +149,10 @@ class Pilot:
 
     # --- what the Cartographer says ------------------------------------------------------------------------------
     def read(self, answer):
+        if answer.get("result") == "refused" and answer.get("why") == "the battery is too low":
+            # The robot refuses every move until it is charged: before (8 November 2026), explore asked again and again,
+            # 11,000 quarter turns refused in 20 minutes of a mission.
+            raise Stuck("the battery is too low")
         state = answer.get("state") if isinstance(answer.get("state"), dict) else answer
         if "cell" in state and "position_known" in state:
             self.state = state
@@ -316,6 +323,8 @@ class Pilot:
         answer = command("seen_cards")
         if "cards_seen" not in answer:
             raise Stuck(f"the Cartographer did not give the cards seen: {answer.get('why', answer.get('result'))}")
+        left = (answer.get("camera_coverage") or {}).get("not_looked_at_yet")
+        self.pending = {cell_xy(c) for c in left} if isinstance(left, list) else set()
         return [s for s in answer["cards_seen"] if s.get("cell")]  # no cell while the place on the mat is unknown
 
     def cards(self):
@@ -390,29 +399,36 @@ class Pilot:
             return -2  # the ball keeps the way: the travel gives up this goal, and the ways avoid that cell a while
         return 0
 
-    def path(self, goals, avoid):
+    def path(self, goals, avoid, turns_on_lanes=False):
         """Cheapest way (cells) from here to the nearest goal, through cells not blocked, not cards: a cell seen free
         costs 1, a cell never seen 3 (a wall may hide there)."""
         (c0, r0), _ = self.here()
-        cost, prev, heap = {(c0, r0): 0}, {(c0, r0): None}, [(0, (c0, r0))]
+        # A state is a cell and the step that led there: a way never turns on a ball's lane (out of it the same way it
+        # came in), so that a leg never ends there. Before (8 November 2026), a way D3 -> E3 -> E2 stopped on E3, in
+        # column E, a lane; the next plan left the lane back to D3, and planned E3 again: ten minutes of it.
+        start = ((c0, r0), None)
+        cost, prev, heap = {start: 0}, {start: None}, [(0, start)]
         while heap:
-            k, cur = heapq.heappop(heap)
-            if k > cost[cur]:
+            k, state = heapq.heappop(heap)
+            if k > cost[state]:
                 continue
+            cur, came = state
             if cur in goals:
                 way = []
-                while cur != (c0, r0):
-                    way.append(cur)
-                    cur = prev[cur]
+                while state != start:
+                    way.append(state[0])
+                    state = prev[state]
                 return way[::-1]
             for dc, dr in STEP.values():
+                if came is not None and came != (dc, dr) and self.on_lane(cur) and not turns_on_lanes:
+                    continue
                 nxt = (cur[0] + dc, cur[1] + dr)
                 if not (0 <= nxt[0] < COLS and 0 <= nxt[1] < ROWS) or self.is_blocked(nxt) or nxt in avoid:
                     continue
                 step = k + (1 if nxt in self.free else 3) + (8 if self.on_lane(nxt) else 0)
-                if step < cost.get(nxt, 1e9):
-                    cost[nxt], prev[nxt] = step, cur
-                    heapq.heappush(heap, (step, nxt))
+                if step < cost.get((nxt, (dc, dr)), 1e9):
+                    cost[(nxt, (dc, dr))], prev[(nxt, (dc, dr))] = step, state
+                    heapq.heappush(heap, (step, (nxt, (dc, dr))))
         return None
 
     def travel(self, goals):
@@ -432,6 +448,9 @@ class Pilot:
             now = clock.now()
             kept = {cell for cell, when in self.ball_refused.items() if now - when < BALL_AVOID_S}
             way = self.path(goals - cards, cards | kept)  # a card seen on the way may lie on a goal
+            if way is None and self.leaving:
+                # Already on a lane, every way out may have to turn on one (C4 on row 4 and column C, fixed_pilot F12)
+                way = self.path(goals - cards, cards | kept, turns_on_lanes=True)
             if way is None and kept and self.settings["cross_when_boxed"]:
                 # Boxed in, the ball's cell the only way out (seeds 10 and 18 of the forest, 8 November 2026): crossing
                 # unseen got the robot hit 4 times; giving up never did. A choice of the group's personality.
@@ -444,6 +463,8 @@ class Pilot:
             while n < len(way) and n < self.settings["max_leg"] and \
                     (way[n][0] - way[n - 1][0], way[n][1] - way[n - 1][1]) == (dc, dr):
                 n += 1
+            while n > 1 and self.on_lane(way[n - 1]) and way[n - 1] not in goals:
+                n -= 1  # the longest leg cut on a ball's lane: stop before it, cross it in the next leg
             if self.leg(direction, n) == -2:
                 return False
         (c, r), _ = self.here()
@@ -493,7 +514,14 @@ class Pilot:
             for r in range(ROWS):
                 if self.is_blocked((c, r)) or (c, r) in cards or self.on_lane((c, r)):
                     continue
-                new = len((self.visible(c, r) | {(c, r)}) - self.covered)
+                shown = self.visible(c, r) | {(c, r)}
+                new = len(shown - self.covered)
+                if (c, r) not in self.looked_from and (c, r) not in self.tried:
+                    # A cell the Pilot counts as seen, the Cartographer not (a box hides it, or the cone is narrower
+                    # than the Pilot's): one more look from a new place, once. Before (8 November 2026), the robot
+                    # stopped exploring with C2 never looked at, and answered "not seen yet" instead of "not on the
+                    # mat".
+                    new += len(shown & self.covered & self.pending)
                 if new == 0:
                     continue
                 way = self.path({(c, r)}, cards)
@@ -575,6 +603,8 @@ def explore(look_for=None):
         if PILOT.short(2):
             break
         target = PILOT.next_vantage()
+        if target is not None:
+            PILOT.tried.add(target)
         if target is None:
             break
         if PILOT.travel({target}):
