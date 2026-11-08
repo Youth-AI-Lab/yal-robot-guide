@@ -266,9 +266,8 @@ with the chatbot "Feurisson robot" (the same Open WebUI as the workshops, withou
 models, the Strategist's and Feurisson's, are DeepSeek v4 Flash through OpenRouter, paid with the
 pair's key; OpenRouter is asked to avoid companies that may collect the data, which does not stop a
 provider from keeping what it receives. The Strategist stops a mission at 0.25 US dollars, counted
-from the costs OpenRouter sends back; on 8 November 2026 the key's own counter sometimes rose faster
-than these, for reasons not found. Set a limit on the key itself, on OpenRouter: it is the only cap that
-holds, for Feurisson too.
+from the costs OpenRouter sends back. Nothing caps Feurisson's conversation: set a limit on the key
+itself, on OpenRouter.
 
 1. Save an OpenRouter key (`sk-or-...`), as in the workshops:
 
