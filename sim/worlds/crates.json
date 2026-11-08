@@ -1,0 +1,19 @@
+{
+  "_about": "Crates and two balls. Start in A6 facing north. The barbecue in E2, behind a crate on F2; dry grass in B2, a water point in G5. Crates on C4, E4, F2 and H3. One ball rolls along row 1, the other up and down column D.",
+  "cards": [
+    {"cell": "A6", "label": "fire-station"},
+    {"cell": "E2", "label": "barbecue"},
+    {"cell": "B2", "label": "dry-grass"},
+    {"cell": "G5", "label": "water-point"}
+  ],
+  "boxes": [
+    {"x": 65, "y": 95, "w": 20, "h": 20, "name": "crate"},
+    {"x": 125, "y": 95, "w": 20, "h": 20, "name": "crate"},
+    {"x": 155, "y": 35, "w": 20, "h": 20, "name": "crate"},
+    {"x": 215, "y": 65, "w": 20, "h": 20, "name": "crate"}
+  ],
+  "balls": [
+    {"from": [15, 15], "to": [225, 15], "radius": 7, "speed_cm_s": 8},
+    {"from": [105, 15], "to": [105, 165], "radius": 7, "speed_cm_s": 8}
+  ]
+}

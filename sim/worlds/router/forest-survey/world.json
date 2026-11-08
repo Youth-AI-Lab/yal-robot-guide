@@ -1,0 +1,59 @@
+{
+ "_about": "forest for the router's data, kind survey: written by sim/worlds/router_worlds.py. Dry grass added on C4.",
+ "cards": [
+  {
+   "cell": "A6",
+   "label": "fire-station"
+  },
+  {
+   "cell": "C2",
+   "label": "dry-grass"
+  },
+  {
+   "cell": "D2",
+   "label": "dry-grass"
+  },
+  {
+   "cell": "F3",
+   "label": "barbecue"
+  },
+  {
+   "cell": "B4",
+   "label": "water-point"
+  },
+  {
+   "cell": "C4",
+   "label": "dry-grass"
+  }
+ ],
+ "boxes": [
+  {
+   "x": 95,
+   "y": 95,
+   "w": 20,
+   "h": 20,
+   "name": "tree"
+  },
+  {
+   "x": 185,
+   "y": 125,
+   "w": 20,
+   "h": 20,
+   "name": "rock"
+  }
+ ],
+ "balls": [
+  {
+   "from": [
+    135,
+    15
+   ],
+   "to": [
+    135,
+    165
+   ],
+   "radius": 7,
+   "speed_cm_s": 8
+  }
+ ]
+}

@@ -328,6 +328,24 @@ def router_data():
         check("a run whose last call of the model got no answer (cut by the world's time) is played again the same",
               "error" not in again and cut.get("cut") and cut.get("report") == again.get("report") and cut.get("world_s")
               == again.get("world_s"), (cut.get("report"), again.get("report") or again))
+        done = subprocess.run([PYTHON, "-I", str(GUIDE / "sim" / "worlds" / "router_worlds.py"), "--check"],
+                              capture_output=True, text=True, timeout=120)
+        check("the 20 worlds of the router's data are what sim/worlds/router_worlds.py writes (worlds, mats, missions, "
+              "truths)", done.returncode == 0, (done.stdout + done.stderr)[-300:])
+        spec = importlib.util.spec_from_file_location("router_worlds", GUIDE / "sim" / "worlds" / "router_worlds.py")
+        worlds = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(worlds)
+        judged = {}
+        for v in ("forest-reach", "forest-absent"):
+            d = GUIDE / "sim" / "worlds" / "router" / v
+            truth = json.loads((d / "truth.json").read_text())
+            r = headless(tmp, v, json.loads((d / "mission.json").read_text()), "--mat", str(d / "mat.json"), "--world",
+                         str(d / "world.json"), "--ball-phase", "random")
+            judged[v] = (worlds.judge(truth, r), r.get("report", r).get("outcome"), r.get("robot_cell"),
+                         r.get("robot_heading"), r.get("not_looked_at_yet"))
+        check("the Pilot alone, judged against the truth of the world: right in front of the barbecue (forest-reach), "
+              "right that the picnic is not on the mat once every cell was looked at (forest-absent)",
+              judged["forest-reach"][0] is True and judged["forest-absent"][0] is True, judged)
         nudged = headless(tmp, "nudged", find, script=["I will look around.", {"calls": [
             {"name": "report", "arguments": {"outcome": "impossible", "why": "other"}}]}])
         lines = [json.loads(x) for x in (tmp / "nudged" / "mission" / "transcript.jsonl").read_text().splitlines()]

@@ -1,0 +1,129 @@
+{
+ "world": "crates",
+ "kind": "survey",
+ "mission": {
+  "steps": [
+   {
+    "do": "survey",
+    "card": "dry-grass"
+   }
+  ]
+ },
+ "start": {
+  "cell": "A6",
+  "facing": "north"
+ },
+ "ball_phase": "random",
+ "target": "dry-grass",
+ "target_cells": [
+  "B2",
+  "B4",
+  "G3"
+ ],
+ "cards": {
+  "barbecue": [
+   "E2"
+  ],
+  "dry-grass": [
+   "B2",
+   "B4",
+   "G3"
+  ],
+  "fire-station": [
+   "A6"
+  ],
+  "water-point": [
+   "G5"
+  ]
+ },
+ "reachable": [
+  "A1",
+  "A2",
+  "A3",
+  "A4",
+  "A5",
+  "A6",
+  "B1",
+  "B3",
+  "B5",
+  "B6",
+  "C1",
+  "C2",
+  "C3",
+  "C5",
+  "C6",
+  "D1",
+  "D2",
+  "D3",
+  "D4",
+  "D5",
+  "D6",
+  "E1",
+  "E3",
+  "E5",
+  "E6",
+  "F1",
+  "F3",
+  "F4",
+  "F5",
+  "F6",
+  "G1",
+  "G2",
+  "G4",
+  "G6",
+  "H1",
+  "H2",
+  "H4",
+  "H5",
+  "H6"
+ ],
+ "next_to_target": {
+  "B2": [
+   "A2",
+   "B1",
+   "B3",
+   "C2"
+  ],
+  "B4": [
+   "A4",
+   "B3",
+   "B5"
+  ],
+  "G3": [
+   "F3",
+   "G2",
+   "G4"
+  ]
+ },
+ "blocked": [
+  "C4",
+  "E4",
+  "F2",
+  "H3"
+ ],
+ "ball_lines": [
+  [
+   "A1",
+   "B1",
+   "C1",
+   "D1",
+   "E1",
+   "F1",
+   "G1",
+   "H1"
+  ],
+  [
+   "D1",
+   "D2",
+   "D3",
+   "D4",
+   "D5",
+   "D6"
+  ]
+ ],
+ "sha256": {
+  "world.json": "bab1dd4aae497b86919ef42f3ab9cc4b5298b5ca4d9dddefb7f998547d1b4bfe",
+  "mat.json": "17bce0cd0a51082493e6576e672eb6882c8794f1384a8c525967e3e8ea536b29",
+  "mission.json": "7cb5357db5578941f3238c70213a0d542b87b171b52d9decc4d40dc2453c0747"
+ }
+}

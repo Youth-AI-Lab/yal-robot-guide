@@ -1,0 +1,27 @@
+{
+  "_about": "A wall of boxes in column D, rows 1 to 5; the barbecue behind it in G2, a water point in B2. No ball.",
+  "cards": [
+    {
+      "cell": "A6",
+      "label": "fire-station"
+    },
+    {
+      "cell": "B2",
+      "label": "water-point"
+    },
+    {
+      "cell": "G2",
+      "label": "barbecue"
+    }
+  ],
+  "boxes": [
+    {
+      "x": 95,
+      "y": 0,
+      "w": 20,
+      "h": 150,
+      "name": "wall"
+    }
+  ],
+  "balls": []
+}

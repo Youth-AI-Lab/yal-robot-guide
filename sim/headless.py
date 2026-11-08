@@ -279,6 +279,12 @@ def main():
     except WorldTimeOver:
         report, cut = {"outcome": "cut", "cards": [], "why": "the mission did not stop when asked"}, True
     computer_s = time.monotonic() - started
+    left = None  # what the camera never looked at, from the Cartographer's record (the judge of a missing card needs it)
+    if not cut:
+        try:
+            left = ((strategist.pilot.cards() or {}).get("camera_coverage") or {}).get("not_looked_at_yet")
+        except (Exception, WorldTimeOver):  # noqa: BLE001 - the robot cannot be read, or the world's time is over
+            left = None
     world_text = Path(args.world).read_bytes()
     result = {"report": report, "seed": args.seed, "world_s": round(world.time, 1), "computer_s": round(computer_s, 2),
               "settings": {"mission": mission, "model": args.model, "tools": args.tools, "world": args.world,
@@ -288,7 +294,8 @@ def main():
                            "router": args.router},
               "faster_than_real_time": round(world.time / computer_s, 1) if computer_s else None,
               "time_limit_reached": adult["stop_asked_at"] is not None, "cut": cut, "adult_resumes": adult["resumes"],
-              "bumps": world.bumps, "collisions": world.collisions, "robot_cell": world.cell_of(world.x, world.y)}
+              "bumps": world.bumps, "collisions": world.collisions, "robot_cell": world.cell_of(world.x, world.y),
+              "robot_heading": round(world.heading) % 360, "not_looked_at_yet": left}
     (out / "result.json").write_text(json.dumps(result, ensure_ascii=False, indent=1) + "\n", encoding="utf-8")
     print(json.dumps(result, ensure_ascii=False), flush=True)
 

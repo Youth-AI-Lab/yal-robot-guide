@@ -1,0 +1,39 @@
+{
+ "_about": "wall for the router's data, kind survey: written by sim/worlds/router_worlds.py. Dry grass added on H5, F2, A4.",
+ "cards": [
+  {
+   "cell": "A6",
+   "label": "fire-station"
+  },
+  {
+   "cell": "B2",
+   "label": "water-point"
+  },
+  {
+   "cell": "G2",
+   "label": "barbecue"
+  },
+  {
+   "cell": "H5",
+   "label": "dry-grass"
+  },
+  {
+   "cell": "F2",
+   "label": "dry-grass"
+  },
+  {
+   "cell": "A4",
+   "label": "dry-grass"
+  }
+ ],
+ "boxes": [
+  {
+   "x": 95,
+   "y": 0,
+   "w": 20,
+   "h": 150,
+   "name": "wall"
+  }
+ ],
+ "balls": []
+}

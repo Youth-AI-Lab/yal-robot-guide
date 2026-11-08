@@ -1,0 +1,27 @@
+{
+  "_about": "The barbecue in the top right corner (H1), closed on the west by boxes on G1 and G2: it can be seen only from column H, facing north. No ball.",
+  "cards": [
+    {
+      "cell": "A6",
+      "label": "fire-station"
+    },
+    {
+      "cell": "B2",
+      "label": "water-point"
+    },
+    {
+      "cell": "H1",
+      "label": "barbecue"
+    }
+  ],
+  "boxes": [
+    {
+      "x": 180,
+      "y": 0,
+      "w": 30,
+      "h": 60,
+      "name": "boxes"
+    }
+  ],
+  "balls": []
+}

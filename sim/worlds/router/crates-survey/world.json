@@ -1,0 +1,85 @@
+{
+ "_about": "crates for the router's data, kind survey: written by sim/worlds/router_worlds.py. Dry grass added on B4, G3.",
+ "cards": [
+  {
+   "cell": "A6",
+   "label": "fire-station"
+  },
+  {
+   "cell": "E2",
+   "label": "barbecue"
+  },
+  {
+   "cell": "B2",
+   "label": "dry-grass"
+  },
+  {
+   "cell": "G5",
+   "label": "water-point"
+  },
+  {
+   "cell": "B4",
+   "label": "dry-grass"
+  },
+  {
+   "cell": "G3",
+   "label": "dry-grass"
+  }
+ ],
+ "boxes": [
+  {
+   "x": 65,
+   "y": 95,
+   "w": 20,
+   "h": 20,
+   "name": "crate"
+  },
+  {
+   "x": 125,
+   "y": 95,
+   "w": 20,
+   "h": 20,
+   "name": "crate"
+  },
+  {
+   "x": 155,
+   "y": 35,
+   "w": 20,
+   "h": 20,
+   "name": "crate"
+  },
+  {
+   "x": 215,
+   "y": 65,
+   "w": 20,
+   "h": 20,
+   "name": "crate"
+  }
+ ],
+ "balls": [
+  {
+   "from": [
+    15,
+    15
+   ],
+   "to": [
+    225,
+    15
+   ],
+   "radius": 7,
+   "speed_cm_s": 8
+  },
+  {
+   "from": [
+    105,
+    15
+   ],
+   "to": [
+    105,
+    165
+   ],
+   "radius": 7,
+   "speed_cm_s": 8
+  }
+ ]
+}

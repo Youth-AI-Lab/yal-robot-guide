@@ -1,0 +1,8 @@
+{
+ "steps": [
+  {
+   "do": "reach_card",
+   "card": "barbecue"
+  }
+ ]
+}

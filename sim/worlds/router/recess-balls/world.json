@@ -1,0 +1,40 @@
+{
+ "_about": "recess for the router's data, kind balls: written by sim/worlds/router_worlds.py. A ball added.",
+ "cards": [
+  {
+   "cell": "A6",
+   "label": "fire-station"
+  },
+  {
+   "cell": "B2",
+   "label": "water-point"
+  },
+  {
+   "cell": "H1",
+   "label": "barbecue"
+  }
+ ],
+ "boxes": [
+  {
+   "x": 180,
+   "y": 0,
+   "w": 30,
+   "h": 60,
+   "name": "boxes"
+  }
+ ],
+ "balls": [
+  {
+   "from": [
+    15,
+    105
+   ],
+   "to": [
+    225,
+    105
+   ],
+   "radius": 7,
+   "speed_cm_s": 8
+  }
+ ]
+}

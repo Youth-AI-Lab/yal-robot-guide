@@ -1,0 +1,98 @@
+{
+ "world": "forest",
+ "kind": "reach",
+ "mission": {
+  "steps": [
+   {
+    "do": "reach_card",
+    "card": "barbecue"
+   }
+  ]
+ },
+ "start": {
+  "cell": "A6",
+  "facing": "north"
+ },
+ "ball_phase": "random",
+ "target": "barbecue",
+ "target_cells": [
+  "F3"
+ ],
+ "cards": {
+  "barbecue": [
+   "F3"
+  ],
+  "dry-grass": [
+   "C2",
+   "D2"
+  ],
+  "fire-station": [
+   "A6"
+  ],
+  "water-point": [
+   "B4"
+  ]
+ },
+ "reachable": [
+  "A1",
+  "A2",
+  "A3",
+  "A4",
+  "A5",
+  "A6",
+  "B1",
+  "B2",
+  "B3",
+  "B5",
+  "B6",
+  "C1",
+  "C3",
+  "C4",
+  "C5",
+  "C6",
+  "D1",
+  "D3",
+  "D5",
+  "D6",
+  "E1",
+  "E2",
+  "E3",
+  "E4",
+  "E5",
+  "E6",
+  "F1",
+  "F2",
+  "F4",
+  "F5",
+  "F6",
+  "G1",
+  "G2",
+  "G3",
+  "G4",
+  "G6",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6"
+ ],
+ "next_to_target": {
+  "F3": [
+   "E3",
+   "F2",
+   "F4",
+   "G3"
+  ]
+ },
+ "blocked": [
+  "D4",
+  "G5"
+ ],
+ "ball_lines": [],
+ "sha256": {
+  "world.json": "00b3ff69b28a11123bdb8e26dced832a1814f89866c10248d2b74fcf482a5731",
+  "mat.json": "17bce0cd0a51082493e6576e672eb6882c8794f1384a8c525967e3e8ea536b29",
+  "mission.json": "cf5af1a715b32dd7cda4b81c4724c3284a6eff8720f707f826faf4eb47e4ba0c"
+ }
+}

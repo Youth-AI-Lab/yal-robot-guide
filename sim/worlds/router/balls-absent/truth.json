@@ -1,0 +1,105 @@
+{
+ "world": "balls",
+ "kind": "absent",
+ "mission": {
+  "steps": [
+   {
+    "do": "find_card",
+    "card": "picnic"
+   }
+  ]
+ },
+ "start": {
+  "cell": "H1",
+  "facing": "south"
+ },
+ "ball_phase": "random",
+ "target": "picnic",
+ "target_cells": [],
+ "cards": {
+  "barbecue": [
+   "B5"
+  ],
+  "fire-station": [
+   "H1"
+  ],
+  "water-point": [
+   "E1"
+  ]
+ },
+ "reachable": [
+  "A1",
+  "A2",
+  "A3",
+  "A4",
+  "A5",
+  "A6",
+  "B1",
+  "B2",
+  "B3",
+  "B4",
+  "B6",
+  "C1",
+  "C2",
+  "C3",
+  "C4",
+  "C5",
+  "C6",
+  "D1",
+  "D2",
+  "D3",
+  "D4",
+  "D5",
+  "D6",
+  "E2",
+  "E3",
+  "E4",
+  "E5",
+  "E6",
+  "F1",
+  "F2",
+  "F3",
+  "F4",
+  "F5",
+  "F6",
+  "G1",
+  "G2",
+  "G3",
+  "G4",
+  "G5",
+  "G6",
+  "H1",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6"
+ ],
+ "next_to_target": {},
+ "blocked": [],
+ "ball_lines": [
+  [
+   "E1",
+   "E2",
+   "E3",
+   "E4",
+   "E5",
+   "E6"
+  ],
+  [
+   "A4",
+   "B4",
+   "C4",
+   "D4",
+   "E4",
+   "F4",
+   "G4",
+   "H4"
+  ]
+ ],
+ "sha256": {
+  "world.json": "f8d2b7c05b51f4cd5fe5c290aaafd507c6a88f2a367c0c494740921af28cabae",
+  "mat.json": "a00765cfc40844c2a4c306dae419d1f9c7d1af6f96c3f8a5347a9b0910782087",
+  "mission.json": "abc491813a06b4fae9e3b3569d251fd82fd9c51ee7a0ed58062b6e7a0c9d296b"
+ }
+}

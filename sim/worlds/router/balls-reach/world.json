@@ -1,0 +1,19 @@
+{
+ "_about": "balls for the router's data, kind reach: written by sim/worlds/router_worlds.py. Its balls removed.",
+ "cards": [
+  {
+   "cell": "H1",
+   "label": "fire-station"
+  },
+  {
+   "cell": "B5",
+   "label": "barbecue"
+  },
+  {
+   "cell": "E1",
+   "label": "water-point"
+  }
+ ],
+ "boxes": [],
+ "balls": []
+}

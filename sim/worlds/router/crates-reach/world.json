@@ -1,0 +1,52 @@
+{
+ "_about": "crates for the router's data, kind reach: written by sim/worlds/router_worlds.py. Its balls removed.",
+ "cards": [
+  {
+   "cell": "A6",
+   "label": "fire-station"
+  },
+  {
+   "cell": "E2",
+   "label": "barbecue"
+  },
+  {
+   "cell": "B2",
+   "label": "dry-grass"
+  },
+  {
+   "cell": "G5",
+   "label": "water-point"
+  }
+ ],
+ "boxes": [
+  {
+   "x": 65,
+   "y": 95,
+   "w": 20,
+   "h": 20,
+   "name": "crate"
+  },
+  {
+   "x": 125,
+   "y": 95,
+   "w": 20,
+   "h": 20,
+   "name": "crate"
+  },
+  {
+   "x": 155,
+   "y": 35,
+   "w": 20,
+   "h": 20,
+   "name": "crate"
+  },
+  {
+   "x": 215,
+   "y": 65,
+   "w": 20,
+   "h": 20,
+   "name": "crate"
+  }
+ ],
+ "balls": []
+}

@@ -1,0 +1,44 @@
+{
+ "_about": "balls for the router's data, kind balls: written by sim/worlds/router_worlds.py.",
+ "cards": [
+  {
+   "cell": "H1",
+   "label": "fire-station"
+  },
+  {
+   "cell": "B5",
+   "label": "barbecue"
+  },
+  {
+   "cell": "E1",
+   "label": "water-point"
+  }
+ ],
+ "boxes": [],
+ "balls": [
+  {
+   "from": [
+    135,
+    15
+   ],
+   "to": [
+    135,
+    165
+   ],
+   "radius": 7,
+   "speed_cm_s": 8
+  },
+  {
+   "from": [
+    15,
+    105
+   ],
+   "to": [
+    225,
+    105
+   ],
+   "radius": 7,
+   "speed_cm_s": 8
+  }
+ ]
+}

@@ -1,0 +1,87 @@
+{
+ "world": "recess",
+ "kind": "absent",
+ "mission": {
+  "steps": [
+   {
+    "do": "find_card",
+    "card": "picnic"
+   }
+  ]
+ },
+ "start": {
+  "cell": "A6",
+  "facing": "north"
+ },
+ "ball_phase": "random",
+ "target": "picnic",
+ "target_cells": [],
+ "cards": {
+  "barbecue": [
+   "H1"
+  ],
+  "fire-station": [
+   "A6"
+  ],
+  "water-point": [
+   "B2"
+  ]
+ },
+ "reachable": [
+  "A1",
+  "A2",
+  "A3",
+  "A4",
+  "A5",
+  "A6",
+  "B1",
+  "B3",
+  "B4",
+  "B5",
+  "B6",
+  "C1",
+  "C2",
+  "C3",
+  "C4",
+  "C5",
+  "C6",
+  "D1",
+  "D2",
+  "D3",
+  "D4",
+  "D5",
+  "D6",
+  "E1",
+  "E2",
+  "E3",
+  "E4",
+  "E5",
+  "E6",
+  "F1",
+  "F2",
+  "F3",
+  "F4",
+  "F5",
+  "F6",
+  "G3",
+  "G4",
+  "G5",
+  "G6",
+  "H2",
+  "H3",
+  "H4",
+  "H5",
+  "H6"
+ ],
+ "next_to_target": {},
+ "blocked": [
+  "G1",
+  "G2"
+ ],
+ "ball_lines": [],
+ "sha256": {
+  "world.json": "0e035e06e836850a2caa5bf88e1f872af37f2ae4f38d775d05758c2bf5bb4ecd",
+  "mat.json": "17bce0cd0a51082493e6576e672eb6882c8794f1384a8c525967e3e8ea536b29",
+  "mission.json": "abc491813a06b4fae9e3b3569d251fd82fd9c51ee7a0ed58062b6e7a0c9d296b"
+ }
+}
