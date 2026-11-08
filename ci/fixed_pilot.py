@@ -282,7 +282,7 @@ NO_COMMANDS = {"result": "refused", "why": "no commands left: the adults allow 3
 NO_CELLS = {"result": "refused", "why": "no cells left: the adults allow 6 cells per mission"}
 NO_MOVES = {"result": "refused", "why": "no moves left: the adults allow 5 moves per mission"}
 OBSTACLE = REASONS["obstacle"]    # "something is in front of the robot": the only refusal that blocks a cell
-BATTERY = {"result": "refused", "why": REASONS["battery"]}  # refused for good, but not a limit of the adults
+STILL_MOVING = {"result": "refused", "why": REASONS["busy"]}  # refused again and again, not a limit of the adults
 ACTS = ("look_around", "move", "face", "turn", "step_forward", "set_light")
 GO_TO_CARD_GAVE_UP = "the robot did not find itself in front of the card barbecue"
 NO_WAY = "no way to the card barbecue now (a ball's lane, or something in the way)"
@@ -688,26 +688,29 @@ def f4_look_each_leg():
         first = next((k for k, a in enumerate(acts) if a[0] == "move"), None)
         check(first is not None and acts[first][1] in ("east", "west"), f"{what}: the first slide goes east or west",
               acts)
-        check(acts[first - 1] == ["face", acts[first][1], None], f"{what}: the robot faced that way first", acts)
+        # It starts facing east: a slide east needs no turn first; a slide west does.
+        check(acts[first][1] == "east" or acts[first - 1] == ["face", acts[first][1], None],
+              f"{what}: the robot faced that way first", acts)
         check(not [s for s in seen if s[0] == "move" and s[1]["direction"] == "north" and s[2] == "C5"],
               f"{what}: never a slide north from C5", seen)
         moves = [k for k, a in enumerate(acts) if a[0] == "move"]
         check(all("look_around" in [a[0] for a in acts[(moves[i - 1] + 1 if i else 0):k]] for i, k in enumerate(moves)),
               f"{what}: a look_around before every slide", acts)
-    # (c) The same at a later leg: from A6 the way to C2 goes up column A, then east along row 2. Only the look from A2
-    # shows the box on B2: the plan of that leg is made after it, round B2.
-    h = Harness(at="A6", facing="north", boxes={"B2"}, settings={"look_each_leg": True, "max_leg": 2})
-    before = []  # at each look: (where the robot is, B2 blocked for the Pilot)
-    h.fake.script["look_around"] = lambda: before.append((h.fake.here(), xy("B2") in h.P.blocked)) or None
+    # (c) The same at a later leg: from A6 the way to C2 goes up column A to A4, east along row 4 to C4, then up
+    # column C (the cheapest way since 011ff0d, ties broken by path()). Only the look from C4 shows the box on C3: the
+    # plan of that leg is made after it, round C3.
+    h = Harness(at="A6", facing="north", boxes={"C3"}, settings={"look_each_leg": True, "max_leg": 2})
+    before = []  # at each look: (where the robot is, C3 blocked for the Pilot)
+    h.fake.script["look_around"] = lambda: before.append((h.fake.here(), xy("C3") in h.P.blocked)) or None
     seen = where_calls(h)
     answer = h.tool("go_to_cell", cell="C2")
     check(answer["result"] == "done" and answer["cell"] == "C2", "a later leg: done on C2", answer)
-    check(("A2", False) in before and xy("B2") in h.P.blocked, "B2 unknown before the look from A2, blocked after it",
+    check(("C4", False) in before and xy("C3") in h.P.blocked, "C3 unknown before the look from C4, blocked after it",
           [before, h.P.blocked])
-    # Never a turn east from A2 either: since E9, a leg planned before the look would face B2, see it blocked and end
+    # Never a turn north from C4 either: since E9, a leg planned before the look would face C3, see it blocked and end
     # without a slide; only its quarter turn shows the plan came first.
-    check(not [s for s in seen if s[0] in ("move", "face") and s[1]["direction"] == "east" and s[2] == "A2"],
-          "a later leg: never a turn nor a slide east from A2, towards B2", seen)
+    check(not [s for s in seen if s[0] in ("move", "face") and s[1]["direction"] == "north" and s[2] == "C4"],
+          "a later leg: never a turn nor a slide north from C4, towards C3", seen)
     acts = acting(h)
     moves = [k for k, a in enumerate(acts) if a[0] == "move"]
     check(all("look_around" in [a[0] for a in acts[(moves[i - 1] + 1 if i else 0):k]] for i, k in enumerate(moves)),
@@ -1768,43 +1771,44 @@ def f15_explore_limit():
 
 
 @scenario("F15b", "-", "I16")
-def f15b_explore_endless():
-    # Every look_around refused for a reason that is not a limit of the adults (the battery too low): the robot's own
-    # cell C5 stays the best vantage (score 22, no other cell reaches 33), travel there is True at once, the refused
-    # look adds nothing to covered and reads the state again: the same three calls for ever.
+def f15b_explore_bounded():
+    # Every look_around refused for a reason that is neither a limit of the adults nor the battery (the robot still
+    # moving): the robot's own cell C5 stays the best vantage, travel there is True at once and a refused look adds
+    # nothing to covered. The loop ends after VANTAGES rounds (ROBOT-PILOTE.md, E2 (b)): done, the mat not covered.
     h = Harness(at="C5", facing="north", toolset="goal")
     for name in ACTS:
-        h.fake.script[name] = lambda **_: dict(BATTERY)
-    answer = explore_bounded(h, 300)
+        h.fake.script[name] = lambda **_: dict(STILL_MOVING)
+    answer = explore_bounded(h, 3000)
+    looks = len(h.calls("look_around"))
+    check(answer.get("result") == "done" and answer.get("mat_covered") is False and answer.get("cards_seen") == {},
+          "done, the mat not covered, no card", answer)
+    check(looks == h.pilot.VANTAGES + 1, f"one look, then one per round: {h.pilot.VANTAGES + 1} looks", looks)
     calls = names(h)
-    loop = ["seen_cards", "look_around", "robot_state"]
-    check(answer["result"] == "PROBE LIMIT", "explore still runs after 300 calls", answer)
-    check(calls[:3] == ["robot_state", "look_around", "robot_state"] and
-          all(n == loop[i % 3] for i, n in enumerate(calls[3:])), "the record, a refused look, a reading, again",
-          calls[:12])
-    check(h.P.covered == set() and h.cell() == "C5" and h.log() == [], "nothing covered, nothing moved, no line",
-          [sorted(h.P.covered), h.cell(), h.log()])
-    # Under the Strategist, only a stop ends it: the next look raises it (stack/pilot.py:93-94).
+    check(all(calls[k + 1:k + 2] == ["robot_state"] for k, n in enumerate(calls) if n == "look_around"),
+          "each refused look is followed by a reading (it carries no state)", calls[:12])
+    check(h.P.covered == set() and h.cell() == "C5", "nothing covered, nothing moved", [sorted(h.P.covered), h.cell()])
+    # Under the Strategist, a stop ends it sooner: the next look raises it.
     h = Harness(at="C5", facing="north", toolset="goal")
     for name in ACTS:
-        h.fake.script[name] = lambda **_: dict(BATTERY)
+        h.fake.script[name] = lambda **_: dict(STILL_MOVING)
     looks = []
 
     def look(**_):
         looks.append(1)
         if len(looks) == 20:
             h.mission.stop()
-        return dict(BATTERY)
+        return dict(STILL_MOVING)
     h.fake.script["look_around"] = look
-    answer = explore_bounded(h, 300)
+    answer = explore_bounded(h, 3000)
     check(answer == {"result": "gave up", "why": "the mission was stopped", "cards_seen": {}, "moves_left": None},
           "a stop ends it", answer)
     check(len(looks) == 20 and not h.calls("move", "face", "turn", "step_forward"), "20 refused looks, no other move",
           names(h)[-6:])
-    raise Known("explore never ends when every look_around is refused for good for a reason that is not a limit of the "
-                "adults (the battery too low): the robot's own cell stays the best vantage, travel there is True at once "
-                "and a refused look adds nothing to covered; only a stop of the mission ends it (stack/pilot.py:597-606, "
-                "496-509). The bound of the loop (ROBOT-PILOTE.md, E2 (b)) is not written yet")
+
+
+@mutant("explore without its bound (E2 (b))", "F15b")
+def m_explore_unbounded(m):
+    m.VANTAGES = 10 ** 6
 
 
 @mutant("a refusal for a limit of the adults goes on (before E2 (a))", "F15", "F23")

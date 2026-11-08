@@ -39,6 +39,8 @@ BALL_AVOID_S = 60
 LANE_WATCHES, LANE_WATCH_S = 3, 5  # before crossing a lane whose ball was not seen going away: watch, at most this long
 BALL_RECENT_S = RULES["ball_seen_recently_s"]
 ADULT_WAIT_S = 150   # how long to wait for an adult's Resume
+VANTAGES = COLS * ROWS  # vantages one explore goes to, at most: a refusal that is not a limit of the adults (the robot
+                        # still moving, a command not understood) could leave the same vantage chosen for ever (E2)
 # The Pilot's settings: bricks of the group's personality (personalities/*.json), always applied.
 SETTINGS = {
     "careful_balls": {"default": True, "means": "before each leg, wait while a ball seen just before comes closer, and "
@@ -624,7 +626,9 @@ def explore(look_for=None):
     PILOT.here()
     if not PILOT.covered:
         PILOT.look_around()
-    while not (look_for and look_for in PILOT.cards()):
+    for _ in range(VANTAGES):
+        if look_for and look_for in PILOT.cards():
+            break
         if PILOT.short(2):
             break
         target = PILOT.next_vantage()
