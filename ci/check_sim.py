@@ -1725,10 +1725,13 @@ def stack_scenarios(sim, env):
           (looped, told[:2], done.stderr[-400:]))
 
     # A report that names a card the record does not place there (Mistral Small 3.2 on Albert: the barbecue on D4) is
-    # refused, with the record; the model reports again, with what was seen. The world has no water point.
+    # refused, with the record; the model reports again, with what was seen. The world has no water point. Giving up
+    # with cells the camera has not looked at is refused once too (Qwen 3 Coder on Albert gave up with two cells left);
+    # the third report is taken.
     out = Path(tempfile.mkdtemp(dir=env["ROBOT_STATE_DIR"]))
     script = ("import json, sys; sys.path.insert(0, 'stack'); import strategist; "
               "calls = iter([{'cards': [{'card': 'water-point', 'cell': 'A1'}], 'outcome': 'done'}, "
+              "{'cards': [], 'outcome': 'impossible', 'why': 'not seen yet'}, "
               "{'cards': [], 'outcome': 'impossible', 'why': 'not seen yet'}]); "
               "strategist.api_model = lambda *a, **k: ({'tool_calls': [{'id': 'r', 'type': 'function', 'function': "
               "{'name': 'report', 'arguments': json.dumps(next(calls))}}]}, {}, 'tool_calls'); "
@@ -1739,10 +1742,12 @@ def stack_scenarios(sim, env):
     told = [json.loads(line)["content"] for line in (out / "transcript.jsonl").read_text().splitlines()
             if json.loads(line).get("role") == "tool"] if (out / "transcript.jsonl").exists() else []
     check("a report with a card the record does not place there is refused, with the record; the next report, "
-          "without it, ends the mission", invented.get("outcome") == "impossible" and invented.get("cards") == []
-          and len(told) == 2 and told[0].startswith('{"result": "refused", "why": "the record does not place '
+          "without it, is refused once for the cells left, the third ends the mission",
+          invented.get("outcome") == "impossible" and invented.get("cards") == []
+          and len(told) == 3 and told[0].startswith('{"result": "refused", "why": "the record does not place '
                                                      'water-point on A1') and '"seen_cards"' in told[0]
-          and '"done"' in told[1], (invented, told, done.stderr[-400:]))
+          and told[1].startswith('{"result": "refused", "why": "the camera has not looked at every cell of the mat yet: ')
+          and '"not_looked_at_yet"' in told[1] and '"done"' in told[2], (invented, told, done.stderr[-400:]))
 
     # A card seen while the place on the mat is unknown has no cell in the record yet: the Pilot finds its place first,
     # then refuses a cell that holds a card.

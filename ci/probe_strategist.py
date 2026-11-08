@@ -75,6 +75,7 @@ REPEATED = re.compile(r"; this same call was refused (\d+) times in a row: chang
 BUSY = ("another_command", "one_move_at_a_time")  # the stack held by another program a moment: the loop reads again
 NOT_PLACED, PLACE_LOST = "the record does not place ", "the robot does not know where it is now"
 UNREAD = "the record of the cards could not be read now"
+TOO_EARLY = "the camera has not looked at every cell of the mat yet"
 ENDED = f"the mission ended: the same call was refused {SAME_REFUSAL_MAX} times in a row"
 NUDGE = "Call report to end the mission."
 REPORT = {"required": ["outcome"], "properties": {
@@ -115,6 +116,7 @@ class Ctx:
         self.coverage, self.configured, self.holds, self.probe_resumes, self.moves = [], [], 0, 0, 0
         self.messages, self.model_report, self.lies, self.stop_in_call = None, None, [], None
         self.records_given, self.last_refused, self.same_refused, self.most_same = [], None, 0, 0
+        self.questioned = False  # a report giving up on a card was refused once for cells left
         self.secrets = sorted({s for k2, v in (mission.items() if isinstance(mission, dict) else [])
                                if k2 not in ("steps", "personality") for s in strings(v) if len(s) >= 6})
         self.kinds = collections.Counter()
@@ -601,10 +603,26 @@ def _command(name, *args):
     if name == "seen_cards" and CTX is not None:  # the record a report is compared with; sometimes the stack is busy
         busy = CTX.ctrl_rng.random() < 0.35
         answer = {"result": "refused", "rule": "another_command", "why": "another program is using the robot"} if busy \
-            else {"cards_seen": [WORLD.masked(r) for r in WORLD.records], "since_last_call": [f"probe {len(WORLD.records)}"]}
+            else {"cards_seen": [WORLD.masked(r) for r in WORLD.records], "since_last_call": [f"probe {len(WORLD.records)}"],
+                  "camera_coverage": {"not_looked_at_yet": None if WORLD.frame else
+                                      [c for c in CELLS if c not in WORLD.looked], "cells_on_the_mat": len(CELLS)}}
         CTX.records_given.append(answer)
         return answer
     return {"waiting_for_adult": False, "position_known": True, "cell": "C3", "facing": "north"}
+
+
+def early_report(mission, arguments):
+    """A report that gives up looking for a card (stack/strategist.py, early_report)."""
+    return arguments.get("outcome") == "impossible" and arguments.get("why") in ("not seen yet", "not on the mat") \
+        and isinstance(mission, dict) and any(s.get("do") in ("reach_card", "find_card", "survey")
+                                              for s in mission.get("steps", []) if isinstance(s, dict))
+
+
+def cells_left(shown):
+    """The cells the record says the camera has not looked at, or [] (none, or the place not known)."""
+    if not isinstance(shown, dict) or "cards_seen" not in shown:
+        return []
+    return (shown.get("camera_coverage") or {}).get("not_looked_at_yet") or []
 
 
 def report_refusal(cards, shown):
@@ -996,9 +1014,11 @@ def check_response(ctx, messages):
             ctx.kinds["answer refused: mission ended"] += 1
             continue
         expected, shown = None, None
-        if name == "report" and not why and arguments.get("cards"):
+        early = name == "report" and not why and not ctx.questioned and early_report(ctx.mission, arguments)
+        if name == "report" and not why and (arguments.get("cards") or early):
             if not ctx.records_given:  # the fake robot always answers: a report with cards is always compared
-                ctx.broke("a report with cards is compared with the record (seen_cards)", [arguments, said])
+                ctx.broke("a report with cards, or giving up on a card, is compared with the record (seen_cards)",
+                          [arguments, said])
                 shown = {"cards_seen": [WORLD.masked(r) for r in WORLD.records]}
             for _ in range(3):
                 if not ctx.records_given:
@@ -1006,9 +1026,11 @@ def check_response(ctx, messages):
                 shown = ctx.records_given.pop(0)
                 if shown.get("rule") not in BUSY:
                     break
-            expected = report_refusal(arguments["cards"], shown)
+            expected = report_refusal(arguments.get("cards") or [], shown)
+            if expected is None and early and cells_left(shown):
+                expected = TOO_EARLY
         refused_report = name == "report" and said.get("result") == "refused" and \
-            bare_why.startswith((NOT_PLACED, PLACE_LOST, UNREAD))
+            bare_why.startswith((NOT_PLACED, PLACE_LOST, UNREAD, TOO_EARLY))
         if why and not (invalid and bare_why.endswith(": nothing was sent")):
             ctx.broke("a call that does not fit its schema is refused, and nothing is sent", [name, raw, said])
         if not why and invalid:
@@ -1028,7 +1050,9 @@ def check_response(ctx, messages):
             if (repeated is None) != (ctx.same_refused < 2) or (repeated and int(repeated[1]) != ctx.same_refused):
                 ctx.broke("from the second time in a row, a refused call says how many times", [ctx.same_refused, said])
         if refused_report:
-            kind = "refused: " + next(k for k in (NOT_PLACED, PLACE_LOST, UNREAD) if bare_why.startswith(k)).strip()
+            kind = "refused: " + next(k for k in (NOT_PLACED, PLACE_LOST, UNREAD, TOO_EARLY) if bare_why.startswith(k)).strip()
+            if bare_why.startswith(TOO_EARLY):
+                ctx.questioned = True
         elif name == "report" and not why:
             ctx.last_refused = None
             if said != {"result": "done"}:
@@ -1421,6 +1445,7 @@ def mutants():
     def turns_ignored(m): m.MAX_TURNS = 10 ** 6
     def repeats_ignored(m): m.SAME_REFUSAL_MAX = 10 ** 6
     def unseen_accepted(m): m.record_check = lambda cards: (None, None)
+    def early_accepted(m): m.too_early = lambda record: None
     def cost_ignored(m):
         run_ = m.run
         m.run = lambda mission, model="fake", key="", tools="route", out=None, cap_usd=0.25: run_(
@@ -1460,6 +1485,7 @@ def mutants():
             "pause ignored": pause_ignored, "stop ignored": stop_ignored, "turns cap ignored": turns_ignored,
             "the same refused call repeated without end": repeats_ignored,
             "a report with a card never seen accepted": unseen_accepted,
+            "giving up on a card with cells left accepted": early_accepted,
             "cost cap ignored": cost_ignored, "two moves in one answer": two_moves,
             "invalid arguments sent to the Pilot": invalid_passed, "model calls not counted": calls_uncounted,
             "a refused mission is counted": begins_first, "none: a card found left out": no_report_cards,

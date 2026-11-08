@@ -146,6 +146,42 @@ REPORT = {"type": "function", "function": {
         "why": {"type": "string", "enum": WHY}}}}}
 
 
+TOO_EARLY = "the camera has not looked at every cell of the mat yet"
+CARD_STEPS = {"reach_card", "find_card", "survey"}
+
+
+def read_record():
+    """The Cartographer's record (seen_cards), three tries if the stack is busy; None if the robot cannot be reached."""
+    for attempt in range(3):
+        try:
+            answer = pilot.command("seen_cards")
+        except Exception:  # noqa: BLE001
+            return None
+        if answer.get("rule") not in ("another_command", "one_move_at_a_time"):
+            break
+        time.sleep(BUSY_WAIT_S)
+    return answer
+
+
+def early_report(mission, arguments):
+    """A report that gives up looking for a card: what the record must back before it is taken."""
+    return arguments.get("outcome") == "impossible" and arguments.get("why") in ("not seen yet", "not on the mat") \
+        and any(step.get("do") in CARD_STEPS for step in mission.get("steps", []))
+
+
+def too_early(record):
+    """Why giving up on a card comes too early, or None: the record still lists cells the camera has not looked at.
+    Qwen 3 Coder (Albert, 2026-11-07) gave up twice with two cells left, once writing that the coverage had none."""
+    if not isinstance(record, dict) or "cards_seen" not in record:
+        return None
+    left = (record.get("camera_coverage") or {}).get("not_looked_at_yet")
+    if not left:
+        return None  # every cell looked at, or the place on the mat not known (no list)
+    shown = ", ".join(left[:8]) + (", …" if len(left) > 8 else "")
+    return (f"{TOO_EARLY}: {len(left)} cell{'s' if len(left) > 1 else ''} left ({shown}). Go and look at them, then "
+            "report; or call report again if they cannot be reached")
+
+
 def record_check(cards):
     """Why the cards of a report cannot be taken, or None; and the Cartographer's answer to give back with a refusal.
     Each card must be in the record (seen_cards), on its cell or one of its could_also_be. Mistral Small 3.2 (Albert,
@@ -154,14 +190,9 @@ def record_check(cards):
     A robot that cannot be reached at all: nothing to compare with, the report goes through."""
     if not cards:
         return None, None
-    for attempt in range(3):
-        try:
-            answer = pilot.command("seen_cards")
-        except Exception:  # noqa: BLE001
-            return None, None
-        if answer.get("rule") not in ("another_command", "one_move_at_a_time"):
-            break
-        time.sleep(BUSY_WAIT_S)
+    answer = read_record()
+    if answer is None:
+        return None, None
     if "cards_seen" not in answer:
         return "the record of the cards could not be read now: report again", answer
     placed, unplaced = set(), set()
@@ -410,6 +441,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
     for m in messages:
         transcript.write(json.dumps(m, ensure_ascii=False) + "\n")
     report, outcome, turns, nudged, start = None, None, 0, False, time.monotonic()
+    questioned = False  # a report giving up on a card was refused once for cells left
     last_refused, same_refused = None, 0
     waited = 0.0  # time spent waiting for an adult: not counted in TIMEOUT_S
     flush()
@@ -461,6 +493,12 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
                     why = f"invalid arguments: {why}: nothing was sent"
                 elif name == "report" and outcome != "limit":
                     why, record = record_check(arguments.get("cards") or [])
+                    if not why and not questioned and early_report(mission, arguments):
+                        # Giving up on a card with cells the camera has not looked at: refused once, with the cells;
+                        # the next report is taken (the model may know they cannot be reached).
+                        record = record if record is not None else read_record()
+                        why = too_early(record)
+                        questioned = bool(why)
                 if outcome == "limit":  # the same call refused too often, earlier in this answer: nothing else runs
                     result = {"result": "refused", "why": "the mission ended: the same call was refused "
                                                           f"{SAME_REFUSAL_MAX} times in a row"}
