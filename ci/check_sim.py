@@ -1771,7 +1771,10 @@ def stack_scenarios(sim, env):
 
     # An HTTP error of the model's API that the same request sent again does not give (Albert, 2026-11-08): tried again,
     # the mission goes on; an error that stays ends it after three tries. The provider's words go to usage.json only.
-    for name, errors, want in (("transient", 1, "impossible"), ("lasting", 9, "api error")):
+    for name, errors, want, code, body, tries in (("transient", 1, "impossible", 400, "upstream busy", 1),
+                                                  ("lasting", 9, "api error", 400, "upstream busy", 3),
+                                                  ("a quota by the day", 9, "api error", 429,
+                                                   "Token limit per day exceeded.", 1)):
         out = Path(tempfile.mkdtemp(dir=env["ROBOT_STATE_DIR"]))
         script = "\n".join([
             "import io, json, sys, urllib.error",
@@ -1786,20 +1789,23 @@ def stack_scenarios(sim, env):
             "def urlopen(*a, **k):",
             "    if left[0] > 0:",
             "        left[0] -= 1",
-            "        raise urllib.error.HTTPError('u', 400, 'Bad Request', {}, io.BytesIO(b'upstream busy'))",
+            "        raise urllib.error.HTTPError('u', int(sys.argv[2]), 'Error', {}, io.BytesIO(sys.argv[3].encode()))",
             "    return io.BytesIO(ok)",
             "strategist.urllib.request.urlopen = urlopen",
             f"print(json.dumps(strategist.run({{'steps': [{{'do': 'set_light', 'color': 'green'}}]}}, "
             f"model='openrouter:test/model', key='fake-key-for-the-test-0000', out={str(out)!r})))"])
-        done = subprocess.run([PYTHON, "-I", "-c", script, str(errors)], env=env, cwd=GUIDE, capture_output=True,
+        done = subprocess.run([PYTHON, "-I", "-c", script, str(errors), str(code), body], env=env, cwd=GUIDE,
+                              capture_output=True,
                               text=True, timeout=120)
         final = json.loads(done.stdout.strip().splitlines()[-1]) if done.stdout.strip() else {}
         usage = json.loads((out / "usage.json").read_text()) if (out / "usage.json").exists() else {}
-        check(f"an HTTP 400 of the model's API, {name}: tried again ({'the mission goes on' if errors == 1 else 'three tries, then api error'}); "
-              "the provider's words in usage.json, not in the report",
-              final.get("outcome") == want and len(usage.get("api_errors", [])) == min(errors, 3)
-              and "upstream busy" in (usage.get("api_errors") or [""])[0] and "upstream busy" not in json.dumps(final)
-              and (errors == 1 or "upstream busy" in usage.get("api_error", "")), (final, usage, done.stderr[-400:]))
+        check(f"an HTTP {code} of the model's API, {name}: "
+              + {"transient": "tried again, the mission goes on", "lasting": "three tries, then api error",
+                 "a quota by the day": "not tried again, api error at once"}[name]
+              + "; the provider's words in usage.json, not in the report",
+              final.get("outcome") == want and len(usage.get("api_errors", [])) == tries
+              and body in (usage.get("api_errors") or [""])[0] and body not in json.dumps(final)
+              and (errors == 1 or body in usage.get("api_error", "")), (final, usage, done.stderr[-400:]))
 
     # A report done that does not name the card the mission looks for is refused (Qwen 3 Coder on Albert reported done
     # with the water point on B4 when looking for the picnic); the model then reports impossible, taken at the second try.

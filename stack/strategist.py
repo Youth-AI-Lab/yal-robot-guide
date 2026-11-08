@@ -32,6 +32,7 @@ model of OpenRouter, "openrouter:<id>" or a short name of MODELS (data_collectio
 provider from keeping what it receives). Any key on stdin, never on the command line, never in a file.
 """
 import json
+import re
 import sys
 import time
 import urllib.error
@@ -262,6 +263,9 @@ def invalid(spec, arguments):
 # Waits before trying a call of the model again. Albert API answered two calls of Qwen 3 Coder with an error that the
 # same request, sent again later, did not give (2026-11-08): every HTTP error is tried again, except a refused key.
 API_WAITS_S = (10, 30, 60)
+# A quota by the day does not lift in a minute: Albert API answered "Token limit per day exceeded" (HTTP 429), then the
+# same three times over a minute and a half (2026-11-08). Such an answer ends the mission at once.
+DAILY_QUOTA = re.compile(r"per day|daily", re.I)
 
 
 class ApiError(Exception):
@@ -318,6 +322,8 @@ def api_model(model, messages, tools, key, usage, flush):
             wait = int(e.headers.get("Retry-After") or 0) if str(e.headers.get("Retry-After", "")).isdigit() else 0
             usage["api_errors"] = usage.get("api_errors", []) + [detail[:300]]
             flush()
+            if e.code == 429 and DAILY_QUOTA.search(detail):
+                raise ApiError("api error", detail)
             time.sleep(max(wait, wait_s))  # real time: the provider's wait
         except (TimeoutError, OSError) as e:  # no answer: counted as billed, then sent again
             usage["failed_calls"] += 1
