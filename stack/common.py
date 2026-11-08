@@ -1,10 +1,11 @@
 """What every tier of the stack shares: where the files are, the mat, the names of the cells, the log of what the
 caller received. No decision here."""
-import datetime
 import fcntl
 import json
 import os
 from pathlib import Path
+
+import clock
 
 GUIDE = Path(__file__).resolve().parent.parent
 MAT_PATH = Path(os.environ.get("ROBOT_MAT", GUIDE / "mat.json"))
@@ -34,7 +35,7 @@ def log(tool, arguments, result, caller=None):
     """Write what the caller receives, as it receives it (the simulator's page shows it): exactly what entered an
     agent's context."""
     STATE_DIR.mkdir(parents=True, exist_ok=True)
-    entry = {"at": datetime.datetime.now().isoformat(timespec="seconds"), "caller": caller or CALLER, "tool": tool,
+    entry = {"at": clock.iso(), "caller": caller or CALLER, "tool": tool,
              "arguments": arguments, "result": result}
     with (STATE_DIR / "context.jsonl").open("a", encoding="utf-8") as f:
         f.write(json.dumps(entry, ensure_ascii=False) + "\n")

@@ -39,6 +39,7 @@ import urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import clock  # noqa: E402
 import common  # noqa: E402
 from common import COLORS, STATE_DIR, log  # noqa: E402
 import pilot  # noqa: E402
@@ -177,7 +178,7 @@ def read_record():
             return None
         if answer.get("rule") not in ("another_command", "one_move_at_a_time"):
             break
-        time.sleep(BUSY_WAIT_S)
+        clock.sleep(BUSY_WAIT_S)
     return answer
 
 
@@ -317,17 +318,17 @@ def api_model(model, messages, tools, key, usage, flush):
             wait = int(e.headers.get("Retry-After") or 0) if str(e.headers.get("Retry-After", "")).isdigit() else 0
             usage["api_errors"] = usage.get("api_errors", []) + [detail[:300]]
             flush()
-            time.sleep(max(wait, wait_s))
+            time.sleep(max(wait, wait_s))  # real time: the provider's wait
         except (TimeoutError, OSError) as e:  # no answer: counted as billed, then sent again
             usage["failed_calls"] += 1
             flush()
             detail = f"{type(e).__name__}: no answer from the model's API"
-            time.sleep(wait_s)
+            time.sleep(wait_s)  # real time: the provider's wait
         except (KeyError, IndexError, ValueError) as e:
             usage["failed_calls"] += 1
             flush()
             detail = f"{type(e).__name__}: the API's answer could not be read"
-            time.sleep(wait_s)
+            time.sleep(wait_s)  # real time: the provider's wait
     raise ApiError("api error", detail)
 
 
@@ -352,17 +353,17 @@ def waits_for_adult(result):
 def wait_for_adult():
     """Wait, without the model, until an adult presses Resume: "resumed" (with where the robot stands), "stopped" (the
     Interpreter stopped the mission), or "too long". The Interpreter reads .robot-sim/waiting.json meanwhile."""
-    since = time.monotonic()
-    common.say_waiting({"since": time.strftime("%H:%M:%S"), "what_to_do": pilot.CART.adult_instruction()})
+    since = clock.monotonic()
+    common.say_waiting({"since": clock.stamp(), "what_to_do": pilot.CART.adult_instruction()})
     try:
-        while time.monotonic() - since < WAIT_FOR_ADULT_S:
+        while clock.monotonic() - since < WAIT_FOR_ADULT_S:
             if common.mission_control() == "stop":
-                return "stopped", None, time.monotonic() - since
+                return "stopped", None, clock.monotonic() - since
             state = pilot.command("robot_state")
             if isinstance(state, dict) and state.get("waiting_for_adult") is False:
-                return "resumed", state, time.monotonic() - since
-            time.sleep(1.0)
-        return "too long", None, time.monotonic() - since
+                return "resumed", state, clock.monotonic() - since
+            clock.sleep(1.0)
+        return "too long", None, clock.monotonic() - since
     finally:
         common.say_waiting(None)
 
@@ -379,7 +380,7 @@ def resumed_event(state):
 def without_model(mission):
     """Model "none": each step goes straight to the Pilot's goal tools, no model (the Pilot alone of the bench of
     6 November). The same report, built by code."""
-    start, cards, outcome, why = time.monotonic(), [], "done", ""
+    start, cards, outcome, why = clock.monotonic(), [], "done", ""
     for step in mission["steps"]:
         do = step["do"]
         for _ in range(3):  # an adult's help between two tries: the step again, from where the robot is put back
@@ -423,7 +424,7 @@ def without_model(mission):
                    else "no way there" if "find itself" in said or "way" in said else "other")
             break
     return {"outcome": outcome, "cards": cards, "why": why, "turns": 0,
-            "seconds": round(time.monotonic() - start, 1), "spent_usd": 0.0}
+            "seconds": round(clock.monotonic() - start, 1), "spent_usd": 0.0}
 
 
 def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_USD):
@@ -434,7 +435,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
     pilot.OBEY_MISSION_CONTROL = True
     common.mission_begins()
     common.say_waiting(None)  # a mission that ended in the middle of a wait left it
-    out = Path(out or STATE_DIR / "missions" / time.strftime("%Y%m%d-%H%M%S"))
+    out = Path(out or STATE_DIR / "missions" / clock.stamp("%Y%m%d-%H%M%S"))
     out.mkdir(parents=True, exist_ok=True)
     if model == "none":
         common.CALLER = "strategist"
@@ -463,7 +464,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
     transcript = (out / "transcript.jsonl").open("w")
     for m in messages:
         transcript.write(json.dumps(m, ensure_ascii=False) + "\n")
-    report, outcome, turns, nudged, start = None, None, 0, False, time.monotonic()
+    report, outcome, turns, nudged, start = None, None, 0, False, clock.monotonic()
     questioned = False  # a report giving up on a card was refused once for cells left
     last_refused, same_refused = None, 0
     waited = 0.0  # time spent waiting for an adult: not counted in TIMEOUT_S
@@ -473,7 +474,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
             if paused():
                 outcome = "stopped"
                 break
-            if turns >= MAX_TURNS or time.monotonic() - start - waited > TIMEOUT_S:
+            if turns >= MAX_TURNS or clock.monotonic() - start - waited > TIMEOUT_S:
                 outcome = "limit"
                 break
             if spent() > cap_usd:
@@ -586,7 +587,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
                 f.write_text("(removed: the output contained the key)")
     state = pilot.robot_state()
     final = dict(report or {"outcome": outcome or "no report", "cards": [], "why": ""},
-                 moves_left=state.get("moves_left"), turns=turns, seconds=round(time.monotonic() - start, 1),
+                 moves_left=state.get("moves_left"), turns=turns, seconds=round(clock.monotonic() - start, 1),
                  spent_usd=round(spent(), 4), counts=common.counts()["this_mission"])
     if report is None and outcome:
         final["outcome"] = outcome

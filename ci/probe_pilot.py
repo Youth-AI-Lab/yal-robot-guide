@@ -101,15 +101,17 @@ def language(toolset):
 
 # --- the clock and the mission around the Pilot ------------------------------------------------------------------------
 class Clock:
-    """The Pilot's time module for a run: time passes only when the Pilot sleeps or the fake Cartographer moves."""
+    """The Pilot's clock (stack/clock.py) for a run: time passes only when the Pilot sleeps or the fake Cartographer
+    moves."""
 
     def __init__(self):
         self.t, self.m = 1.8e9, 1000.0
 
-    def time(self): return self.t
+    def now(self): return self.t
     def monotonic(self): return self.m
     def sleep(self, s): self.advance(s)
-    def strftime(self, fmt, *a): return time.strftime(fmt, *a)
+    def stamp(self, fmt="%H:%M:%S", seconds_ago=0.0): return time.strftime(fmt, time.localtime(self.t - seconds_ago))
+    def iso(self): return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(self.t))
 
     def advance(self, s):
         self.t += s
@@ -366,7 +368,7 @@ class Cartographer:
         if settings["look_each_leg"] and not op["looked_since_move"]:
             self.broke("with look_each_leg, a look_around before every slide", [args, op["calls"][-6:]])
         ball = (self.last_state or {}).get("ball_last_seen") or {}
-        if settings["careful_balls"] and ball.get("t") and self.clock.time() - ball["t"] < RECENT_S and \
+        if settings["careful_balls"] and ball.get("t") and self.clock.now() - ball["t"] < RECENT_S and \
                 "closer" in ball.get("how", ""):
             self.broke("with careful_balls, no leg while a ball seen just before comes closer", [args, ball])
         dc, dr = STEP[args["direction"]]
@@ -458,7 +460,7 @@ class Cartographer:
         cell = self.rng.choice(CELLS)
         how = self.rng.choice(["getting closer to the robot", "moving away from the robot",
                                "at the same distance from the robot", "out of the camera's sight now"])
-        t = self.clock.time() - self.rng.uniform(0, 15)
+        t = self.clock.now() - self.rng.uniform(0, 15)
         at = time.strftime("%H:%M:%S")
         if self.frame or not self.defects:  # without its cell: no lane, so the Pilot never leaves one in a leg
             self.ball = {"how": how, "at": at, "t": t}
@@ -1076,7 +1078,7 @@ def run(seed, generator, persona, steps, replay=None, patch=None, defects=True):
     if patch:
         patch(pilot)
     clock = Clock()
-    pilot.time = clock
+    pilot.clock = clock
     obey = setup.random() < 0.85
     toolset = setup.choice(["goal", "route", "route", "step"]) if obey else "step"
     if replay is not None:

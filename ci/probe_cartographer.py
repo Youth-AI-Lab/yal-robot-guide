@@ -97,14 +97,15 @@ COVERAGE_KEYS = {"cells_looked_at", "cells_on_the_mat", "not_looked_at_yet", "so
 
 
 class Clock:
-    """The Cartographer's time module, for one run: sleeping moves the clock, nothing waits."""
+    """The Cartographer's clock (stack/clock.py), for one run: sleeping moves the clock, nothing waits."""
 
     def __init__(self):
         self.t = 0.0
 
-    def time(self): return 1.8e9 + self.t
+    def now(self): return 1.8e9 + self.t
     def monotonic(self): return self.t
-    def strftime(self, *a): return time.strftime(*a)
+    def stamp(self, fmt="%H:%M:%S", seconds_ago=0.0): return time.strftime(fmt, time.localtime(self.now() - seconds_ago))
+    def iso(self): return time.strftime("%Y-%m-%dT%H:%M:%S", time.localtime(self.now()))
 
     def sleep(self, s):
         self.t += max(0.0, s)
@@ -981,7 +982,7 @@ def run(seed, generator, persona, steps, replay=None, module=cartographer_module
         if f.is_file():
             f.unlink()
     clock = Clock()
-    module.time = clock
+    module.clock = clock
     broken, sent, answers, history, cover = [], [], [], [], collections.Counter()
     rules, truth, wrong = draw_rules(world)
     fake = Referee(world, clock, rules, truth, lies=world.random() < 0.3, broken=broken)

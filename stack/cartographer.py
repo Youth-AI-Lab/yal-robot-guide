@@ -18,11 +18,10 @@ Each answer is a dict: "done", "refused" (with why and what_to_do, in words), "s
 "error"; every answer also carries "since_last_call": what happened to the robot since this caller's last call.
 To the Referee: moves of the robot (forwards, backwards, to its left, to its right, n cells; a quarter turn).
 """
-import datetime
 import json
 import math
-import time
 
+import clock
 import common
 from common import FACING, FACING_STEP, STATE_DIR, cell_name, cell_xy
 from link import RobotNotConnected
@@ -183,13 +182,13 @@ class Cartographer:
             self.poses = {}  # the robot's pose number -> [col, row, facing], as counted here
             self.seen = []  # the cards the camera recognised: estimates, the most precise kept
             self.ball = None  # the last sighting of a moving ball
-            self.free = {}  # cell -> when the distance sensor last saw it free (time.time())
-            self.lanes = {}  # "row:3", "col:4" or "cell:E3" -> when a ball was last seen there (time.time())
+            self.free = {}  # cell -> when the distance sensor last saw it free (clock.now())
+            self.lanes = {}  # "row:3", "col:4" or "cell:E3" -> when a ball was last seen there (clock.now())
             self.way = None  # during a move: its start cell, then the cells of a slide
             self.back_fixed = False  # True once the cell given to the adult is final
             self.placed = {}  # cell -> when a card was last placed there for sure (kept when a box hides it)
             self.presses = 0  # the robot's count of Resume presses, at its last answer
-            self.looked = {}  # cell -> when the camera last looked at it, or the robot stood on it (time.time())
+            self.looked = {}  # cell -> when the camera last looked at it, or the robot stood on it (clock.now())
             self.blocked = {}  # cell -> [first, last] time the distance sensor met something there (a box, a ball)
             self.boxes = {}  # cell -> [when, [points of view]]: the camera saw a point of a box's side put a box there
             self.covered_said = False  # the caller was told the camera has looked at every cell it can
@@ -466,7 +465,7 @@ class Cartographer:
             return
         self.pose_logged = line
         with (STATE_DIR / "poses.jsonl").open("a", encoding="utf-8") as f:
-            f.write(json.dumps(dict(line, at=time.strftime("%H:%M:%S"))) + "\n")
+            f.write(json.dumps(dict(line, at=clock.stamp())) + "\n")
 
     def new_events(self):
         """What happened to the robot since this caller last heard, in words, with where on the mat."""
@@ -487,7 +486,7 @@ class Cartographer:
                 if kind == "BUMP" and self.sure and not self.frame:
                     # Something touched the robot standing on its cell: a ball rolls there (a ball seen only by its
                     # bump left no lane, 6 November). The cell stays a lane for LANE_FOR_S.
-                    self.lanes[f"cell:{cell_name(self.col, self.row)}"] = time.time() - age / 1000
+                    self.lanes[f"cell:{cell_name(self.col, self.row)}"] = clock.now() - age / 1000
                 text = EVENTS.get(kind, kind + (":" + reason if reason else ""))
                 if kind == "STOP":
                     text += REASONS.get(reason, reason)
@@ -518,7 +517,7 @@ class Cartographer:
             self.seen = [s for s in self.seen if not (s["card"] == label and math.hypot(s["x"] - x, s["y"] - y) < max(s["u"], u))]
             return None
         cell, others = self.cells_near(x, y, u)
-        at = (datetime.datetime.now() - datetime.timedelta(milliseconds=age_ms)).strftime("%H:%M:%S")
+        at = clock.stamp(seconds_ago=age_ms / 1000)
         if self.frame is None and kind == "SEEN" and where is not None and self.poses.get(pose) != where:
             where = self.poses.get(pose) or where  # the landmark just told the Cartographer where it is: on the mat now
             x, y = self.place(where, angle, cm)
@@ -529,7 +528,7 @@ class Cartographer:
         # The same card seen again: keep the most precise estimate (seen from closer). The larger uncertainty, not
         # their sum: two like cards side by side (dry grass in C2 and D2) stay two.
         if not others and not self.frame:
-            self.placed[cell] = time.time()
+            self.placed[cell] = clock.now()
         same = [s for s in self.seen if s["card"] == label and math.hypot(s["x"] - x, s["y"] - y) < max(s["u"], u)]
         if not same:
             self.seen.append(entry)
@@ -562,9 +561,9 @@ class Cartographer:
                # "still": its distance does not change; it may still be moving, across (seen 2026-11-05).
                "still": "at the same distance from the robot", "gone": "out of the camera's sight now"}[trend]
         where = self.poses.get(pose)
-        at = (datetime.datetime.now() - datetime.timedelta(milliseconds=age_ms)).strftime("%H:%M:%S")
+        at = clock.stamp(seconds_ago=age_ms / 1000)
         if where is None:
-            self.ball = {"how": how, "at": at, "t": time.time() - age_ms / 1000}
+            self.ball = {"how": how, "at": at, "t": clock.now() - age_ms / 1000}
             return f"the camera sees a ball about {c2} cm away, {how}; where: not known (the robot's position was not known)"
         x1, y1 = self.place(where, a1, c1)
         x2, y2 = self.place(where, a2, c2)
@@ -575,14 +574,14 @@ class Cartographer:
         in_cell = cell if not others else f"probably {cell} (could also be {', '.join(others)})"
         seen_from = self.pose_text(*where)
         self.ball = {"cell": cell, "could_also_be": others, "moving": going[9:] or None, "how": how,
-                     "seen_from": seen_from, "from": list(where), "at": at, "t": time.time() - age_ms / 1000}
+                     "seen_from": seen_from, "from": list(where), "at": at, "t": clock.now() - age_ms / 1000}
         if self.frame:
             in_cell = "where on the mat: not known yet"
             going = ""
         # Its lane: the line it rolls on, through the cells of its two sightings (one line, or two when they fall on
         # either side of a border). Not every cell the estimate could fall on: from far, that gave 10 to 15 cells of
         # lanes on rows and columns no ball rolled on (bench of 7 November, balls mission).
-        moving, when = going[9:], time.time() - age_ms / 1000
+        moving, when = going[9:], clock.now() - age_ms / 1000
         first = self.cells_near(x1, y1, 0)[0]
         for name in ([first, cell] if moving else [cell]):
             lane = (f"row:{int(name[1:]) - 1}" if moving in ("east", "west") else
@@ -610,7 +609,7 @@ class Cartographer:
         """The distance sensor, standing still, sees nothing for `dist` cm in front: the cells the robot could slide
         into on that line, with its stopping margin, are free (for boxes; a ball moves)."""
         dc, dr = FACING_STEP[self.facing]
-        now = time.time()
+        now = clock.now()
         k = 1
         while True:
             col, row = self.col + dc * k, self.row + dr * k
@@ -646,7 +645,7 @@ class Cartographer:
         only when every cell on the line is known free; the notice "every cell" then never came, the absent card 0 out of
         9 (facilitator/workshops/measures/2026-11-07-robot-absent-strict/); back to this rule, decision of Sébastien on
         2026-11-07."""
-        now = time.time()
+        now = clock.now()
         cell_cm = self.mat["cell_cm"]
         self.went(self.col, self.row)
         heading = self.facing * 90
@@ -714,7 +713,7 @@ class Cartographer:
 
     def went(self, col, row):
         """The robot stood on this cell, or went through it: nothing stands there, no card is there."""
-        now = time.time()
+        now = clock.now()
         self.looked[cell_name(col, row)] = now
         self.blocked.pop(cell_name(col, row), None)
         self.boxes.pop(cell_name(col, row), None)
@@ -748,13 +747,13 @@ class Cartographer:
         seen from far could be on a neighbour: it would then block the cell in front of it), and the cells of sure
         cards that left the camera's view in the last LANE_FOR_S (hidden by a box, they are still there). caution:
         every probable cell, sure or not (for a slide sideways, which no camera watches)."""
-        now = time.time()
+        now = clock.now()
         sure = {s["cell"] for s in self.seen if caution or not s.get("could_also_be")}
         return sure | {c for c, t in self.placed.items() if now - t < LANE_FOR_S}
 
     def lane_names(self):
         """The lanes balls were seen on in the last LANE_FOR_S, in words: "row 4", "column E", "cell E3"."""
-        now, out = time.time(), []
+        now, out = clock.now(), []
         for key, when in sorted(self.lanes.items()):
             kind, _, value = key.partition(":")
             if now - when > LANE_FOR_S or not value:
@@ -766,7 +765,7 @@ class Cartographer:
     def on_lane(self, cell):
         """A cell on the lane of a ball seen in the last LANE_FOR_S (its row or column, or the cell)."""
         col, row = cell
-        now = time.time()
+        now = clock.now()
         for key, when in self.lanes.items():
             kind, _, value = key.partition(":")
             if now - when > LANE_FOR_S:
@@ -777,17 +776,17 @@ class Cartographer:
         return False
 
     def seen_free_s_ago(self, cell):
-        return time.time() - self.free.get(cell_name(*cell), 0)
+        return clock.now() - self.free.get(cell_name(*cell), 0)
 
     def ball_sighting(self):
         """The last ball placed on the mat: the cells it could be on, how long ago, whether it came closer."""
         ball = self.ball or {}
         if self.frame and ball.get("t"):
-            return {"cells": [], "s_ago": time.time() - ball["t"], "closer": ball.get("how", "").startswith("getting")}
+            return {"cells": [], "s_ago": clock.now() - ball["t"], "closer": ball.get("how", "").startswith("getting")}
         if not ball.get("cell"):
             return None
         return {"cells": [cell_xy(n) for n in [ball["cell"]] + ball.get("could_also_be", [])],
-                "s_ago": time.time() - ball.get("t", 0), "closer": ball.get("how", "").startswith("getting closer")}
+                "s_ago": clock.now() - ball.get("t", 0), "closer": ball.get("how", "").startswith("getting closer")}
 
     def moving(self, cells, counted):
         """Just before a move is sent: written to disk as if it were interrupted (position unknown, put back on its
@@ -803,7 +802,7 @@ class Cartographer:
         """A slide reached one more cell (EVT CELL)."""
         before = cell_name(self.col, self.row)
         self.col, self.row = cell
-        self.free[before] = self.free[cell_name(self.col, self.row)] = time.time()  # it went through them
+        self.free[before] = self.free[cell_name(self.col, self.row)] = clock.now()  # it went through them
         self.went(self.col, self.row)
         self.poses[pose] = [self.col, self.row, self.facing]
         if not self.on_lane((self.col, self.row)):
@@ -973,10 +972,10 @@ class Cartographer:
         """The robot's state, once its camera has looked, if it stands still and may look: never what the camera
         showed before it stopped."""
         fields = self.fields()
-        end = time.monotonic() + LOOK_WAIT_S
+        end = clock.monotonic() + LOOK_WAIT_S
         while (fields.get("looked") == "0" and fields.get("moving") == "0" and fields.get("wait_adult") == "0"
-               and fields.get("estop") == "0" and fields.get("fault", "none") == "none" and time.monotonic() < end):
-            time.sleep(0.1)
+               and fields.get("estop") == "0" and fields.get("fault", "none") == "none" and clock.monotonic() < end):
+            clock.sleep(0.1)
             fields = self.fields()
         return fields
 
@@ -1068,7 +1067,7 @@ class Cartographer:
         else:
             answer = self.referee.step(self, target, card_ahead)
         if answer["result"] == "done":
-            self.free[cell_name(*start)] = self.free[cell_name(*target)] = time.time()
+            self.free[cell_name(*start)] = self.free[cell_name(*target)] = clock.now()
             self.col, self.row = target
             self.went(self.col, self.row)
             self.stepped()
@@ -1131,7 +1130,7 @@ class Cartographer:
                 return result
             # result["state"] waited for the camera to look, facing this way (seen_cards counts it); a ball needs a
             # second sighting
-            time.sleep(BALL_SECOND_LOOK_S)
+            clock.sleep(BALL_SECOND_LOOK_S)
             looked.append({"facing": FACING[self.facing], "card_ahead": result["state"]["card_ahead"],
                            "distance_ahead_cm": result["state"]["distance_ahead_cm"],
                            "what_the_camera_saw": [e["event"] for e in self.new_events()]})
@@ -1217,13 +1216,13 @@ class Cartographer:
         happens during the wait. Events from before the wait (the robot kept them) come with the answer, marked, but
         do not end it: a caller that waits for a Resume or a ball would otherwise get them back at once, again and
         again (seen on 5 and 6 November)."""
-        start = time.monotonic()
+        start = clock.monotonic()
         end = start + seconds
         earlier = []  # [time of the poll that read them, event]: events from before the wait
 
         def kept():
             # Their age as of this answer, not as of the poll that read them.
-            now = time.monotonic()
+            now = clock.monotonic()
             return [dict(e, seconds_before_this_answer=round(e.get("seconds_before_this_answer", 0) + now - at, 1))
                     for at, e in earlier]
 
@@ -1235,16 +1234,16 @@ class Cartographer:
                 return result
             if result.get("result") != "refused":
                 events = result.get("since_last_call", [])
-                waited = time.monotonic() - start
+                waited = clock.monotonic() - start
                 for event in events:
                     if event.get("seconds_before_this_answer", 0) > waited + 0.3:
                         event["before_you_started_waiting"] = True
                 if any(not e.get("before_you_started_waiting") for e in events):
                     return {"result": "something happened", "waited_seconds": round(waited, 1), "events": kept() + events}
-                earlier += [(time.monotonic(), e) for e in events]
-            if time.monotonic() >= end:
+                earlier += [(clock.monotonic(), e) for e in events]
+            if clock.monotonic() >= end:
                 answer = {"result": "nothing new happened" if earlier else "nothing happened", "waited_seconds": seconds}
                 if earlier:
                     answer["events"] = kept()
                 return answer
-            time.sleep(0.3)
+            clock.sleep(0.3)

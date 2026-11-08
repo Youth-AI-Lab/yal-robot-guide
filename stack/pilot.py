@@ -17,8 +17,8 @@ import collections
 import heapq
 import json
 import math
-import time
 
+import clock
 import common
 from cartographer import STOP_IF, Cartographer
 from common import COLORS, FACING, STATE_DIR, cell_name, cell_xy
@@ -78,9 +78,9 @@ def hold_still():
         return
     known = CART.sure and not CART.frame  # in a frame relative to the start, a cell name would mean nothing
     common.say_held({"cell": cell_name(CART.col, CART.row) if known else None,
-                     "facing": FACING[CART.facing] if known else None, "since": time.strftime("%H:%M:%S")})
+                     "facing": FACING[CART.facing] if known else None, "since": clock.stamp()})
     while common.mission_control() == "pause":
-        time.sleep(0.5)
+        clock.sleep(0.5)
     common.say_held(None)
 
 
@@ -214,7 +214,7 @@ class Pilot:
 
     def ball_recent(self):
         ball = self.state.get("ball_last_seen") or {}
-        return bool(ball.get("t")) and time.time() - ball["t"] < BALL_RECENT_S
+        return bool(ball.get("t")) and clock.now() - ball["t"] < BALL_RECENT_S
 
     def note_distance(self, cell, facing, dist):
         """A reading of the distance sensor: the cells before the thing it sees are free, the cell of the thing is
@@ -231,7 +231,7 @@ class Pilot:
             self.free.add((cell[0] + dc * d, cell[1] + dr * d))
         thing = (cell[0] + dc * k, cell[1] + dr * k)
         if 0 <= thing[0] < COLS and 0 <= thing[1] < ROWS and not self.ball_recent():
-            self.blocked[thing] = time.time()
+            self.blocked[thing] = clock.now()
 
     def is_blocked(self, cell):
         return cell in self.blocked
@@ -251,8 +251,8 @@ class Pilot:
         if OBEY_MISSION_CONTROL:
             self.state = {}  # the adult will put the robot somewhere: the next tool reads where
             raise AdultNeeded("the robot waits for an adult")
-        end = time.monotonic() + ADULT_WAIT_S
-        while time.monotonic() < end:
+        end = clock.monotonic() + ADULT_WAIT_S
+        while clock.monotonic() < end:
             command("wait_for_event", 30)
             self.read(command("robot_state"))
             if not self.state.get("waiting_for_adult"):
@@ -350,13 +350,13 @@ class Pilot:
             (c, r), _ = self.here()
             if answer.get("result") == "refused":
                 if "card" not in why and not self.ball_recent():
-                    self.blocked[(c + dc, r + dr)] = time.time()
+                    self.blocked[(c + dc, r + dr)] = clock.now()
                 return 0
             moved = answer.get("cells_moved", 0)
             if not self.check(answer):
                 return -1  # stopped on the way: an adult put it back, plan again
             if moved < cells and "something was in the way" in why and not self.ball_recent():
-                self.blocked[(c + dc, r + dr)] = time.time()
+                self.blocked[(c + dc, r + dr)] = clock.now()
             return moved
         return 0
 
@@ -490,7 +490,7 @@ def logged(fn):
     """What each tool of the Pilot did, in .robot-sim/pilot.jsonl (the Cartographer's answers are in the Referee's log
     and the context of the caller)."""
     def wrapper(*args, **kwargs):
-        start = time.monotonic()
+        start = clock.monotonic()
         try:
             result = fn(*args, **kwargs)
         except Stuck as e:
@@ -503,7 +503,7 @@ def logged(fn):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
         with (STATE_DIR / "pilot.jsonl").open("a") as f:
             f.write(json.dumps({"tool": fn.__name__, "arguments": [args, kwargs], "result": result,
-                                "seconds": round(time.monotonic() - start, 1)}, ensure_ascii=False) + "\n")
+                                "seconds": round(clock.monotonic() - start, 1)}, ensure_ascii=False) + "\n")
         return result
     wrapper.__name__ = fn.__name__
     wrapper.__doc__ = fn.__doc__
@@ -590,7 +590,7 @@ def go_to_card(card):
             continue
         (c, r), _ = PILOT.here()
         PILOT.face(fronts[(c, r)])
-        time.sleep(0.5)  # the camera names a card after 200 ms standing still
+        clock.sleep(0.5)  # the camera names a card after 200 ms standing still
         state = PILOT.read(command("robot_state"))
         if (state.get("card_ahead") or {}).get("card") == card:
             return {"result": "done", "cell": state["cell"], "facing": state["facing"], "card_ahead": card}

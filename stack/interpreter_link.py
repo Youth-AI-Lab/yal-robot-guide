@@ -38,11 +38,11 @@ import logging
 import os
 import sys
 import threading
-import time
 from pathlib import Path
 from typing import Literal
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import clock  # noqa: E402
 import common  # noqa: E402
 from common import STATE_DIR  # noqa: E402
 import strategist  # noqa: E402
@@ -121,8 +121,8 @@ def start_mission(steps: list[dict[str, str]], personality: str | None = None) -
         words = strategist.task(mission)
     except strategist.Refused as e:
         return json.dumps({"result": "refused", "why": str(e)})
-    mission_id = time.strftime("%Y%m%d-%H%M%S")
-    RUN.update(id=mission_id, report=None, error=None, started=time.monotonic(), task=words)
+    mission_id = clock.stamp("%Y%m%d-%H%M%S")
+    RUN.update(id=mission_id, report=None, error=None, started=clock.monotonic(), task=words)
     TURN["paused_in"] = None  # a pause of an earlier mission does not count for this one
     say("go")
 
@@ -189,7 +189,7 @@ def mission_status() -> str:
     yet"; when it ended, the report: outcome
     (done, impossible, stopped…), the cards asked about with their cells, why, the moves left. Say the report to the
     group in their words."""
-    answer, now = status(), time.monotonic()
+    answer, now = status(), clock.monotonic()
     again = TURN["read_in"] == TURN["n"] if TURN["n"] else now - TURN["read_at"] < 10
     if again and not TURN["ordered"] and answer["state"] in ("running", "waiting for an adult"):
         answer["note"] = READ_AGAIN
@@ -205,7 +205,7 @@ def status():
     if answer["state"] == "waiting for an adult":
         answer["what_to_do"] = (common.waiting_info() or {}).get("what_to_do")
     if RUN["started"] is not None:
-        answer["seconds"] = round(time.monotonic() - RUN["started"])
+        answer["seconds"] = round(clock.monotonic() - RUN["started"])
     if RUN["report"] is not None and state() in ("ended", "stopped"):
         answer["report"] = RUN["report"]
     if RUN["error"]:

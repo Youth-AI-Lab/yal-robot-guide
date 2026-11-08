@@ -5,10 +5,10 @@ protocol of robot/firmware.py; it decides nothing. Today: the USB cable of the r
 the simulator (its path is in .robot-sim/serial); ROBOT_SERIAL chooses another port. BLE is TO BE COMPLETED.
 """
 import os
-import select
 import termios
-import time
 import tty
+
+import clock
 
 
 class RobotNotConnected(Exception):
@@ -67,10 +67,10 @@ class Link:
             raise RobotNotConnected(f"the link to the robot is broken ({e.strerror})") from None
 
     def read_line(self, timeout):
-        end = time.monotonic() + timeout
+        end = clock.monotonic() + timeout
         while b"\n" not in self.buffer:
-            left = max(0.0, end - time.monotonic())
-            ready, _, _ = select.select([self.fd], [], [], left)  # with 0: look once, do not wait
+            left = max(0.0, end - clock.monotonic())
+            ready = clock.readable(self.fd, left)  # with 0: look once, do not wait
             if not ready and left == 0:
                 return None
             if ready:
@@ -96,9 +96,9 @@ class Link:
         answer after it."""
         self.send(line)
         word = line.split()[0]
-        end = time.monotonic() + timeout
+        end = clock.monotonic() + timeout
         while True:
-            reply = self.read_line(max(0.0, end - time.monotonic()))
+            reply = self.read_line(max(0.0, end - clock.monotonic()))
             if reply is None:
                 raise RobotNotConnected("the robot does not answer")
             if reply.startswith("EVT "):

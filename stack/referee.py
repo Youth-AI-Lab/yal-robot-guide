@@ -20,12 +20,11 @@ Its answers: {"result": "done", ...}, {"result": "stopped", "why": <code>} (the 
 must come), or {"result": "refused", "rule": <code>, ...}: the Cartographer says it in words.
 To the Reflex: the protocol of robot/firmware.py (protocol 5), one line per command.
 """
-import datetime
 import fcntl
 import json
 import threading
-import time
 
+import clock
 import common
 from common import STATE_DIR, cell_name
 from link import Link, RobotNotConnected
@@ -57,7 +56,7 @@ class Referee:
 
     def journal(self, command, decision, **details):
         STATE_DIR.mkdir(parents=True, exist_ok=True)
-        entry = dict({"at": datetime.datetime.now().isoformat(timespec="seconds"), "caller": common.CALLER,
+        entry = dict({"at": clock.iso(), "caller": common.CALLER,
                       "command": command, "decision": decision}, **details)
         with (STATE_DIR / "referee.jsonl").open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
@@ -87,7 +86,7 @@ class Referee:
         if not self.lock.acquire(timeout=1.0 if is_move else -1):
             return {"result": "refused", "rule": "one_move_at_a_time"}
         try:
-            end = time.monotonic() + 1.0  # a short wait: watching (wait_for_event) holds the cable briefly
+            end = clock.monotonic() + 1.0  # a short wait: watching (wait_for_event) holds the cable briefly
             while True:
                 STATE_DIR.mkdir(parents=True, exist_ok=True)
                 with (STATE_DIR / "stack.lock").open("w") as lock:
@@ -101,9 +100,9 @@ class Referee:
                             return body()
                         finally:
                             self.save()
-                if time.monotonic() >= end:
+                if clock.monotonic() >= end:
                     return {"result": "refused", "rule": "another_command"}
-                time.sleep(0.05)
+                clock.sleep(0.05)
         finally:
             self.lock.release()
 
@@ -301,14 +300,14 @@ class Referee:
         self.journal(command, "sent")
         # Sideways: half the speed; with conditions, the robot stands on each cell until its camera has looked.
         allowed = self.mat["move_timeout_s"] * (2 if slide is not None else 1) + (2.5 if look else 0)
-        end = time.monotonic() + allowed
-        next_ping = time.monotonic() + HEARTBEAT_S
+        end = clock.monotonic() + allowed
+        next_ping = clock.monotonic() + HEARTBEAT_S
         done, held = 0, False
-        while time.monotonic() < end:
-            line = self.link.read_line(max(0.0, min(end, next_ping) - time.monotonic()))
-            if time.monotonic() >= next_ping:
+        while clock.monotonic() < end:
+            line = self.link.read_line(max(0.0, min(end, next_ping) - clock.monotonic()))
+            if clock.monotonic() >= next_ping:
                 self.link.send("PING")
-                next_ping = time.monotonic() + HEARTBEAT_S
+                next_ping = clock.monotonic() + HEARTBEAT_S
                 if slide is not None and hold is not None and not held and hold():
                     self.link.send("HOLD")
                     common.count("commands")
@@ -321,7 +320,7 @@ class Referee:
                 done = int(k)
                 common.count("cells")
                 terrain.reached(slide[done - 1], pose)
-                end = time.monotonic() + allowed
+                end = clock.monotonic() + allowed
                 continue
             if slide is None and line == "EVT DONE " + kind:
                 if kind == "F":

@@ -165,6 +165,25 @@ async def channel_session(env, seconds):
     return init, pushed
 
 
+def clock_only():
+    """The stack counts the world's time with stack/clock.py only, so that the simulator can speed it up: a call to the
+    time module left somewhere would make a sighting look older, or a wait last longer, than in the world. Only the
+    waits of a model's provider stay on real time, and say so."""
+    for path in sorted((GUIDE / "stack").glob("*.py")):
+        if path.name == "clock.py":
+            continue
+        bad = []
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            if (isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+                    and (node.value.id, node.attr) in {("time", "time"), ("time", "monotonic"), ("time", "sleep"),
+                                                       ("time", "strftime"), ("time", "perf_counter"),
+                                                       ("datetime", "datetime"), ("select", "select")}):
+                line = path.read_text(encoding="utf-8").splitlines()[node.lineno - 1]
+                if "real time: the provider's wait" not in line:
+                    bad.append(f"{node.value.id}.{node.attr} line {node.lineno}")
+        check(f"{path.name} counts the world's time with stack/clock.py only", not bad, ", ".join(bad))
+
+
 def micropython_subset():
     """The program of the robot must also run on the board, under MicroPython: keep to its part of
     Python (checked by reading the code; it is not run under MicroPython here)."""
@@ -470,6 +489,7 @@ async def timing_scenarios(sim, env):
 
 async def main():
     micropython_subset()
+    clock_only()
     reflex_unit()
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp)
