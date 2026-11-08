@@ -114,6 +114,12 @@ STOP_MARGIN_CM = 8
 # stays looked at, until the robot is put back on its start cell.
 CAMERA_HALF_ANGLE_DEG = 30
 CAMERA_RANGE_CM = 120
+# A cell counts as looked at only this far inside the cone: the robot stands a few centimetres off its cell's centre,
+# and a card on the very edge may not be in the image. Before (8 November 2026), A1 seen from E1, exactly 120 cm, counted
+# as looked at; the camera, from where the robot really stood, did not see the dry grass there, and the mission said
+# "not on the mat" (qsim worlds 1000011, 1000088, 1000097, 1000107, 1000176).
+LOOK_MARGIN_CM = 10
+LOOK_MARGIN_DEG = 5
 SENSOR_FROM_CENTRE_CM = 10
 # Something the distance sensor met on a cell at two moments this far apart stands there (a box): a ball rolls on.
 STANDS_FOR_S = 10
@@ -667,7 +673,10 @@ class Cartographer:
         2026-11-07."""
         now = clock.now()
         cell_cm = self.mat["cell_cm"]
-        self.went(self.col, self.row)
+        # The cell the robot stands on is not looked at: the camera does not see under the robot. A cell it moved onto
+        # holds no card (the Referee never lets it onto one: reached, step), but the start cell may: in the forest, the
+        # robot starts on the fire station. Before (8 November 2026), every look counted it, and a mission that never
+        # looked back at A6 answered that the fire station was "not on the mat".
         heading = self.facing * 90
         # The camera names the boxes it sees: a point close enough puts a box on its cell (something stands there);
         # every point hides what may be behind it, in its direction.
@@ -694,10 +703,10 @@ class Cartographer:
             for row in range(self.rows):
                 dx, dy = (col - self.col) * cell_cm, (row - self.row) * cell_cm
                 d = math.hypot(dx, dy)
-                if d == 0 or d > CAMERA_RANGE_CM:
+                if d == 0 or d > CAMERA_RANGE_CM - LOOK_MARGIN_CM:
                     continue
                 angle = (math.degrees(math.atan2(dx, -dy)) - heading + 540) % 360 - 180
-                if abs(angle) > CAMERA_HALF_ANGLE_DEG:
+                if abs(angle) > CAMERA_HALF_ANGLE_DEG - LOOK_MARGIN_DEG:
                     continue
                 if abs(angle) < 1 and hit is not None and d - cell_cm / 2 > hit:
                     continue  # straight ahead, behind what the sensor met

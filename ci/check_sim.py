@@ -1751,9 +1751,12 @@ async def scenarios(sim, env):
         await a.call("robot_state")
         cover = (await a.call("seen_cards"))["camera_coverage"]
         left = set(cover["not_looked_at_yet"])
-        check("coverage, from C5 facing north: C1 to C4, B2, B3, D2, D3 (in the cone); not B4 (45 degrees)",
-              not left & {"C1", "C2", "C3", "C4", "C5", "B2", "B3", "D2", "D3"} and "B4" in left
-              and cover["cells_on_the_mat"] == 25 and cover["cells_looked_at"] == 9, cover)
+        # 10 cm and 5 degrees inside the cone (cartographer.LOOK_MARGIN_CM, LOOK_MARGIN_DEG): C1 is 120 cm away, B3
+        # and D3 27 degrees off; the robot's own cell is under it.
+        check("coverage, from C5 facing north: C2 to C4, B2, D2 (well inside the cone); not C1 (120 cm), B3, D3 "
+              "(27 degrees), B4 (45 degrees), nor C5 (under the robot)",
+              not left & {"C2", "C3", "C4", "B2", "D2"} and {"C1", "B3", "D3", "B4", "C5"} <= left
+              and cover["cells_on_the_mat"] == 25 and cover["cells_looked_at"] == 5, cover)
         await a.call("look_around")
         cover = (await a.call("seen_cards"))["camera_coverage"]
         left = set(cover["not_looked_at_yet"])
@@ -1766,8 +1769,9 @@ async def scenarios(sim, env):
         await asyncio.sleep(0.6)
         state = await a.call("robot_state")
         cover = (await a.call("seen_cards"))["camera_coverage"]
-        check("coverage grows as the robot goes (C4 facing east: D4, E4, E3), and robot_state counts what is left",
-              not set(cover["not_looked_at_yet"]) & {"D4", "E4", "E3"}
+        check("coverage grows as the robot goes (C4 facing east: D4, E4); C5, the start cell, stays to look at (a card "
+              "may lie under the robot's start), and robot_state counts what is left",
+              not set(cover["not_looked_at_yet"]) & {"D4", "E4"} and "C5" in cover["not_looked_at_yet"]
               and state["cells_not_looked_at_yet"] == len(cover["not_looked_at_yet"]), (state, cover))
 
     sim.fresh(boxes=[{"x": 65, "y": 65, "w": 20, "h": 20, "name": "box"}])
@@ -1775,10 +1779,10 @@ async def scenarios(sim, env):
     async with agent(env) as a:
         await a.call("robot_state")
         cover = (await a.call("seen_cards"))["camera_coverage"]
-        check("coverage: a box in C3 hides C2, C1 and B2 (the line to B2 crosses C3), and its own cell until it is "
-              "set apart (the camera sees its side in front of the centre)",
-              {"C2", "C1", "B2", "D2", "C3"} <= set(cover["not_looked_at_yet"])
-              and "B3" not in cover["not_looked_at_yet"], cover)
+        check("coverage: a box in C3 hides C2 and B2 (the line to B2 crosses C3), and its own cell until it is "
+              "set apart (the camera sees its side in front of the centre); C4, in front of it, is looked at",
+              {"C2", "B2", "D2", "C3"} <= set(cover["not_looked_at_yet"])
+              and "C4" not in cover["not_looked_at_yet"], cover)
         check("coverage: the box seen from one point of view only: not yet said to stand there",
               cover["something_stands_there"] == [], cover)
 
@@ -1829,8 +1833,8 @@ async def scenarios(sim, env):
     async with agent(env) as a:
         await a.call("robot_state")
         saved = json.loads(state_file.read_text())
-        saved["looked"] = {chr(65 + c) + str(r + 1): saved["looked"]["C5"] for c in range(5) for r in range(5)
-                           if (c, r) != (2, 2)}
+        when = next(iter(saved["looked"].values()))  # any time: the start cell C5 itself is not looked at
+        saved["looked"] = {chr(65 + c) + str(r + 1): when for c in range(5) for r in range(5) if (c, r) != (2, 2)}
         state_file.write_text(json.dumps(saved))
         first = await a.call("robot_state")
         again = await a.call("robot_state")
