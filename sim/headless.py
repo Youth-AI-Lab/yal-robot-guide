@@ -14,8 +14,8 @@ and presses Resume, after --adult-s seconds of the world's time. Each mission ha
 
 Usage (the folder of the guide is the current folder):
     python3 -I sim/headless.py --mission mission.json [--model none|fake] [--world sim/worlds/forest.json] [--seed 1]
-A model of a provider works too (its key on stdin, as for stack/strategist.py), but the world does not move while it
-thinks yet (ROBOT-SIMULATEUR-ACCELERE.md, step 5).
+A model of a provider works too (its key on stdin, as for stack/strategist.py). While it thinks, the world goes on
+(--think): as long as each call took (real, the default), not at all (zero), or a fixed number of seconds per call.
 
 Prints one line of JSON: the report of the mission, and how long it took in the world and on the computer. The
 mission's files are in --out (by default a new folder in .robot-sim/headless/).
@@ -140,6 +140,8 @@ def main():
     parser.add_argument("--seed", type=int, default=1)
     parser.add_argument("--adult-s", type=float, default=10.0, help="world seconds before the adult puts the robot back")
     parser.add_argument("--limit-s", type=float, default=1800.0, help="world seconds a mission may last")
+    parser.add_argument("--think", default="real", help="real, zero, or seconds: how far the world goes on while the "
+                                                        "model thinks")
     parser.add_argument("--out", help="the folder of this run (by default a new one in .robot-sim/headless/)")
     args = parser.parse_args()
 
@@ -158,7 +160,7 @@ def main():
     os.close(world.link.master)  # the simulator's pseudo-terminal is not used: the wire in memory takes its place
     os.close(world.link.slave)
     world.link = RobotEnd(wire, world.wire)
-    os.environ.update(ROBOT_CLOCK="stepped", ROBOT_STATE_DIR=str(state), ROBOT_MAT=str(state / "mat.json"),
+    os.environ.update(ROBOT_CLOCK="stepped", ROBOT_THINK=args.think, ROBOT_STATE_DIR=str(state), ROBOT_MAT=str(state / "mat.json"),
                       ROBOT_SERIAL="memory")
     sys.path.insert(0, str(GUIDE / "stack"))
     import clock  # noqa: E402  (after ROBOT_CLOCK: it reads it once)

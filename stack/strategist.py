@@ -491,10 +491,11 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
                 break
             turns += 1
             common.count("model_calls")
-            if model == "fake":
-                message, used, finish = fake_model(mission, messages)
-            else:
-                message, used, finish = api_model(model, messages, offered, key, usage, flush)
+            with clock.thinking():  # the world goes on while the model thinks
+                if model == "fake":
+                    message, used, finish = fake_model(mission, messages)
+                else:
+                    message, used, finish = api_model(model, messages, offered, key, usage, flush)
             usage["api_calls"] += 1
             for k in ("prompt_tokens", "completion_tokens"):
                 usage[k] += used.get(k) or 0

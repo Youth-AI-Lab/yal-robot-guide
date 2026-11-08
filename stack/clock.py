@@ -10,7 +10,12 @@ ROBOT_CLOCK chooses the clock:
 - "stepped": the simulator and the stack in one process (sim/headless.py). The world's time only moves when the stack
   waits: each wait makes the simulated world step forward until the answer comes or the wait is over. As fast as the
   computer can go, and the same run again with the same seed.
+
+While a model thinks (a call to its provider), the world goes on: in real time by itself; stepped, ROBOT_THINK says by
+how much: "real" (the default: as long as the call took), "zero" (the world waits for the model), or a number of
+seconds (the same for every call, to compare models whatever their speed).
 """
+import contextlib
 import datetime
 import os
 import select
@@ -21,6 +26,12 @@ if MODE not in ("real", "stepped"):
     raise SystemExit(f"ROBOT_CLOCK={MODE!r}: real or stepped")
 
 _world = {"step": None, "tick_s": 0.01, "seconds": 0.0, "epoch": time.time()}
+THINK = os.environ.get("ROBOT_THINK", "real")
+if THINK not in ("real", "zero"):
+    try:
+        float(THINK)
+    except ValueError:
+        raise SystemExit(f"ROBOT_THINK={THINK!r}: real, zero or a number of seconds") from None
 
 
 def drive_with(step, tick_s, epoch=None):
@@ -98,3 +109,17 @@ def readable(fd, timeout):
         ready, _, _ = select.select([fd], [], [], timeout)
         return bool(ready)
     return wait_for(lambda: bool(select.select([fd], [], [], 0)[0]), timeout)
+
+
+@contextlib.contextmanager
+def thinking():
+    """Around a call to a model: what the world does meanwhile (ROBOT_THINK, above). Returns, in "took", how long the
+    call took in real time."""
+    took = {"seconds": 0.0}
+    start = time.monotonic()  # real time: how long the provider takes
+    try:
+        yield took
+    finally:
+        took["seconds"] = time.monotonic() - start
+        if MODE == "stepped":
+            _advance(0.0 if THINK == "zero" else took["seconds"] if THINK == "real" else float(THINK))

@@ -212,6 +212,21 @@ def stepped_mode():
         check("stepped clock: a mission past its limit in the world's time is stopped",
               limited.get("time_limit_reached") and limited.get("report", {}).get("outcome") == "stopped"
               and not limited.get("cut"), limited)
+        # While the model thinks, the world goes on by --think seconds a call (the scripted model, no network).
+        thought = []
+        for think in ("zero", "30"):
+            done = subprocess.run([PYTHON, "-I", str(GUIDE / "sim" / "headless.py"), "--mission", str(tmp / "mission.json"),
+                                   "--model", "fake", "--think", think, "--out", str(tmp / f"think-{think}")],
+                                  stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300)
+            try:
+                thought.append(json.loads(done.stdout.strip().splitlines()[-1]))
+            except (IndexError, ValueError):
+                thought.append({"error": done.stderr[-500:]})
+        zero, thirty = thought
+        turns = zero.get("report", {}).get("turns", 0)
+        check("stepped clock: while the model thinks, the world goes on by --think seconds a call",
+              turns > 0 and zero.get("report", {}).get("outcome") == thirty.get("report", {}).get("outcome")
+              and abs(thirty.get("world_s", 0) - zero.get("world_s", 0) - 30 * turns) <= 1, thought)
 
 
 def micropython_subset():
