@@ -91,7 +91,7 @@ ADULT = "Stop and ask an adult to put the robot back on "
 NAME = re.compile(r"\b[A-Z][0-9]{1,2}\b")
 STATE_KEYS = {"cell", "facing", "position_known", "distance_ahead_cm", "card_ahead", "battery_percent",
               "emergency_stop", "waiting_for_adult", "bumper_touched", "warning_light_on", "ball_last_seen",
-              "on_a_ball_lane", "cells_not_looked_at_yet", "last_stop", "moves_left", "counts", "mat"}
+              "on_a_ball_lane", "ball_lanes", "cells_not_looked_at_yet", "last_stop", "moves_left", "counts", "mat"}
 CARD_KEYS = {"card", "means", "cell", "could_also_be", "distance_cm", "seen_from", "at"}
 COVERAGE_KEYS = {"cells_looked_at", "cells_on_the_mat", "not_looked_at_yet", "something_stands_there", "note"}
 
@@ -801,7 +801,16 @@ def check_call(method, args, result, before, after, fake, said, notes, run, brok
                     k -= 1
                 col, row = way[k]
             expected = f"{ADULT}cell {cell_name(col, row)}, facing {FACING[facing]}"
-            if not todo.startswith(expected):
+            asked = re.match(rf"{ADULT}cell ([A-Z][0-9]+), facing (\w+)", todo)
+            if run["cart"].on_lane((col, row)) and asked:
+                # Still on a lane (a quarter turn or a look around has no other cell): the adult puts it down on a
+                # cell off every lane, two steps at most, or on that cell when there is none (off_lane_near).
+                ac, ar = C.cell_xy(asked[1])
+                if asked[2] != FACING[facing] or ((ac, ar) != (col, row) and (
+                        run["cart"].on_lane((ac, ar)) or abs(ac - col) + abs(ar - row) > 2)):
+                    broke("the adult puts the robot back near the last cell it reached, off every ball's lane",
+                          [todo, expected])
+            elif not todo.startswith(expected):
                 broke("the adult puts the robot back on the last cell it reached, off a ball's lane", [todo, expected])
         elif last is not None and last["frame"] and NAME.search(todo):
             broke("after a stop, place relative: the instruction names no cell", todo)
