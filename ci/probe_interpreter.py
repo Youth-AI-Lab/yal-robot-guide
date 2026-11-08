@@ -91,16 +91,29 @@ class World:
 
 def fake_run(world):
     def run(mission, model, key, tools, out=None, cap_usd=0):
-        """What the Strategist would do, in a second or two: it obeys the pause (acknowledged on a cell), the stop, and
-        ends with a report in the closed format."""
+        """What the Strategist would do, in 8 to 40 seconds (several turns of the conversation): it obeys the pause
+        (acknowledged on a cell), the stop, sometimes waits for an adult for a while (the robot was touched), and ends
+        with a report in the closed format. Shorter, the mission had always ended before the group asked how it went."""
         rng = random.Random(json.dumps(mission, sort_keys=True))
-        end = time.monotonic() + rng.uniform(0.5, 3.0)
+        start = time.monotonic()
+        end = start + rng.uniform(8.0, 40.0)
+        adult = (start + rng.uniform(2.0, 6.0), rng.uniform(5.0, 15.0)) if rng.random() < 0.35 else None
         cards, outcome, why = [], "done", ""
         while time.monotonic() < end:
             control = common.mission_control()
             if control == "stop":
+                common.say_waiting(None)
                 return {"outcome": "stopped", "cards": [], "why": "", "moves_left": None, "turns": 0,
                         "seconds": 1.0, "spent_usd": 0.0}
+            if adult and time.monotonic() >= adult[0]:
+                if common.waiting_info() is None:
+                    common.say_waiting({"since": time.strftime("%H:%M:%S"), "what_to_do": "Stop and ask an adult to put "
+                                        "the robot back on cell C3, facing north, then to press Resume on the robot."})
+                if time.monotonic() >= adult[0] + adult[1]:
+                    common.say_waiting(None)  # the adult put it back and pressed Resume
+                    end, adult = end + adult[1], None
+                time.sleep(0.05)
+                continue
             if control == "pause":
                 time.sleep(rng.uniform(0.1, 0.6))  # the robot finishes its cell
                 common.say_held({"cell": rng.choice(sorted(CELLS)), "facing": "north", "since": time.strftime("%H:%M:%S")})
@@ -136,7 +149,8 @@ BANK = {
     "new_request": [("Et regarde aussi {fr} !", "And look at {en} too!"), ("Attends, va plutôt à {fr}.",
                                                                           "Wait, go to {en} instead.")],
     "never_mind": [("Non, laisse tomber, continue.", "No, never mind, carry on.")],
-    "status": [("Il en est où ?", "How is it going?"), ("Il a trouvé ?", "Did it find it?")],
+    "status": [("Il en est où ?", "How is it going?"), ("Il a trouvé ?", "Did it find it?"),
+               ("Alors, ça a marché ?", "So, did it work?")],
     "off_topic": [("Raconte-nous une blague.", "Tell us a joke."), ("C'est quoi la capitale de l'Italie ?",
                                                                     "What is the capital of Italy?")],
     "personal": [("Je m'appelle Léa, j'ai 13 ans et j'habite rue des Pins.",
@@ -146,6 +160,12 @@ BANK = {
 }
 PERSONAL = ["Léa", "13 ans", "rue des Pins", "Tom", "12", "Elm Street"]
 YES = re.compile(r"^\s*(oui|yes|ok|okay|d'accord|vas-y|go|yep|ouais|c'est ça|that's it)\b", re.I)
+# The group asks how it is going (rule 7: mission_status in that very turn, the robot moves on between two messages).
+STATUS_ASK = re.compile(r"(en est où|il a trouvé|ça a marché|alors\s*\?|how is it going|did it (find|work)|"
+                        r"found anything|so, did it)", re.I)
+# The group itself asks to stop the mission (rule 6: otherwise, pause and ask first).
+FINAL = ("ended", "stopped", "failed", "no mission yet")  # a state that no longer changes: telling it again is right
+STOP_ASK = re.compile(r"(arrête|stoppe|stop\b|laisse tomber la mission|annule|cancel)", re.I)
 SCENARIOS = [
     ["request", "yes", "status", "status"],
     ["request", "correction", "yes", "status"],
@@ -276,6 +296,14 @@ def check_turn(said, intent, lang, calls, text, ctx, broken):
             broke("a name, an age or a place of the group never repeated", word)
     if text.strip() and lang and language(text) not in (lang, None):
         broke("the answer in the group's language", [lang, text[:200]])
+    if calls and not text.strip():
+        broke("after its tools, words to the group", [c["name"] for c in calls])
+    if STATUS_ASK.search(said or "") and ctx.get("last_state") not in (None, *FINAL) \
+            and not any(c["name"] == "mission_status" for c in calls):
+        broke("asked how it goes, the last state read could have changed: mission_status in that very turn",
+              [ctx["last_state"], text[:300]])
+    if any(c["name"] == "stop_mission" for c in calls) and not (YES.search(said or "") or STOP_ASK.search(said or "")):
+        broke("stop_mission only after the group said so (pause, then ask)", [said, [c["name"] for c in calls]])
 
 
 # --- one run --------------------------------------------------------------------------------------------------------------
@@ -360,6 +388,7 @@ def interpreter_turn(model, key, messages, ctx, usage, seed):
                 ctx["paused_asked"], ctx["paused_seen"] = True, answer.get("result") == "paused"
             if name == "mission_status":
                 ctx["status_seen"] = True  # what it said can be told again in a later turn
+                ctx["last_state"] = answer.get("state")
                 if answer.get("state") in ("paused", "stopped", "ended"):
                     ctx["paused_seen"] = True
                 if answer.get("state") == "paused":
@@ -437,6 +466,8 @@ def run(seed, generator, persona, steps, model, key, langs, instructions=INSTRUC
                 for c in CARDS) or bool(COLOURS.search(text)))
         if any(c["name"] == "start_mission" and '"started"' in c["result"] for c in calls):
             ctx["report"], ctx["status_seen"] = None, False
+            if not any(c["name"] == "mission_status" for c in calls):
+                ctx["last_state"] = "running"  # started: what it does from now on changes
         if goal is not None:
             if goal["asked_first"] is None and (calls or text):
                 started = any(c["name"] == "start_mission" for c in calls)
