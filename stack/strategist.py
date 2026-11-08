@@ -240,6 +240,11 @@ def invalid(spec, arguments):
 
 
 # --- the models -----------------------------------------------------------------------------------------------
+# Waits before trying a call of the model again. Albert API answered two calls of Qwen 3 Coder with an error that the
+# same request, sent again later, did not give (2026-11-08): every HTTP error is tried again, except a refused key.
+API_WAITS_S = (10, 30, 60)
+
+
 class ApiError(Exception):
     def __init__(self, exit_code, detail):
         super().__init__(detail)
@@ -281,7 +286,7 @@ def api_model(model, messages, tools, key, usage, flush):
     body.update(messages=messages, tools=tools, tool_choice="auto", parallel_tool_calls=False, max_tokens=MAX_TOKENS)
     data = json.dumps(body).encode()
     detail = ""
-    for attempt in range(3):
+    for wait_s in API_WAITS_S:
         try:
             reply = json.loads(urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers),
                                                       timeout=300).read())
@@ -291,20 +296,20 @@ def api_model(model, messages, tools, key, usage, flush):
             detail = f"HTTP {e.code}: {e.read()[:300].decode(errors='replace')}"
             if e.code in (401, 402, 403):
                 raise ApiError(f"api refused {e.code}", detail)
-            if e.code not in (408, 429) and e.code < 500:
-                raise ApiError("api error", detail)
             wait = int(e.headers.get("Retry-After") or 0) if str(e.headers.get("Retry-After", "")).isdigit() else 0
-            time.sleep(max(wait, 5 * (attempt + 1)))
+            usage["api_errors"] = usage.get("api_errors", []) + [detail[:300]]
+            flush()
+            time.sleep(max(wait, wait_s))
         except (TimeoutError, OSError) as e:  # no answer: counted as billed, then sent again
             usage["failed_calls"] += 1
             flush()
             detail = f"{type(e).__name__}: no answer from the model's API"
-            time.sleep(5 * (attempt + 1))
+            time.sleep(wait_s)
         except (KeyError, IndexError, ValueError) as e:
             usage["failed_calls"] += 1
             flush()
             detail = f"{type(e).__name__}: the API's answer could not be read"
-            time.sleep(5 * (attempt + 1))
+            time.sleep(wait_s)
     raise ApiError("api error", detail)
 
 
@@ -552,6 +557,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
                 transcript.write(json.dumps({"role": "user", "content": event}, ensure_ascii=False) + "\n")
     except ApiError as e:
         outcome = e.exit_code
+        usage["api_error"] = str(e)[:300]  # for whoever runs the robot; never in the report, which is closed
     transcript.close()
     flush()
     if key:

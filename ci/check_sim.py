@@ -1749,6 +1749,38 @@ def stack_scenarios(sim, env):
           and told[1].startswith('{"result": "refused", "why": "the camera has not looked at every cell of the mat yet: ')
           and '"not_looked_at_yet"' in told[1] and '"done"' in told[2], (invented, told, done.stderr[-400:]))
 
+    # An HTTP error of the model's API that the same request sent again does not give (Albert, 2026-11-08): tried again,
+    # the mission goes on; an error that stays ends it after three tries. The provider's words go to usage.json only.
+    for name, errors, want in (("transient", 1, "impossible"), ("lasting", 9, "api error")):
+        out = Path(tempfile.mkdtemp(dir=env["ROBOT_STATE_DIR"]))
+        script = "\n".join([
+            "import io, json, sys, urllib.error",
+            "sys.path.insert(0, 'stack')",
+            "import strategist",
+            "strategist.API_WAITS_S = (0, 0, 0)",
+            "left = [int(sys.argv[1])]",
+            "call = {'id': 'r', 'type': 'function', 'function': {'name': 'report', 'arguments': "
+            "json.dumps({'outcome': 'impossible', 'why': 'not seen yet'})}}",
+            "ok = json.dumps({'choices': [{'message': {'tool_calls': [call]}, 'finish_reason': 'tool_calls'}], "
+            "'usage': {}}).encode()",
+            "def urlopen(*a, **k):",
+            "    if left[0] > 0:",
+            "        left[0] -= 1",
+            "        raise urllib.error.HTTPError('u', 400, 'Bad Request', {}, io.BytesIO(b'upstream busy'))",
+            "    return io.BytesIO(ok)",
+            "strategist.urllib.request.urlopen = urlopen",
+            f"print(json.dumps(strategist.run({{'steps': [{{'do': 'set_light', 'color': 'green'}}]}}, "
+            f"model='openrouter:test/model', key='fake-key-for-the-test-0000', out={str(out)!r})))"])
+        done = subprocess.run([PYTHON, "-I", "-c", script, str(errors)], env=env, cwd=GUIDE, capture_output=True,
+                              text=True, timeout=120)
+        final = json.loads(done.stdout.strip().splitlines()[-1]) if done.stdout.strip() else {}
+        usage = json.loads((out / "usage.json").read_text()) if (out / "usage.json").exists() else {}
+        check(f"an HTTP 400 of the model's API, {name}: tried again ({'the mission goes on' if errors == 1 else 'three tries, then api error'}); "
+              "the provider's words in usage.json, not in the report",
+              final.get("outcome") == want and len(usage.get("api_errors", [])) == min(errors, 3)
+              and "upstream busy" in (usage.get("api_errors") or [""])[0] and "upstream busy" not in json.dumps(final)
+              and (errors == 1 or "upstream busy" in usage.get("api_error", "")), (final, usage, done.stderr[-400:]))
+
     # A card seen while the place on the mat is unknown has no cell in the record yet: the Pilot finds its place first,
     # then refuses a cell that holds a card.
     unknown = with_rules("unknown", start="unknown")
