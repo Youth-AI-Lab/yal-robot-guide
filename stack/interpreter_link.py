@@ -12,6 +12,13 @@ stack is reachable from it: never the robot, never the Pilot's tools.
                                handled by the Strategist's loop and the Pilot without asking the model; the robot
                                stops on the next cell, as soon as possible (no adult needed)
   mission_status()             running, paused, done or stopped, and the report when it ends (closed fields)
+And one route that is not a tool, for the filter of Open WebUI (interpreter/feurisson_filter.py), same token:
+  POST /turn {"group_asked_to_stop": bool}
+                               a new message of the group: answers mission_status, read now. From then on,
+                               stop_mission is refused unless the group asked to stop, or the mission was paused in an
+                               earlier turn (the group was asked): pause first, ask, then stop (rule 6 of
+                               feurisson.md, which DeepSeek broke 4 times in 198 turns, whatever the instructions
+                               said). Without the filter, nothing changes.
 A mission that changes in nature is stopped, then the new one started; one that is only enriched too (the
 Strategist starts a new conversation for each mission; the map of the terrain stays).
 
@@ -43,6 +50,13 @@ import strategist  # noqa: E402
 CARDS = sorted(strategist.pilot.MAT["cards"])
 SETUP = {"model": "none", "key": "", "tools": "route", "cap": strategist.RUN_CAP_USD}
 RUN = {"thread": None, "id": None, "report": None, "error": None, "started": None, "task": None}
+# The turns of the conversation, told by the filter: n counts the group's messages (0: no filter), paused_in is the
+# turn of the last pause_mission, stop_asked whether the group's message asked to stop.
+TURN = {"n": 0, "paused_in": None, "stop_asked": False}
+ASK_FIRST = ("you paused the mission in this same answer: ask the group first whether to change it, add to it, or let "
+             "it go on, and call stop_mission only once they have answered")
+PAUSE_FIRST = ("the group did not ask to stop: call pause_mission first, ask the group whether to change the mission, "
+               "add to it, or let it go on, and call stop_mission only once they have answered")
 
 
 def say(do):
@@ -103,6 +117,7 @@ def start_mission(steps: list[dict[str, str]], personality: str | None = None) -
         return json.dumps({"result": "refused", "why": str(e)})
     mission_id = time.strftime("%Y%m%d-%H%M%S")
     RUN.update(id=mission_id, report=None, error=None, started=time.monotonic(), task=words)
+    TURN["paused_in"] = None  # a pause of an earlier mission does not count for this one
     say("go")
 
     def run():
@@ -124,6 +139,7 @@ def pause_mission() -> str:
         return json.dumps({"result": "refused", "why": f"no mission running ({state()})"})
     if state() in ("running", "waiting for an adult"):
         say("pause")
+    TURN["paused_in"] = TURN["n"]
     return json.dumps({"result": state(), "mission": RUN["id"],
                        "what_to_do": "call mission_status: it says paused, with the cell where the robot stopped, once "
                                      "nothing moves; until then, the robot is still finishing its cell"})
@@ -134,6 +150,7 @@ def resume_mission() -> str:
     if state() not in ("pausing", "paused"):
         return json.dumps({"result": "refused", "why": f"no mission paused ({state()})"})
     say("go")
+    TURN["paused_in"] = None  # the group chose to go on: a later stop needs a new pause, and a new question
     return json.dumps({"result": "running", "mission": RUN["id"]})
 
 
@@ -142,8 +159,19 @@ def stop_mission() -> str:
     stopped."""
     if state() not in ("running", "pausing", "paused", "waiting for an adult"):
         return json.dumps({"result": "refused", "why": f"no mission running ({state()})"})
+    if TURN["n"] and not TURN["stop_asked"]:
+        if TURN["paused_in"] == TURN["n"]:
+            return json.dumps({"result": "refused", "why": ASK_FIRST})
+        if TURN["paused_in"] is None:
+            return json.dumps({"result": "refused", "why": PAUSE_FIRST})
     say("stop")
     return json.dumps({"result": "stopping", "mission": RUN["id"]})
+
+
+def turn(group_asked_to_stop=False):
+    """A new message of the group (the filter of Open WebUI): the turns start again, and the mission as it is now."""
+    TURN.update(n=TURN["n"] + 1, stop_asked=bool(group_asked_to_stop))
+    return mission_status()
 
 
 def mission_status() -> str:
@@ -170,17 +198,40 @@ def mission_status() -> str:
 TOOLS = (mission_options, start_mission, pause_mission, resume_mission, stop_mission, mission_status)
 
 
-def bearer_only(app, token):
-    """An ASGI app that answers 401 to any HTTP request without "Authorization: Bearer <token>"."""
+async def answer(send, status, body, kind=b"application/json"):
+    await send({"type": "http.response.start", "status": status, "headers": [(b"content-type", kind)]})
+    await send({"type": "http.response.body", "body": body})
+
+
+def bearer_only(app, token, hosts=()):
+    """An ASGI app that answers 401 to any HTTP request without "Authorization: Bearer <token>". It also serves
+    POST /turn (the filter of Open WebUI), with the same locks as the tools: the token, an allowed Host, no Origin."""
     expected = f"Bearer {token}".encode()
 
     async def guarded(scope, receive, send):
         if scope["type"] == "http":
-            given = dict(scope.get("headers") or []).get(b"authorization", b"")
-            if not hmac.compare_digest(given, expected):
+            headers = dict(scope.get("headers") or [])
+            if not hmac.compare_digest(headers.get(b"authorization", b""), expected):
                 await send({"type": "http.response.start", "status": 401,
                             "headers": [(b"content-type", b"text/plain"), (b"www-authenticate", b"Bearer")]})
                 await send({"type": "http.response.body", "body": b"Unauthorized\n"})
+                return
+            if scope.get("path") == "/turn":
+                if headers.get(b"host", b"").decode(errors="replace") not in hosts or b"origin" in headers:
+                    await answer(send, 403, b"Forbidden\n", b"text/plain")
+                elif scope.get("method") != "POST":
+                    await answer(send, 405, b"Method Not Allowed\n", b"text/plain")
+                else:
+                    raw, more = b"", True
+                    while more:
+                        message = await receive()
+                        raw += message.get("body", b"")
+                        more = message.get("more_body", False) and len(raw) < 4096
+                    try:
+                        asked = bool(json.loads(raw or b"{}").get("group_asked_to_stop"))
+                    except (ValueError, AttributeError):
+                        asked = False
+                    await answer(send, 200, turn(asked).encode())
                 return
         await app(scope, receive, send)
     return guarded
@@ -201,8 +252,8 @@ async def serve(args, token):
     app = server.streamable_http_app(transport_security=security, host=args.host)
     print(f"READY robot-mission: http://{args.host}:{args.port}/mcp, Strategist {SETUP['model']} with the "
           f"{SETUP['tools']} tools, hosts {', '.join(args.allowed_host)}", flush=True)
-    config = uvicorn.Config(bearer_only(app, token), host=args.host, port=args.port, log_level="warning",
-                            access_log=False)
+    config = uvicorn.Config(bearer_only(app, token, set(args.allowed_host)), host=args.host, port=args.port,
+                            log_level="warning", access_log=False)
     await uvicorn.Server(config).serve()
 
 

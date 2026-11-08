@@ -488,6 +488,8 @@ def main():
                         help="interpreter tier: the model that plays it, ollama:<model>, albert:<model> or openrouter:<model> (key on stdin)")
     parser.add_argument("--lang", default="both", choices=["fr", "en", "both"], help="interpreter tier: the group's")
     parser.add_argument("--instructions", help="interpreter tier: other instructions than interpreter/feurisson.md, to try")
+    parser.add_argument("--filter", action="store_true",
+                        help="interpreter tier: before each message, interpreter/feurisson_filter.py, as Open WebUI runs it")
     parser.add_argument("--cap-usd", type=float, default=1.0,
                         help="interpreter tier: no call to a paid provider once it says this much was spent")
     parser.add_argument("--generator", default="random", help="random, or ollama:<model>")

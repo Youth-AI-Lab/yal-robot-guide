@@ -265,8 +265,10 @@ One command starts the simulator, the stack with the Strategist's model, the lin
 with the chatbot "Feurisson robot" (the same Open WebUI as the workshops, without accounts). Both
 models, the Strategist's and Feurisson's, are DeepSeek v4 Flash through OpenRouter, paid with the
 pair's key; OpenRouter is asked to avoid companies that may collect the data, which does not stop a
-provider from keeping what it receives. The Strategist stops a mission at 0.25 US dollars; nothing
-caps Feurisson's conversation but the limit of the key itself, set on OpenRouter.
+provider from keeping what it receives. The Strategist stops a mission at 0.25 US dollars, counted
+from the costs OpenRouter sends back; with DeepSeek v4 Flash, the key's own counter rose about three
+times faster than these (8 November 2026). Set a limit on the key itself, on OpenRouter: it is the only
+cap that holds, for Feurisson too.
 
 1. Save an OpenRouter key (`sk-or-...`), as in the workshops:
 
@@ -331,6 +333,20 @@ What real models did on 7 November 2026, one try each, the group played by a scr
 
 The stack now refuses a report with a card the camera never placed there, and ends a mission whose
 model sends the same refused call four times.
+
+Rewording Feurisson's instructions did not stop it from answering in the wrong language or stopping a
+mission without asking. So `robot-session` gives Feurisson a filter,
+[interpreter/feurisson_filter.py](interpreter/feurisson_filter.py), which runs before each message of the
+group, outside the model:
+- the state of the mission, read just then, goes into Feurisson's instructions;
+- a small, cheap model of the same provider (Mistral Small 3.2 through OpenRouter, Ministral 8B with
+  Albert) names the group's language, and the instructions say to answer in it. The group's message goes to
+  that small model too;
+- the link refuses `stop_mission` unless the group asked to stop, or the mission was paused at an earlier
+  message (the group was asked first).
+
+On 48 conversations with DeepSeek v4 Flash, played by a script: answers in the wrong language went from
+25 to 0 in 198 turns, missions stopped without asking from 4 to 0.
 
 ### Step by step, on any computer
 

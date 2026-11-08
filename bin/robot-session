@@ -28,8 +28,12 @@ shows one, as the kit's openwebui does (checked when the command runs: a port ma
 with young people until the rules for that are decided.
 
 For the checks (ci/check_session.py) and the trials only: ROBOT_STRATEGIST (none, fake, or another model for the
-Strategist), ROBOT_MODEL, ROBOT_OPENAI_BASE_URL (a fake model in this Codespace), ROBOT_CAP_USD (the most a mission may
-cost, instead of RUN_CAP_USD).
+Strategist), ROBOT_MODEL, ROBOT_LANGUAGE_MODEL, ROBOT_OPENAI_BASE_URL (a fake model in this Codespace), ROBOT_CAP_USD
+(the most a mission may cost, instead of RUN_CAP_USD).
+
+Feurisson has a filter (interpreter/feurisson_filter.py): before each message of the group, the mission as it is now
+and the group's language go into its instructions. The language is named by a small model of the same provider
+(Mistral Small 3.2 through OpenRouter, Ministral 8B with Albert): the group's message goes to it too.
 """
 import getpass
 import json
@@ -57,6 +61,9 @@ PORT_NAMES = {OWUI_PORT: "Open WebUI", SIM_PORT: "Robot simulator"}
 MODEL = os.environ.get("ROBOT_MODEL", "deepseek/deepseek-v4-flash")
 OPENROUTER_URL, ALBERT_URL = "https://openrouter.ai/api/v1", "https://albert.api.etalab.gouv.fr/v1"
 ALBERT_STRATEGIST = "deepseek-v4-flash-0731"  # the only model of Albert seen doing the Strategist's missions
+# The small, cheap model that names the group's language for the filter (interpreter/feurisson_filter.py).
+SMALL = {OPENROUTER_URL: "mistralai/mistral-small-3.2-24b-instruct", ALBERT_URL: "ministral-3-8b-instruct-2512"}
+FILTER = "feurisson_robot"
 BOT, SERVER = "feurisson-robot", "robot-mission"
 SCRIPTS = {"simulator": "sim/robot_sim.py", "link": "stack/interpreter_link.py"}
 # The kit's choices (kit/.devcontainer/bin/openwebui): no built-in tool of Open WebUI (memories, other conversations,
@@ -129,7 +136,7 @@ def albert_key(model):
         fail(f"Albert refused the key (HTTP {e.code}).")
     except OSError as e:
         fail(f"Albert does not answer: {e}")
-    for wanted in (model, ALBERT_STRATEGIST):
+    for wanted in (model, ALBERT_STRATEGIST, SMALL[ALBERT_URL]):
         if wanted not in models:
             fail(f"Albert has no model {wanted} today. Its models: {', '.join(sorted(m for m in models if m))}")
     return {"key": key, "routing": None, "url": ALBERT_URL, "model": model, "strategist": "albert:" + ALBERT_STRATEGIST,
@@ -288,11 +295,22 @@ def start_openwebui(use, link_url, token):
     else:
         raise Stop("Open WebUI did not answer in 10 minutes")
     token_owui = api("POST", "/auths/signin", {"email": "", "password": ""})["token"]
+    # The filter: before each message of the group, the mission as it is now and the group's language go into the
+    # instructions, and the link learns that a new turn starts.
+    api("POST", "/functions/create", {"id": FILTER, "name": "Feurisson robot",
+                                      "content": (GUIDE / "interpreter" / "feurisson_filter.py").read_text(),
+                                      "meta": {"description": "The mission now, the group's language, the turn."}},
+        token=token_owui)
+    if not (api("POST", f"/functions/id/{FILTER}/toggle", {}, token=token_owui) or {}).get("is_active"):
+        raise Stop("Open WebUI did not switch the filter on")
+    api("POST", f"/functions/id/{FILTER}/valves/update", {
+        "language_model": os.environ.get("ROBOT_LANGUAGE_MODEL", SMALL.get(use["url"], "")),
+        "language_extra": json.dumps({"provider": use["routing"]}) if use["routing"] else ""}, token=token_owui)
     system = (GUIDE / "interpreter" / "feurisson.md").read_text(encoding="utf-8")
     api("POST", "/models/create", {  # a new volume each session: neither model is there yet
         "id": BOT, "base_model_id": model, "name": "Feurisson robot", "is_active": True,
         "meta": {"description": "The voice of the robot: it gives the robot its missions.",
-                 "toolIds": [f"server:mcp:{SERVER}"], "capabilities": NO_TOOLS,
+                 "toolIds": [f"server:mcp:{SERVER}"], "filterIds": [FILTER], "capabilities": NO_TOOLS,
                  "builtinTools": dict.fromkeys(BUILTIN_CATEGORIES, False)},
         "params": dict(routed, system=system, function_calling="native")}, token=token_owui)
     # The plain model, hidden from the list and without tools: chosen by its id, it still gets the routing.

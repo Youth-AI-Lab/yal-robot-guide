@@ -302,7 +302,8 @@ def check_turn(said, intent, lang, calls, text, ctx, broken):
             and not any(c["name"] == "mission_status" for c in calls):
         broke("asked how it goes, the last state read could have changed: mission_status in that very turn",
               [ctx["last_state"], text[:300]])
-    if any(c["name"] == "stop_mission" for c in calls) and not (YES.search(said or "") or STOP_ASK.search(said or "")):
+    if any(c["name"] == "stop_mission" and '"refused"' not in str(c.get("result")) for c in calls) \
+            and not (YES.search(said or "") or STOP_ASK.search(said or "")):
         broke("stop_mission only after the group said so (pause, then ask)", [said, [c["name"] for c in calls]])
 
 
@@ -405,12 +406,32 @@ def reset_link():
         link.say("stop")
         link.RUN["thread"].join(5)
     link.RUN.update(thread=None, id=None, report=None, error=None, started=None, task=None)
+    link.TURN.update(n=0, paused_in=None, stop_asked=False)
     for f in STATE.iterdir():
         if f.is_file():
             f.unlink()
 
 
-def run(seed, generator, persona, steps, model, key, langs, instructions=INSTRUCTIONS):
+# The filter of Open WebUI (interpreter/feurisson_filter.py), as robot-session installs it: the same file; the link is
+# called in this process, the small model that names the language is the provider's own (OpenRouter or Albert).
+LANGUAGE_MODELS = {"openrouter:": ("https://openrouter.ai/api/v1", "mistralai/mistral-small-3.2-24b-instruct",
+                                   {"provider": {"data_collection": "deny"}}),
+                   "albert:": ("https://albert.api.etalab.gouv.fr/v1", "ministral-3-8b-instruct-2512", {})}
+
+
+def make_filter(model, key):
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("feurisson_filter", GUIDE / "interpreter" / "feurisson_filter.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    f = module.Filter()
+    url, small, extra = next((v for k, v in LANGUAGE_MODELS.items() if model.startswith(k)), (None, "", {}))
+    f.valves.language_model, f.valves.language_extra = small, json.dumps(extra)
+    f.language_url, f.language_key, f.turn_hook = url, key, link.turn
+    return f
+
+
+def run(seed, generator, persona, steps, model, key, langs, instructions=INSTRUCTIONS, use_filter=False):
     rng = random.Random(seed)
     lang = rng.choice(langs)
     reset_link()
@@ -418,6 +439,7 @@ def run(seed, generator, persona, steps, model, key, langs, instructions=INSTRUC
     strategist.run = fake_run(world)
     link.strategist.run = strategist.run
     messages = [{"role": "system", "content": instructions}]
+    flt = make_filter(model, key) if use_filter else None
     ctx = {"said_back": False, "running": False, "paused_asked": False, "paused_seen": False, "report": None,
            "last_text": "", "stands_on": None}
     usage = {"prompt_tokens": 0, "completion_tokens": 0, "cost": 0.0, "api_calls": 0, "failed_calls": 0,
@@ -448,6 +470,8 @@ def run(seed, generator, persona, steps, model, key, langs, instructions=INSTRUC
         ctx["running"] = link.state() in ("running", "pausing", "paused")
         if not ctx["running"]:
             ctx["paused_asked"] = ctx["paused_seen"] = False
+        if flt is not None:
+            flt.inlet({"messages": messages}, {"chat_id": str(seed)})
         try:
             text, calls = interpreter_turn(model, key, messages, ctx, usage, seed * 100 + n)
         except (strategist.ApiError, OSError, ValueError, KeyError) as e:
@@ -563,8 +587,8 @@ def main(args):
         configurations.update(mutants())
     report = {}
     for name, instructions in configurations.items():
-        results = [run(args.seed + k, args.generator, args.persona, steps, model, key, langs, instructions)
-                   for k in range(args.runs)]
+        results = [run(args.seed + k, args.generator, args.persona, steps, model, key, langs, instructions,
+                       getattr(args, "filter", False)) for k in range(args.runs)]
         report[name] = summary(results, args.generator, args.persona, model)
         (out / f"runs-{re.sub(r'[^a-z0-9]+', '-', name)}.jsonl").write_text(
             "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in results), encoding="utf-8")

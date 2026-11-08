@@ -9,6 +9,8 @@ What it checks:
   - the model sees Feurisson's instructions and exactly the link's six tools, receives the saved key, and is asked
     to route away from companies that may collect data; the plain model is hidden, and routed the same way;
   - a mission asked through Open WebUI reaches the robot and ends with its report;
+  - the filter (interpreter/feurisson_filter.py): the group's language, named by the small model, and the mission as
+    it is now go into the instructions; a stop right after a pause in the same answer is refused;
   - the link answers neither on 127.0.0.1 (the Ports tab) nor without its token;
   - a second start is refused and leaves the session running;
   - robot-session stop removes Open WebUI, its conversations, its network and the processes;
@@ -23,6 +25,7 @@ OpenRouter key, and this check never replaces a key of yours.
 """
 import json
 import os
+import re
 import subprocess
 import sys
 import threading
@@ -44,6 +47,9 @@ TOOLS = {f"{SERVER}_{n}" for n in ("mission_options", "start_mission", "pause_mi
 DENY = {"data_collection": "deny"}
 RESULTS = []
 CALLS = []
+NAMED = []
+FRENCH = re.compile(r"\b(le|la|il|est|où|bonjour)\b", re.I)
+FILTER = "feurisson_robot"
 
 
 def check(name, ok, detail=""):
@@ -74,15 +80,23 @@ class FakeModel(BaseHTTPRequestHandler):
         messages = body.get("messages") or []
         last = messages[-1] if messages else {}
         text = last.get("content") if isinstance(last.get("content"), str) else ""
+        if not body.get("stream"):  # the filter's small model, asked to name the group's language
+            NAMED.append({"model": body.get("model"), "text": text, "provider": body.get("provider")})
+            named = "French" if FRENCH.search(text) else "English"
+            self.reply(200, {"id": "fake", "object": "chat.completion", "model": body.get("model"),
+                             "choices": [{"index": 0, "message": {"role": "assistant", "content": named},
+                                          "finish_reason": "stop"}]})
+            return
         CALLS.append({"authorization": self.headers.get("Authorization", ""), "provider": body.get("provider"),
                       "system": next((m.get("content") for m in messages if m.get("role") == "system"), "") or "",
                       "tools": [(t.get("function") or {}).get("name") for t in body.get("tools") or []],
                       "tool_results": [m.get("content") for m in messages if m.get("role") == "tool"]})
         calls = []
-        if last.get("role") != "tool" and text.startswith("@call "):
-            name, _, args = text[6:].partition(" ")
-            calls = [{"index": 0, "id": f"call_{len(CALLS)}", "type": "function",
-                      "function": {"name": name, "arguments": args}}]
+        if last.get("role") != "tool" and text.startswith("@call "):  # one or more: "@call a {} @call b {}"
+            for k, piece in enumerate(text.split("@call ")[1:]):
+                name, _, args = piece.strip().partition(" ")
+                calls.append({"index": k, "id": f"call_{len(CALLS)}_{k}", "type": "function",
+                              "function": {"name": name, "arguments": args.strip() or "{}"}})
         base = {"id": f"fake-{len(CALLS)}", "created": int(time.time()), "model": MODEL,
                 "object": "chat.completion.chunk"}
         self.send_response(200)
@@ -198,10 +212,33 @@ def first_session(key, gateway, env):
     now = status()
     check("… and the session still runs", now["simulator"] and now["link"] and now["open_webui"].startswith("Up"), now)
 
+    filters = {f["id"]: f for f in api("GET", "/functions/", token=token)}
+    bot = api("GET", f"/models/model?id={BOT}", token=token) or {}
+    check("the filter is installed, on, and Feurisson's", (filters.get(FILTER) or {}).get("is_active") is True
+          and FILTER in ((bot.get("meta") or {}).get("filterIds") or []), [list(filters), bot.get("meta")])
     seen = ask(token, f'@call {SERVER}_start_mission {{"steps": [{{"do": "reach_card", "card": "barbecue"}}, '
                       f'{{"do": "set_light", "color": "green"}}]}}')
     check("the mission starts", any('"started"' in r for c in seen for r in c["tool_results"]),
           [r[:200] for c in seen for r in c["tool_results"]])
+    n0 = len(NAMED)
+    seen = ask(token, "Bonjour Feurisson, il en est où le robot ?")
+    system = " ".join(c["system"] for c in seen)
+    check("the filter: the group's language, named by the small model, in the instructions",
+          "The group writes in French" in system and NAMED[n0:]
+          and all(n["provider"] == DENY for n in NAMED[n0:]), [system[-600:], NAMED[n0:]])
+    check("the filter: the mission as it is now, in the instructions",
+          "mission_status, read at" in system and '"state": "running"' in system, system[-600:])
+    seen = ask(token, f"@call {SERVER}_pause_mission {{}} @call {SERVER}_stop_mission {{}}")
+    told = [r for c in seen for r in c["tool_results"]]
+    check("a stop right after a pause in the same answer is refused: the group is asked first",
+          len(told) == 2 and "ask the group first" in told[1], told)
+    seen = ask(token, f"@call {SERVER}_resume_mission {{}}")
+    check("… and the mission goes on", any('"running"' in r for c in seen for r in c["tool_results"]),
+          [r[:200] for c in seen for r in c["tool_results"]])
+    seen = ask(token, f"@call {SERVER}_stop_mission {{}}")
+    told = [r for c in seen for r in c["tool_results"]]
+    check("a stop the group did not ask for, without a pause first, is refused", told and "pause_mission first" in told[0],
+          told)
     report, t1 = "", time.monotonic()
     while time.monotonic() - t1 < 400:
         report = " ".join(r for c in ask(token, f"@call {SERVER}_mission_status {{}}") for r in c["tool_results"])
@@ -275,7 +312,7 @@ def main():
         if gateway:
             model = ThreadingHTTPServer((gateway, FAKE_PORT), FakeModel)
             threading.Thread(target=model.serve_forever, daemon=True).start()
-            env = dict(os.environ, ROBOT_STRATEGIST="none", ROBOT_MODEL=MODEL,
+            env = dict(os.environ, ROBOT_STRATEGIST="none", ROBOT_MODEL=MODEL, ROBOT_LANGUAGE_MODEL="fake-small",
                        ROBOT_OPENAI_BASE_URL=f"http://{gateway}:{FAKE_PORT}/v1")
             try:
                 first_session(key, gateway, env)
