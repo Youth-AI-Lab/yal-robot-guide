@@ -184,6 +184,36 @@ def clock_only():
         check(f"{path.name} counts the world's time with stack/clock.py only", not bad, ", ".join(bad))
 
 
+def stepped_mode():
+    """sim/headless.py: the simulator and the stack in one process, on the stepped clock. A mission ends as in real time
+    (the barbecue in F3, seed 1 of the forest), much faster; the same seed gives the same journals; a mission past its
+    limit in the world's time is stopped."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        (tmp / "mission.json").write_text(json.dumps({"steps": [{"do": "reach_card", "card": "barbecue"}]}))
+        runs = []
+        for n, extra in enumerate(([], [], ["--limit-s", "20"])):
+            done = subprocess.run([PYTHON, "-I", str(GUIDE / "sim" / "headless.py"), "--mission", str(tmp / "mission.json"),
+                                   "--seed", "1", "--out", str(tmp / f"run{n}"), *extra],
+                                  stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=300)
+            try:
+                runs.append(json.loads(done.stdout.strip().splitlines()[-1]))
+            except (IndexError, ValueError):
+                runs.append({"error": done.stderr[-500:]})
+        first, again, limited = runs
+        report = first.get("report", {})
+        check("stepped clock: the mission ends as in real time, faster",
+              report.get("outcome") == "done" and report.get("cards") == [{"card": "barbecue", "cell": "F3"}]
+              and first.get("world_s", 0) > 10 * first.get("computer_s", 1e9), first)
+        journals = ["state/referee.jsonl", "state/poses.jsonl", "state/terrain.json", "mission/report.json"]
+        check("stepped clock: the same seed gives the same journals",
+              all((tmp / "run0" / f).read_bytes() == (tmp / "run1" / f).read_bytes() for f in journals
+                  if (tmp / "run0" / f).exists()) and (tmp / "run0" / journals[0]).exists(), again)
+        check("stepped clock: a mission past its limit in the world's time is stopped",
+              limited.get("time_limit_reached") and limited.get("report", {}).get("outcome") == "stopped"
+              and not limited.get("cut"), limited)
+
+
 def micropython_subset():
     """The program of the robot must also run on the board, under MicroPython: keep to its part of
     Python (checked by reading the code; it is not run under MicroPython here)."""
@@ -490,6 +520,7 @@ async def timing_scenarios(sim, env):
 async def main():
     micropython_subset()
     clock_only()
+    stepped_mode()
     reflex_unit()
     with tempfile.TemporaryDirectory() as tmp:
         state_dir = Path(tmp)

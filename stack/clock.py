@@ -23,19 +23,25 @@ if MODE not in ("real", "stepped"):
 _world = {"step": None, "tick_s": 0.01, "seconds": 0.0, "epoch": time.time()}
 
 
-def drive_with(step, tick_s):
-    """Stepped clock: step(dt) makes the simulated world move forward by dt seconds (sim/headless.py)."""
-    _world.update(step=step, tick_s=tick_s, seconds=0.0, epoch=time.time())
+def drive_with(step, tick_s, epoch=None):
+    """Stepped clock: step(dt) makes the simulated world move forward by dt seconds (sim/headless.py). epoch: the date
+    the world starts at, in seconds since 1970 (a fixed one makes the journals of two runs identical)."""
+    _world.update(step=step, tick_s=tick_s, seconds=0.0, epoch=time.time() if epoch is None else epoch)
+
+
+def _tick():
+    """Stepped clock: the world moves forward by one tick."""
+    if _world["step"] is None:
+        raise RuntimeError("ROBOT_CLOCK=stepped, but no simulated world drives the clock (sim/headless.py)")
+    _world["step"](_world["tick_s"])
+    _world["seconds"] += _world["tick_s"]
 
 
 def _advance(seconds):
     """Stepped clock: the world moves forward by `seconds`, one tick at a time."""
-    if _world["step"] is None:
-        raise RuntimeError("ROBOT_CLOCK=stepped, but no simulated world drives the clock (sim/headless.py)")
     end = _world["seconds"] + max(0.0, seconds)
     while _world["seconds"] < end - 1e-9:
-        _world["step"](_world["tick_s"])
-        _world["seconds"] += _world["tick_s"]
+        _tick()
 
 
 def monotonic():
@@ -64,16 +70,31 @@ def iso():
     return datetime.datetime.fromtimestamp(now()).isoformat(timespec="seconds")
 
 
+def wait_for(ready, timeout):
+    """True as soon as ready() is true, within `timeout` seconds of the world's time; with 0, look once."""
+    if MODE == "real":
+        end = time.monotonic() + timeout
+        while not ready():
+            if time.monotonic() >= end:
+                return False
+            time.sleep(0.001)
+        return True
+    end = _world["seconds"] + timeout
+    while True:
+        if ready():
+            return True
+        if timeout <= 0:
+            return False
+        # A wait longer than nothing lets the world move at least one tick: a caller left with a few nanoseconds to
+        # wait (rounding) would otherwise ask again and again while the world stands still.
+        _tick()
+        if _world["seconds"] >= end - 1e-9:
+            return bool(ready())
+
+
 def readable(fd, timeout):
     """True when fd has something to read before `timeout` seconds of the world's time; with 0, look once."""
     if MODE == "real":
         ready, _, _ = select.select([fd], [], [], timeout)
         return bool(ready)
-    end = _world["seconds"] + timeout
-    while True:
-        ready, _, _ = select.select([fd], [], [], 0)
-        if ready:
-            return True
-        if _world["seconds"] >= end - 1e-9:
-            return False
-        _advance(min(_world["tick_s"], end - _world["seconds"]))
+    return wait_for(lambda: bool(select.select([fd], [], [], 0)[0]), timeout)
