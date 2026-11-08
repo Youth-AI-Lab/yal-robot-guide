@@ -14,11 +14,14 @@ ROBOT_CLOCK chooses the clock:
   real time: --speed, or the page). The stack waits for the world's time, not the computer's.
 
 While a model thinks (a call to its provider), the world goes on: in real time by itself; stepped, ROBOT_THINK says by
-how much: "real" (the default: as long as the call took), "zero" (the world waits for the model), or a number of
-seconds (the same for every call, to compare models whatever their speed).
+how much: "real" (the default: as long as the call that answered took; the waits before trying a call again do not
+count, a session with a key of its own does not have them), "zero" (the world waits for the model), a number of
+seconds (the same for every call, to compare models whatever their speed), or "file:<path>", a JSON list of seconds,
+one per call of the model in order (a run played again, sim/headless.py --replay).
 """
 import contextlib
 import datetime
+import json
 import os
 import select
 import struct
@@ -35,11 +38,17 @@ STALE_S = 5.0  # real seconds without the world's time moving: the simulator is 
 
 _world = {"step": None, "tick_s": 0.01, "seconds": 0.0, "epoch": time.time()}
 THINK = os.environ.get("ROBOT_THINK", "real")
-if THINK not in ("real", "zero"):
+_think_list = None  # ROBOT_THINK=file:<path>: the seconds of each call, in order
+if THINK.startswith("file:"):
+    try:
+        _think_list = [float(x) for x in json.loads(Path(THINK[5:]).read_text())]
+    except (OSError, ValueError, TypeError):
+        raise SystemExit(f"ROBOT_THINK={THINK!r}: no list of seconds can be read there") from None
+elif THINK not in ("real", "zero"):
     try:
         float(THINK)
     except ValueError:
-        raise SystemExit(f"ROBOT_THINK={THINK!r}: real, zero or a number of seconds") from None
+        raise SystemExit(f"ROBOT_THINK={THINK!r}: real, zero, a number of seconds or file:<path>") from None
 
 
 def drive_with(step, tick_s, epoch=None):
@@ -171,15 +180,30 @@ def readable(fd, timeout):
     return wait_for(lambda: bool(select.select([fd], [], [], 0)[0]), timeout)  # stepped or sim: the world's time
 
 
+def _thought(took):
+    """Stepped clock: how far the world goes on for one call of the model (ROBOT_THINK, above)."""
+    if THINK == "zero":
+        return 0.0
+    if THINK == "real":
+        return took["answered_s"] if took["answered_s"] is not None else took["seconds"]
+    if _think_list is not None:  # more calls than seconds (a replay that went another way): the world waits
+        return _think_list.pop(0) if _think_list else 0.0
+    return float(THINK)
+
+
 @contextlib.contextmanager
 def thinking():
-    """Around a call to a model: what the world does meanwhile (ROBOT_THINK, above). Returns, in "took", how long the
-    call took in real time."""
-    took = {"seconds": 0.0}
+    """Around a call to a model: what the world does meanwhile (ROBOT_THINK, above). In "took": "seconds", how long the
+    call took in real time, waits before a new try included; "answered_s", how long the try that answered took (set by
+    the caller, strategist.api_model); "world_s", how far the world went on."""
+    took = {"seconds": 0.0, "answered_s": None, "world_s": None}
     start = time.monotonic()  # real time: how long the provider takes
     try:
         yield took
     finally:
         took["seconds"] = time.monotonic() - start
         if MODE == "stepped":
-            _advance(0.0 if THINK == "zero" else took["seconds"] if THINK == "real" else float(THINK))
+            took["world_s"] = _thought(took)
+            _advance(took["world_s"])
+        elif MODE == "real":
+            took["world_s"] = took["seconds"]  # the world went on by itself, as long as the call took

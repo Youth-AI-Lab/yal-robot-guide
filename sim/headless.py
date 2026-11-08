@@ -21,7 +21,18 @@ that answer comes, "add": [steps] to add steps to the mission as the Interpreter
 pause (held.json), add those steps (or none), then resume ("go"). Past the end of the list, the model answers in words.
 
 A model of a provider works too (its key on stdin, as for stack/strategist.py). While it thinks, the world goes on
-(--think): as long as each call took (real, the default), not at all (zero), or a fixed number of seconds per call.
+(--think): as long as each call took (real, the default: the try that answered, without the waits before a new try),
+not at all (zero), or a fixed number of seconds per call.
+
+--replay <folder> plays a run again without its model: the folder is the "mission" folder of an earlier run (its
+transcript.jsonl and model_calls.jsonl); each call of the model gets the answer recorded for it, and the world goes on
+by the seconds recorded for it. With the same mission, world, seed and options, the run is the same again, line for
+line (the Interpreter's words given during the run are not replayed). The router's turns are not answers of the
+model: the router, if any, plays them again.
+
+--router <file.py> puts a router in the Strategist's loop (stack/strategist.py, "the router"): the file defines
+route(mission, messages, progress), which gives robot_state, seen_cards or look_around to play that call without the
+model, or None to ask the model.
 
 Prints one line of JSON: the report of the mission, and how long it took in the world and on the computer. The
 mission's files are in --out (by default a new folder in .robot-sim/headless/).
@@ -29,6 +40,7 @@ mission's files are in --out (by default a new folder in .robot-sim/headless/).
 import argparse
 import collections
 import datetime
+import hashlib
 import importlib.util
 import json
 import os
@@ -151,6 +163,8 @@ def main():
     parser.add_argument("--script", help="a model written in advance (a JSON file, see above); the model is then fake")
     parser.add_argument("--think", default="real", help="real, zero, or seconds: how far the world goes on while the "
                                                         "model thinks")
+    parser.add_argument("--router", help="a Python file defining route(mission, messages, progress), see above")
+    parser.add_argument("--replay", help="the mission folder of an earlier run: its model's answers and times, again")
     parser.add_argument("--out", help="the folder of this run (by default a new one in .robot-sim/headless/)")
     args = parser.parse_args()
 
@@ -159,6 +173,18 @@ def main():
     state = out / "state"
     state.mkdir(exist_ok=True)
     mission = json.loads(Path(args.mission).read_text(encoding="utf-8"))
+    recorded = None
+    if args.replay:
+        if args.script:
+            parser.error("--replay or --script, not both")
+        lines = [json.loads(x) for x in (Path(args.replay) / "transcript.jsonl").read_text(encoding="utf-8").splitlines()]
+        recorded = [x for x in lines if x.get("role") == "assistant" and x.get("by") != "router"]
+        if any(x.get("by") == "router" for x in lines) and not args.router:
+            parser.error("the recorded run had a router: give it again with --router, or the run goes another way")
+        seconds = [json.loads(x)["world_s"] for x in
+                   (Path(args.replay) / "model_calls.jsonl").read_text(encoding="utf-8").splitlines()]
+        (out / "think.json").write_text(json.dumps(seconds) + "\n", encoding="utf-8")
+        args.model, args.think = "fake", f"file:{out / 'think.json'}"
     key = "" if args.model in ("none", "fake") or args.model.startswith("ollama:") else sys.stdin.read().strip()
 
     # The simulated robot first: it writes the mat in use, which the stack reads when it is imported.
@@ -182,9 +208,12 @@ def main():
         script = json.loads(Path(args.script).read_text(encoding="utf-8"))
         args.model = "fake"
 
+        asked = {"n": 0}
+
         def scripted(mission, messages):
-            """The answers of the script, one per call of the model."""
-            n = sum(1 for m in messages if m["role"] == "assistant")
+            """The answers of the script, one per call of the model (the router's turns are not calls of the model)."""
+            n = asked["n"]
+            asked["n"] += 1
             answer = script[n] if n < len(script) else "(the script has no more answers)"
             if isinstance(answer, str):
                 return {"role": "assistant", "content": answer}, {}, "stop"
@@ -200,6 +229,21 @@ def main():
             return {"role": "assistant", "content": None, "tool_calls": calls}, {}, "tool_calls"
 
         strategist.fake_model = scripted
+    if args.router:
+        strategist.router = load_module("router", Path(args.router)).route
+    if recorded is not None:
+        played = {"n": 0}
+
+        def replayed(mission, messages):
+            """The recorded answers, one per call of the model, in order."""
+            if played["n"] >= len(recorded):  # the recorded call got no answer (an error of the API): the same again
+                raise strategist.ApiError("api error", "replay: no answer was recorded for this call")
+            answer = dict(recorded[played["n"]])
+            played["n"] += 1
+            finish = answer.pop("finish_reason", None)
+            return answer, {}, finish
+
+        strategist.fake_model = replayed
 
     adult = {"since": None, "resumes": 0, "stop_asked_at": None}
     interpreter = {"resume": None}  # the scripted Interpreter's resume, waiting for the Pilot's acknowledgement
@@ -235,7 +279,13 @@ def main():
     except WorldTimeOver:
         report, cut = {"outcome": "cut", "cards": [], "why": "the mission did not stop when asked"}, True
     computer_s = time.monotonic() - started
+    world_text = Path(args.world).read_bytes()
     result = {"report": report, "seed": args.seed, "world_s": round(world.time, 1), "computer_s": round(computer_s, 2),
+              "settings": {"mission": mission, "model": args.model, "tools": args.tools, "world": args.world,
+                           "world_sha256": hashlib.sha256(world_text).hexdigest(), "mat": args.mat,
+                           "ball_phase": args.ball_phase, "think": args.think, "adult_s": args.adult_s,
+                           "limit_s": args.limit_s, "script": args.script, "replay": args.replay,
+                           "router": args.router},
               "faster_than_real_time": round(world.time / computer_s, 1) if computer_s else None,
               "time_limit_reached": adult["stop_asked_at"] is not None, "cut": cut, "adult_resumes": adult["resumes"],
               "bumps": world.bumps, "collisions": world.collisions, "robot_cell": world.cell_of(world.x, world.y)}

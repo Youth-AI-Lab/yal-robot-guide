@@ -20,6 +20,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -278,6 +279,99 @@ def tool_answers(tmp, name):
     return [(m["name"], json.loads(m["content"])) for m in map(json.loads, lines) if m["role"] == "tool"]
 
 
+def router_data():
+    """What the router's data need (ROBOT-STRATEGE.md, section 10): a run played again from its records gives the same
+    transcript; a router plays calls without an argument, two at most in a row, counted apart; the time of a call is
+    the try that answered; the nudge is in the transcript."""
+    find = {"steps": [{"do": "find_card", "card": "barbecue"}]}
+    calls = [{"calls": [{"name": "look_around"}]}, {"calls": [{"name": "go_to_cell", "arguments": {"cell": "C4"}}]},
+             {"calls": [{"name": "look_around"}]}, {"calls": [{"name": "seen_cards"}]},
+             {"calls": [{"name": "go_to_cell", "arguments": {"cell": "E4"}}]}, {"calls": [{"name": "seen_cards"}]}]
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        first = headless(tmp, "recorded", find, "--think", "7", script=calls)
+        again = headless(tmp, "replayed", find, "--replay", str(tmp / "recorded" / "mission"))
+        same = all(first.get(k) == again.get(k) for k in ("report", "world_s", "bumps", "robot_cell"))
+        check("a run played again from its records (--replay: the answers and the seconds of each call of the model): "
+              "the same transcript, the same world",
+              "error" not in first and same and (tmp / "recorded" / "mission" / "transcript.jsonl").read_bytes()
+              == (tmp / "replayed" / "mission" / "transcript.jsonl").read_bytes(),
+              (first.get("world_s"), again.get("world_s"), again.get("error")))
+        logged = [json.loads(x) for x in (tmp / "recorded" / "mission" / "model_calls.jsonl").read_text().splitlines()]
+        check("each call of the model in model_calls.jsonl, with the world's seconds it took (--think 7), apart from "
+              "the transcript", len(logged) == first["report"]["counts"]["model_calls"]
+              and all(x["world_s"] == 7.0 for x in logged), logged[:2])
+        (tmp / "always.py").write_text("def route(mission, messages, progress):\n    return 'robot_state'\n")
+        routed = headless(tmp, "routed", find, "--router", str(tmp / "always.py"), script=calls)
+        lines = [json.loads(x) for x in (tmp / "routed" / "mission" / "transcript.jsonl").read_text().splitlines()]
+        by = ["router" if x.get("by") == "router" else "model" for x in lines if x["role"] == "assistant"]
+        counts = routed.get("report", {}).get("counts", {})
+        longest = max((len(run) for run in "".join("r" if b == "router" else "m" for b in by).split("m")), default=0)
+        played = [x["tool_calls"][0]["function"]["name"] for x in lines
+                  if x["role"] == "assistant" and x.get("by") is None and x.get("tool_calls")]
+        check("a router that always says robot_state: it plays after a tool's answer only, two turns at most in a row, "
+              "counted apart (router_calls), never as a call of the model; the script's calls all play, in order",
+              by[:1] == ["model"] and longest == 2 and counts.get("router_calls") == by.count("router")
+              and counts.get("model_calls") == by.count("model")
+              and played == [c["calls"][0]["name"] for c in calls]
+              and all(x["tool_calls"][0]["function"]["name"] == "robot_state" for x in lines
+                      if x.get("by") == "router"), (by, counts, played))
+        (tmp / "looks.py").write_text("def route(mission, messages, progress):\n    return 'look_around'\n")
+        goal = headless(tmp, "goal", find, "--tools", "goal", "--router", str(tmp / "looks.py"), script=[
+            {"calls": [{"name": "robot_state"}]}, {"calls": [{"name": "report", "arguments": {
+                "outcome": "impossible", "why": "other"}}]}])
+        check("the router never plays a call the model is not offered (look_around is not in the goal tools)",
+              "error" not in goal and "router_calls" not in goal["report"]["counts"], goal.get("report", goal))
+        cut = headless(tmp, "cut", find, "--think", "200", "--limit-s", "2",
+                       script=[{"calls": [{"name": "look_around"}]}] * 3)
+        again = headless(tmp, "cut-again", find, "--limit-s", "2", "--replay", str(tmp / "cut" / "mission"))
+        check("a run whose last call of the model got no answer (cut by the world's time) is played again the same",
+              "error" not in again and cut.get("cut") and cut.get("report") == again.get("report") and cut.get("world_s")
+              == again.get("world_s"), (cut.get("report"), again.get("report") or again))
+        nudged = headless(tmp, "nudged", find, script=["I will look around.", {"calls": [
+            {"name": "report", "arguments": {"outcome": "impossible", "why": "other"}}]}])
+        lines = [json.loads(x) for x in (tmp / "nudged" / "mission" / "transcript.jsonl").read_text().splitlines()]
+        check("the nudge after an answer in words is in the transcript", "error" not in nudged and any(
+            x["role"] == "user" and x["content"].startswith("Call step_done for each step") for x in lines),
+            [x["role"] for x in lines])
+    script = "\n".join([
+        "import io, json, sys, time, urllib.error",
+        "sys.path.insert(0, 'stack')",
+        "import clock, strategist",
+        "clock.drive_with(lambda dt: None, 0.01)",
+        "strategist.API_WAITS_S = (0.3, 0.3, 0.3)",
+        "left = [1]",
+        "ok = json.dumps({'choices': [{'message': {'content': 'hi'}, 'finish_reason': 'stop'}], 'usage': {}, "
+        "'model': 'served/model-0731'}).encode()",
+        "def urlopen(*a, **k):",
+        "    if left[0] > 0:",
+        "        left[0] -= 1",
+        "        raise urllib.error.HTTPError('u', 500, 'Error', {}, io.BytesIO(b'busy'))",
+        "    return io.BytesIO(ok)",
+        "strategist.urllib.request.urlopen = urlopen",
+        "usage = {'failed_calls': 0}",
+        "with clock.thinking() as took:",
+        "    strategist.api_model('openrouter:test/model', [], [], 'k', usage, lambda: None, took)",
+        "left[0] = 9",
+        "try:",
+        "    with clock.thinking() as never:",
+        "        strategist.api_model('openrouter:test/model', [], [], 'k', usage, lambda: None, never)",
+        "except strategist.ApiError:",
+        "    pass",
+        "print(json.dumps([took, clock._thought(dict(took, answered_s=1.5)), never]))"])
+    done = subprocess.run([PYTHON, "-I", "-c", script], env=dict(os.environ, ROBOT_CLOCK="stepped"), cwd=GUIDE,
+                          capture_output=True, text=True, timeout=60)
+    took, thought, never = json.loads(done.stdout) if done.stdout.strip() else ({}, None, {})
+    check("a call tried again: its time is the try that answered, the wait before it is not (stepped, ROBOT_THINK "
+          "real); the tries and the model served are noted",
+          took.get("retries") == 1 and took.get("served") == "served/model-0731"
+          and took.get("answered_s", 1) < 0.2 <= took.get("seconds", 0) and thought == 1.5,
+          (took, thought, done.stderr[-300:]))
+    check("a call that never answers: the world goes on by its tries only, not by the waits between them",
+          never.get("retries") == 2 and never.get("world_s") == never.get("answered_s") < 0.2
+          and never.get("seconds", 0) >= 0.9, (never, done.stderr[-300:]))
+
+
 def strategist_in_steps():
     """The Strategist's loop with a model written in advance (sim/headless.py --script), on the stepped clock."""
     reach = {"steps": [{"do": "reach_card", "card": "barbecue"}]}
@@ -408,23 +502,52 @@ def faster_world():
 
 def faster_mission(tmp, attempt):
     """One barbecue mission without a model on sim/robot_sim.py --speed 5, in a state folder of its own; the report and
-    the computer's seconds."""
+    the computer's seconds. An adult stands by, as in a session, through the page: Resume 10 s of the world's time
+    after the robot starts waiting (a bump can happen on a loaded computer: the stack and the ball meet at another
+    moment)."""
     state = Path(tmp) / f"state-{attempt}"
     state.mkdir()
     env = dict(os.environ, ROBOT_STATE_DIR=str(state), ROBOT_MAT=str(state / "mat.json"), ROBOT_CLOCK="sim")
     sim = subprocess.Popen([PYTHON, "-I", str(GUIDE / "sim" / "robot_sim.py"), "--port", "0", "--state-dir",
                             str(state), "--seed", "1", "--speed", "5"], stdout=subprocess.PIPE, text=True)
     try:
+        url = None
         for line in sim.stdout:
             if line.startswith("READY "):
+                url = "http://127.0.0.1:" + dict(p.split("=", 1) for p in line.split()[1:])["port"]
                 break
+        stop, resumes = threading.Event(), []
+
+        def adult():
+            since = None
+            while not stop.wait(0.05):
+                try:
+                    with urllib.request.urlopen(url + "/api/state", timeout=5) as r:
+                        snap = json.loads(r.read())
+                    if snap["robot"]["wait_adult"] and not snap["robot"]["moving"]:
+                        since = since if since is not None else snap["time"]
+                        if snap["time"] - since >= 10:
+                            urllib.request.urlopen(urllib.request.Request(
+                                url + "/api/action", data=json.dumps({"do": "adult_resume"}).encode(),
+                                headers={"Content-Type": "application/json"}), timeout=5).read()
+                            resumes.append(snap["time"])
+                            since = None
+                    else:
+                        since = None
+                except OSError:  # the simulator is stopping
+                    return
+
+        helper = threading.Thread(target=adult, daemon=True)
+        helper.start()
         started = time.monotonic()
         done = subprocess.run([PYTHON, "-I", str(GUIDE / "stack" / "strategist.py"), str(Path(tmp) / "mission.json"),
                                "none"], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
                               timeout=600)
         wall = time.monotonic() - started
+        stop.set()
+        helper.join(timeout=10)
         report = json.loads(done.stdout.strip().splitlines()[-1]) if done.stdout.strip() else {"error": done.stderr}
-        return dict(report, attempt=attempt), wall
+        return dict(report, attempt=attempt, adult_resumes=len(resumes)), wall
     finally:
         sim.terminate()
         sim.wait(timeout=10)
@@ -740,6 +863,7 @@ async def main():
     pilot_asks_strategist()
     stepped_mode()
     strategist_in_steps()
+    router_data()
     faster_world()
     reflex_unit()
     with tempfile.TemporaryDirectory() as tmp:

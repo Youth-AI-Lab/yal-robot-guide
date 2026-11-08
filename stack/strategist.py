@@ -385,7 +385,16 @@ def fake_model(mission, messages):
     }, {}, "tool_calls"
 
 
-def api_model(model, messages, tools, key, usage, flush):
+def api_model(model, messages, tools, key, usage, flush, took=None):
+    """One answer of the model. took (clock.thinking()): "answered_s", how long the try that answered took (the waits
+    before a new try are not in it; with no answer, how long all the tries took), "retries", the tries before it,
+    "served", the model the provider says it used."""
+    tried = {"s": 0.0}
+
+    def note(tries, asked):
+        tried["s"] += time.monotonic() - asked  # real time: the provider's wait (the try itself, not the wait after)
+        if took is not None:
+            took.update(answered_s=tried["s"], retries=tries)
     if model.startswith("ollama:"):
         url, body = "http://127.0.0.1:11434/v1/chat/completions", {"model": model[7:]}
         headers = {"Content-Type": "application/json"}
@@ -402,13 +411,19 @@ def api_model(model, messages, tools, key, usage, flush):
     body.update(messages=messages, tools=tools, tool_choice="auto", parallel_tool_calls=False, max_tokens=MAX_TOKENS)
     data = json.dumps(body).encode()
     detail = ""
-    for wait_s in API_WAITS_S:
+    for tries, wait_s in enumerate(API_WAITS_S):
         try:
+            asked = time.monotonic()  # real time: the provider's wait (how long this try takes)
             reply = json.loads(urllib.request.urlopen(urllib.request.Request(url, data=data, headers=headers),
                                                       timeout=300).read())
+            answered = time.monotonic() - asked  # real time: the provider's wait
             choice = reply["choices"][0]
-            return choice["message"], reply.get("usage", {}), choice.get("finish_reason")
+            message = choice["message"]
+            if took is not None:
+                took.update(answered_s=answered, retries=tries, served=reply.get("model"))
+            return message, reply.get("usage", {}), choice.get("finish_reason")
         except urllib.error.HTTPError as e:
+            note(tries, asked)
             detail = f"HTTP {e.code}: {e.read()[:300].decode(errors='replace')}"
             if e.code in (401, 402, 403):
                 raise ApiError(f"api refused {e.code}", detail)
@@ -419,16 +434,41 @@ def api_model(model, messages, tools, key, usage, flush):
                 raise ApiError("api error", detail)
             time.sleep(max(wait, wait_s))  # real time: the provider's wait
         except (TimeoutError, OSError) as e:  # no answer: counted as billed, then sent again
+            note(tries, asked)
             usage["failed_calls"] += 1
             flush()
             detail = f"{type(e).__name__}: no answer from the model's API"
             time.sleep(wait_s)  # real time: the provider's wait
         except (KeyError, IndexError, ValueError) as e:
+            note(tries, asked)
             usage["failed_calls"] += 1
             flush()
             detail = f"{type(e).__name__}: the API's answer could not be read"
             time.sleep(wait_s)  # real time: the provider's wait
     raise ApiError("api error", detail)
+
+
+# --- the router ------------------------------------------------------------------------------------------------
+# A router may play a call without an argument in the model's place, when it is sure enough (ROBOT-STRATEGE.md,
+# section 10): router(mission, messages, progress) gives the name of the call, or None to ask the model. None by
+# default: no router, and the loop is exactly as without this hook. Set by whoever runs the experiment.
+router = None
+ROUTED = ("robot_state", "seen_cards", "look_around")
+ROUTER_IN_A_ROW = 2  # then the model is asked again, whatever the router says
+
+
+def routed_call(mission, messages, progress, in_a_row, offered):
+    """The router's call for this turn, as an answer of the model, or None. Only a call the model is offered, only
+    after a tool's answer (an event, a nudge or the group's additions are for the model), never during a pause or a
+    stop, at most ROUTER_IN_A_ROW turns in a row."""
+    if router is None or in_a_row >= ROUTER_IN_A_ROW or messages[-1]["role"] != "tool" or interpreter_word() != "go":
+        return None
+    name = router(mission, messages, progress)
+    if name not in ROUTED or name not in offered:
+        return None
+    return {"role": "assistant", "content": None,
+            "tool_calls": [{"id": f"router_{len(messages)}", "type": "function",
+                            "function": {"name": name, "arguments": "{}"}}]}
 
 
 # --- the loop -------------------------------------------------------------------------------------------------
@@ -613,6 +653,9 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
         return added
     last_refused, same_refused = None, 0
     waited = 0.0  # time spent waiting for an adult: not counted in TIMEOUT_S
+    in_a_row = 0  # turns played by the router since the model was last asked
+    calls_log = (out / "model_calls.jsonl").open("w")  # each call of the model: its times (real time, so apart from
+    # the transcript, which stays the same from one stepped run to the next), its tries and the model served
     flush()
     try:
         while report is None:
@@ -631,31 +674,53 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
                 pending.clear()
                 messages.append({"role": "user", "content": event})
                 transcript.write(json.dumps({"role": "user", "content": event}, ensure_ascii=False) + "\n")
+            routed = routed_call(mission, messages, progress, in_a_row, specs)
             turns += 1
-            common.count("model_calls")
-            with clock.thinking():  # the world goes on while the model thinks
-                if model == "fake":
-                    message, used, finish = fake_model(mission, messages)
-                else:
-                    message, used, finish = api_model(model, messages, offered, key, usage, flush)
-            usage["api_calls"] += 1
-            for k in ("prompt_tokens", "completion_tokens"):
-                usage[k] += used.get(k) or 0
-            usage["cost"] += float(used.get("cost") or 0)
-            common.count("model_usd", float(used.get("cost") or 0))
-            usage["dearest_call"] = max(usage["dearest_call"], float(used.get("cost") or 0))
-            flush()
+            if routed is not None:  # the router plays this turn: no model, no thinking time
+                in_a_row += 1
+                common.count("router_calls")
+                message, finish, by = routed, "tool_calls", {"by": "router"}
+            else:
+                in_a_row = 0
+                common.count("model_calls")
+                took, answered = None, False
+                try:
+                    with clock.thinking() as took:  # the world goes on while the model thinks
+                        if model == "fake":
+                            message, used, finish = fake_model(mission, messages)
+                        else:
+                            message, used, finish = api_model(model, messages, offered, key, usage, flush, took)
+                        answered = True
+                finally:  # every call, answered or not (an error of the API, the world's time over): a replay needs it
+                    if took is not None:
+                        calls_log.write(json.dumps({"call": usage["api_calls"] + 1, "turn": turns,
+                                                    "answered": answered, "real_s": round(took["seconds"], 3),
+                                                    "answered_s": None if took["answered_s"] is None
+                                                    else round(took["answered_s"], 3),
+                                                    "world_s": took["world_s"], "retries": took.get("retries", 0),
+                                                    "served": took.get("served")}) + "\n")
+                        calls_log.flush()
+                usage["api_calls"] += 1
+                for k in ("prompt_tokens", "completion_tokens"):
+                    usage[k] += used.get(k) or 0
+                usage["cost"] += float(used.get("cost") or 0)
+                common.count("model_usd", float(used.get("cost") or 0))
+                usage["dearest_call"] = max(usage["dearest_call"], float(used.get("cost") or 0))
+                flush()
+                by = {}
             message = {k: v for k, v in message.items() if k in ("content", "tool_calls", "reasoning", "reasoning_details")}
             message["role"] = "assistant"
             messages.append(message)
-            transcript.write(json.dumps(dict(message, finish_reason=finish), ensure_ascii=False) + "\n")
+            transcript.write(json.dumps(dict(message, finish_reason=finish, **by), ensure_ascii=False) + "\n")
             if not message.get("tool_calls"):
                 if nudged:
                     outcome = "no report"
                     break
                 nudged = True  # once: the model answered in words; the report is a tool
-                messages.append({"role": "user", "content": "Call step_done for each step when it is closed, or report "
-                                                            "to end the mission."})
+                nudge = {"role": "user", "content": "Call step_done for each step when it is closed, or report to end "
+                                                    "the mission."}
+                messages.append(nudge)
+                transcript.write(json.dumps(nudge, ensure_ascii=False) + "\n")
                 continue
             moved, adult, counted = False, False, set()
             for n, call in enumerate(message["tool_calls"]):
@@ -791,6 +856,7 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
         outcome = e.exit_code
         usage["api_error"] = str(e)[:300]  # for whoever runs the robot; never in the report, which is closed
     transcript.close()
+    calls_log.close()
     flush()
     common.say_progress(progress_view(progress, live=False))  # ended: no step "doing" any more
     if key:

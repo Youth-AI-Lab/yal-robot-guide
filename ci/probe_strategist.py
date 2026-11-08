@@ -1182,7 +1182,8 @@ def check_report(ctx, report, out):
     if report.get("moves_left") != WORLD.moves_left:
         broke("moves_left is the Pilot's", [report.get("moves_left"), WORLD.moves_left])
     files = sorted(p.name for p in out.iterdir()) if out.is_dir() else []
-    wanted = ["mission.json", "report.json"] + ([] if ctx.model == "none" else ["transcript.jsonl", "usage.json"])
+    wanted = ["mission.json", "report.json"] + ([] if ctx.model == "none" else ["model_calls.jsonl", "transcript.jsonl",
+                                                                               "usage.json"])
     if files != sorted(wanted):
         broke("the mission's folder holds its files", files)
     else:
