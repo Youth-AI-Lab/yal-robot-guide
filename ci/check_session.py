@@ -49,6 +49,7 @@ TOOLS = {f"{SERVER}_{n}" for n in ("mission_options", "start_mission", "pause_mi
 DENY = {"data_collection": "deny"}
 RESULTS = []
 CALLS = []
+LAST = {"content": ""}
 NAMED = []
 FRENCH = re.compile(r"\b(le|la|il|est|où|bonjour)\b", re.I)
 FILTER = "feurisson_robot"
@@ -92,7 +93,9 @@ class FakeModel(BaseHTTPRequestHandler):
         CALLS.append({"authorization": self.headers.get("Authorization", ""), "provider": body.get("provider"),
                       "system": next((m.get("content") for m in messages if m.get("role") == "system"), "") or "",
                       "tools": [(t.get("function") or {}).get("name") for t in body.get("tools") or []],
-                      "tool_results": [m.get("content") for m in messages if m.get("role") == "tool"]})
+                      "tool_results": [m.get("content") for m in messages if m.get("role") == "tool"],
+                      "users": [m.get("content") if isinstance(m.get("content"), str) else json.dumps(m.get("content"))
+                                for m in messages if m.get("role") == "user"]})
         calls = []
         if last.get("role") != "tool" and text.startswith("@call "):  # one or more: "@call a {} @call b {}"
             for k, piece in enumerate(text.split("@call ")[1:]):
@@ -104,8 +107,10 @@ class FakeModel(BaseHTTPRequestHandler):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.end_headers()
-        delta = {"tool_calls": calls} if calls else {"content": f"FAKE ANSWER ({len(CALLS)})"}
-        for d, finish in ((delta, None), ({}, "tool_calls" if calls else "stop")):
+        said = text.split("@say ", 1)[1] if "@say " in text else f"FAKE ANSWER ({len(CALLS)})"
+        # "@say <text>": that text, streamed in two pieces cut in the middle (a bracket of the filter cut in two)
+        pieces = [{"tool_calls": calls}] if calls else [{"content": said[:len(said) // 2]}, {"content": said[len(said) // 2:]}]
+        for d, finish in [(d, None) for d in pieces] + [({}, "tool_calls" if calls else "stop")]:
             chunk = dict(base, choices=[{"index": 0, "delta": d, "finish_reason": finish}])
             self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
         self.wfile.write(b"data: [DONE]\n\n")
@@ -141,6 +146,7 @@ def ask(token, text, model=BOT, limit=90):
         if chat_id:
             message = api("GET", f"/chats/{chat_id}", token=token)["chat"]["history"]["messages"].get(assistant_id, {})
             if message.get("done"):
+                LAST["content"] = message.get("content") or ""
                 break
         time.sleep(0.5)
     return CALLS[n0:]
@@ -234,6 +240,12 @@ def first_session(key, gateway, env):
           and all(n["provider"] == DENY for n in NAMED[n0:]), [system[-600:], NAMED[n0:]])
     check("the filter: the mission as it is now, in the instructions",
           "mission_status, read at" in system and '"state": "running"' in system, system[-600:])
+    seen = ask(token, "Je m'appelle Léa, j'ai 13 ans. @say Bonjour [name] ! On cherche le barbecue ?")
+    sent = " ".join(u for c in seen for u in c["users"])
+    check("the filter: a name and an age never reach the model, [name] and [age] instead",
+          seen and "Léa" not in sent and "13" not in sent and "[name]" in sent and "[age]" in sent, sent[:300])
+    check("the filter: the brackets the model writes back, even cut in two pieces of the stream, are out of the answer "
+          "kept", LAST["content"].strip() == "Bonjour ! On cherche le barbecue ?", LAST["content"])
     seen = ask(token, f"@call {SERVER}_pause_mission {{}} @call {SERVER}_stop_mission {{}}")
     told = [r for c in seen for r in c["tool_results"]]
     check("a stop right after a pause in the same answer is refused: the group is asked first",
