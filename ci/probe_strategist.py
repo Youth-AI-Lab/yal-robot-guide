@@ -55,7 +55,7 @@ STEP = {"north": (0, -1), "east": (1, 0), "south": (0, 1), "west": (-1, 0)}
 LIBRARY = common.load_json(GUIDE / "stack" / "personality" / "bricks.json")["bricks"]
 PERSONALITIES = sorted(p.stem for p in (GUIDE / "stack" / "personality").glob("*.json") if p.stem != "bricks")
 
-# What the spec says (facilitator/ROBOT-LANGAGES.md, section 6), written here and not read from the module, so that a
+# What the spec says (facilitator/robot-langages/6-stratege.md), written here and not read from the module, so that a
 # mutant cannot move it.
 STEP_ARG = {"reach_card": "card", "set_light": "color", "find_card": "card", "survey": "card"}
 PHRASES = {"reach_card": 'Go to the card "{}": stop right in front of it, facing it.',

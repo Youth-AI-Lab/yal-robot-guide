@@ -200,7 +200,7 @@ def on_mat(c, r):
 
 
 class Cartographer:
-    """A Cartographer written by hand, in its closed language (facilitator/ROBOT-LANGAGES.md, section 4): the methods
+    """A Cartographer written by hand, in its closed language (facilitator/robot-langages/4-cartographe.md): the methods
     the Pilot calls through call() and wait_for(), the attributes hold_still() reads (sure, frame, col, row, facing),
     and hold_wanted, set by the Pilot. The world is drawn from a seeded generator: the same seed, the same world."""
 
@@ -749,7 +749,7 @@ FACING_STEP = common.FACING_STEP
 
 
 def cart_language(name, args):
-    """Why a call is outside the Cartographer's language (facilitator/ROBOT-LANGAGES.md, section 4), or None."""
+    """Why a call is outside the Cartographer's language (facilitator/robot-langages/4-cartographe.md), or None."""
     def whole(v, low, high):
         return isinstance(v, int) and not isinstance(v, bool) and low <= v <= high
     if name in ("move", "face") and args.get("direction") not in FACING:
@@ -790,7 +790,7 @@ def schema_says(props, required, args):
     return None
 
 
-# The Pilot's language, written from facilitator/ROBOT-LANGAGES.md (section 5), not from TOOLSETS: tool -> (arguments,
+# The Pilot's language, written from facilitator/robot-langages/5-pilote.md, not from TOOLSETS: tool -> (arguments,
 # required). The values are closed: a card of mat.json, a cell of the mat, a direction, a colour, 1 to 30 seconds.
 SPEC = {
     "goal": {"go_to_card": ({"card"}, {"card"}), "explore": ({"look_for"}, set()), "robot_state": (set(), set()),
