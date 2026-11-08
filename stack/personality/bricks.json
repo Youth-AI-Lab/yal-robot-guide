@@ -6,6 +6,7 @@
     "pilot_waits_for_balls": {"kind": "pilot", "settings": {"careful_balls": true}, "means": "before each leg, the Pilot waits while a ball seen just before comes closer"},
     "pilot_never_waits_for_balls": {"kind": "pilot", "settings": {"careful_balls": false}, "means": "the Pilot never waits for a ball (the Referee still refuses what is unsafe)"},
     "pilot_looks_each_leg": {"kind": "pilot", "settings": {"look_each_leg": true}, "means": "the Pilot looks around before every leg"},
+    "cross_when_boxed": {"kind": "pilot", "settings": {"cross_when_boxed": true}, "means": "boxed in, with a ball's lane as the only way out, the Pilot crosses it (the Referee still refuses while the ball is near)"},
     "go_far": {"kind": "strategist", "text": "Go far in one go: when you have an idea where to go, go there at once with `go_to_cell`."},
     "look_only_when_lost": {"kind": "strategist", "text": "Do not look around again before moving if you already know enough. Look around only when you have no idea where to go."},
     "dont_wait_for_balls": {"kind": "strategist", "text": "Do not wait for balls: the robot protects itself."},

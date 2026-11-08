@@ -45,6 +45,9 @@ SETTINGS = {
                                                 "watch a ball's lane before crossing it until its ball is seen going away"},
     "max_leg": {"default": 4, "means": "cells in one move, at most (1 to 4)"},
     "look_each_leg": {"default": False, "means": "look around before every leg"},
+    "cross_when_boxed": {"default": False, "means": "when the only way left goes through a cell refused for a ball, "
+                                                    "try it again anyway (the Referee still refuses while the ball is "
+                                                    "near); without it, the robot gives up: no way there"},
 }
 
 
@@ -412,6 +415,10 @@ class Pilot:
             now = clock.now()
             kept = {cell for cell, when in self.ball_refused.items() if now - when < BALL_AVOID_S}
             way = self.path(goals - cards, cards | kept)  # a card seen on the way may lie on a goal
+            if way is None and kept and self.settings["cross_when_boxed"]:
+                # Boxed in, the ball's cell the only way out (seeds 10 and 18 of the forest, 8 November 2026): crossing
+                # unseen got the robot hit 4 times; giving up never did. A choice of the group's personality.
+                way = self.path(goals - cards, cards)
             if way is None:
                 return False
             dc, dr = way[0][0] - c, way[0][1] - r
