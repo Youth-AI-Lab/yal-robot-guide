@@ -368,24 +368,41 @@ def faster_world():
                                capture_output=True, text=True, timeout=60)
         check("sim clock without a simulator: the stack says so, it does not wait",
               alone.returncode != 0 and "no simulator publishes its time" in alone.stderr, alone.stderr[-300:])
-        sim = subprocess.Popen([PYTHON, "-I", str(GUIDE / "sim" / "robot_sim.py"), "--port", "0", "--state-dir",
-                                str(state), "--seed", "1", "--speed", "5"], stdout=subprocess.PIPE, text=True)
-        try:
-            for line in sim.stdout:
-                if line.startswith("READY "):
-                    break
-            started = time.monotonic()
-            done = subprocess.run([PYTHON, "-I", str(GUIDE / "stack" / "strategist.py"), str(Path(tmp) / "mission.json"),
-                                   "none"], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
-                                  timeout=600)
-            wall = time.monotonic() - started
-            report = json.loads(done.stdout.strip().splitlines()[-1]) if done.stdout.strip() else {"error": done.stderr}
-            check("simulator 5 times faster, stack on its clock: the barbecue in F3, at least 3 times faster",
-                  report.get("outcome") == "done" and report.get("cards") == [{"card": "barbecue", "cell": "F3"}]
-                  and report.get("seconds", 0) > 3 * wall, dict(report, wall=round(wall, 1)))
-        finally:
-            sim.terminate()
-            sim.wait(timeout=10)
+        # The mission must always end right; the speed depends on the machine too: on a loaded computer the simulator
+        # itself may not reach five times real time, so a second try is allowed before the speed counts as failed.
+        for attempt in (1, 2):
+            report, wall = faster_mission(tmp, attempt)
+            right = report.get("outcome") == "done" and report.get("cards") == [{"card": "barbecue", "cell": "F3"}]
+            fast = report.get("seconds", 0) > 3 * wall
+            if not right or fast:
+                break
+        check("simulator 5 times faster, stack on its clock: the barbecue in F3", right, report)
+        check("simulator 5 times faster: the mission at least 3 times faster than real time (two tries: the speed "
+              "depends on how loaded the computer is)", fast, dict(report, wall=round(wall, 1)))
+
+
+def faster_mission(tmp, attempt):
+    """One barbecue mission without a model on sim/robot_sim.py --speed 5, in a state folder of its own; the report and
+    the computer's seconds."""
+    state = Path(tmp) / f"state-{attempt}"
+    state.mkdir()
+    env = dict(os.environ, ROBOT_STATE_DIR=str(state), ROBOT_MAT=str(state / "mat.json"), ROBOT_CLOCK="sim")
+    sim = subprocess.Popen([PYTHON, "-I", str(GUIDE / "sim" / "robot_sim.py"), "--port", "0", "--state-dir",
+                            str(state), "--seed", "1", "--speed", "5"], stdout=subprocess.PIPE, text=True)
+    try:
+        for line in sim.stdout:
+            if line.startswith("READY "):
+                break
+        started = time.monotonic()
+        done = subprocess.run([PYTHON, "-I", str(GUIDE / "stack" / "strategist.py"), str(Path(tmp) / "mission.json"),
+                               "none"], env=env, stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                              timeout=600)
+        wall = time.monotonic() - started
+        report = json.loads(done.stdout.strip().splitlines()[-1]) if done.stdout.strip() else {"error": done.stderr}
+        return dict(report, attempt=attempt), wall
+    finally:
+        sim.terminate()
+        sim.wait(timeout=10)
 
 
 def micropython_subset():
