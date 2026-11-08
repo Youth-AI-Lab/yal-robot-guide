@@ -10,12 +10,14 @@ max_leg...): a scenario that breaks one fails too.
 The scenarios, by theme:
     the way and its legs   F1 no moves left, F2 max_leg, F3 the way and its costs, F4 look_each_leg,
                            F16 and F17 two legs that go wrong, F20 pilot.MOVES
-    balls                  F5 a ball coming closer, F6 careless and refused, F12 balls' lanes,
-                           F22 and F22b a stop during the waits
-    cards                  F7a-F7d the surest place first, F9a and F9b the 8 attempts, F18 done while the place is lost
-    explore                F8a-F8c go_to_card explores first, F15 explore without a bound, F21 what is kept
+    balls                  F5 a ball coming closer, F6 careless and refused, F12 balls' lanes
+    cards                  F7a-F7d the surest place first, ruled out for one call, F9a-F9c the 8 attempts and
+                           their reason, F18 done only with a place known
+    explore                F8a-F8c go_to_card explores first, F15 a limit of the adults, F15b explore without a bound,
+                           F21 what is kept
     adult and place        F10a-F10d an adult must come, F11a-F11d the place is not known, F19a-F19c face
-    the mission            F13 reads during a pause, F14 configure
+    the mission            F13 reads during a pause, F14 configure, F22-F22e a stop or a pause during the Pilot's
+                           own waits, F23 a limit of the adults in a goal tool
 Each scenario is followed by its mutants: a rule of the Pilot removed, changed by rewrite() (one function or method
 of pilot.py, its text changed in place) or by a patch of the loaded module.
 
@@ -43,6 +45,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import probe_pilot as pp  # noqa: E402  (first: it sets ROBOT_STATE_DIR before stack/common.py is read)
+from cartographer import REASONS  # noqa: E402  (the Cartographer's words, stack/cartographer.py)
 
 
 SCENARIOS = {}   # name -> (function, cases of 5-pilote.md, invariants of ROBOT-PILOTE.md)
@@ -276,6 +279,10 @@ BUSY = "another move is still running: send one move at a time, and read its ans
 # What the Cartographer answers to every command that acts, under a limit of commands of the adults
 # (stack/cartographer.py:932-934): the Referee refuses MOVE, TURN and LED alike.
 NO_COMMANDS = {"result": "refused", "why": "no commands left: the adults allow 3 commands per mission"}
+NO_CELLS = {"result": "refused", "why": "no cells left: the adults allow 6 cells per mission"}
+NO_MOVES = {"result": "refused", "why": "no moves left: the adults allow 5 moves per mission"}
+OBSTACLE = REASONS["obstacle"]    # "something is in front of the robot": the only refusal that blocks a cell
+BATTERY = {"result": "refused", "why": REASONS["battery"]}  # refused for good, but not a limit of the adults
 ACTS = ("look_around", "move", "face", "turn", "step_forward", "set_light")
 GO_TO_CARD_GAVE_UP = "the robot did not find itself in front of the card barbecue"
 NO_WAY = "no way to the card barbecue now (a ball's lane, or something in the way)"
@@ -328,7 +335,7 @@ def way(h, goal):
 
 
 def either(got, *ways):
-    """Two ways of the same cost: the heap's order picks one (stack/pilot.py:397, 415), P2 does not say which."""
+    """Two ways of the same cost: the heap's order picks one (stack/pilot.py:420, 438), P2 does not say which."""
     return got in ways
 
 
@@ -675,7 +682,7 @@ def f4_look_each_leg():
         check(answer["result"] == "done" and answer["cell"] == "C1", f"{what}: done on C1", answer)
         check(before[:1] == [(False, False)], f"{what}: C4 unknown before the first look", before)
         if "box" in what:
-            check(xy("C4") in h.P.blocked, "the look blocked C4 (distance sensor, pilot.py:478-479)", h.P.blocked)
+            check(xy("C4") in h.P.blocked, "the look blocked C4 (distance sensor, pilot.py:501-502)", h.P.blocked)
         acts = acting(h)
         check(acts[0] == ["look_around", None, None], f"{what}: the first leg starts with a look", acts)
         first = next((k for k, a in enumerate(acts) if a[0] == "move"), None)
@@ -697,8 +704,10 @@ def f4_look_each_leg():
     check(answer["result"] == "done" and answer["cell"] == "C2", "a later leg: done on C2", answer)
     check(("A2", False) in before and xy("B2") in h.P.blocked, "B2 unknown before the look from A2, blocked after it",
           [before, h.P.blocked])
-    check(not [s for s in seen if s[0] == "move" and s[1]["direction"] == "east" and s[2] == "A2"],
-          "a later leg: never a slide east from A2 into B2", seen)
+    # Never a turn east from A2 either: since E9, a leg planned before the look would face B2, see it blocked and end
+    # without a slide; only its quarter turn shows the plan came first.
+    check(not [s for s in seen if s[0] in ("move", "face") and s[1]["direction"] == "east" and s[2] == "A2"],
+          "a later leg: never a turn nor a slide east from A2, towards B2", seen)
     acts = acting(h)
     moves = [k for k, a in enumerate(acts) if a[0] == "move"]
     check(all("look_around" in [a[0] for a in acts[(moves[i - 1] + 1 if i else 0):k]] for i, k in enumerate(moves)),
@@ -799,11 +808,11 @@ def m_wait_old_ball(m):
 @mutant("careful_balls ignored in a leg", "F5", "F22")
 def m_careful_ignored(m):
     leg = m.Pilot.leg
-    def patched(self, direction, cells):
+    def patched(self, direction, cells, cards):
         keep = self.settings["careful_balls"]
         self.settings["careful_balls"] = False
         try:
-            return leg(self, direction, cells)
+            return leg(self, direction, cells, cards)
         finally:
             self.settings["careful_balls"] = keep
     m.Pilot.leg = patched
@@ -914,7 +923,7 @@ def m_no_ball_refused(m):
 @mutant("travel goes on after a leg refused for a ball (-2 ignored)", "F6")
 def m_minus_two(m):
     leg = m.Pilot.leg
-    m.Pilot.leg = lambda self, direction, cells: (lambda n: 0 if n == -2 else n)(leg(self, direction, cells))
+    m.Pilot.leg = lambda self, direction, cells, cards: (lambda n: 0 if n == -2 else n)(leg(self, direction, cells, cards))
 
 
 @mutant("cross_when_boxed ignored", "F6")
@@ -931,30 +940,38 @@ def m_cross_ignored(m):
 
 
 # --- F7: go_to_card, the surest place first (P5) ----------------------------------------------------------------------
+# The cells ruled out live in go_to_card, for one call (ROBOT-PILOTE.md, E4): they are seen only through what the
+# robot does, the next attempt of the same call and a second call that tries them again.
 @scenario("F7a", "P5", "I15 I20")
 def f7a_surest_first():
     # Seen from far: C2 probable, D2 possible; the card is on D2. C2 first (120 cm against 150), faced from C3 without
-    # the card: ruled out; then D2, faced from D3.
+    # the card: ruled out, so the next attempt goes to D2, faced from D3.
     h = Harness(at="C5", facing="north", truth={"D2": "barbecue"}, toolset="goal")
     h.fake.seen = [record("barbecue", "C2", 120, ["D2"])]
     log_sleeps(h)
     answer = h.tool("go_to_card", card="barbecue")
     check(answer == {"result": "done", "cell": "D3", "facing": "north", "card_ahead": "barbecue", "moves_left": None},
           "done in front of D2, from D3 facing north", answer)
-    # The camera names a card after 200 ms standing still (stack/pilot.py:646): still that long before the reading.
+    # The camera names a card after 200 ms standing still (stack/pilot.py:675): still that long before the reading.
     check(still_before_reading(h) >= 0.2, "at least 0.2 s still between the last turn and the reading", h.calls()[-4:])
     want = [slide("north", 2), face("east"),
             slide("east", 1), face("north")]
-    check(h.moves() == want, "C3 faced first (the surest), then D3", h.moves())
-    check(h.P.ruled_out == {("barbecue", "C2")}, "C2 ruled out, D2 not", sorted(h.P.ruled_out))
-    h.P.configure({})
-    check(h.P.ruled_out == {("barbecue", "C2")}, "a new mission keeps the cells ruled out", sorted(h.P.ruled_out))
+    check(h.moves() == want, "C3 faced first (the surest), then D3: C2 ruled out after one attempt", h.moves())
+    check([l["tool"] for l in h.log()] == ["go_to_card"], "no explore", [l["tool"] for l in h.log()])
+    # A second call, the same mission, nothing else changed: the goal was forgotten with its cells ruled out, so C2 is
+    # tried again first (from C3, the cheapest front), then D2. The cost written in the decision E4.
+    answer = h.tool("go_to_card", card="barbecue")
+    check(answer == {"result": "done", "cell": "D3", "facing": "north", "card_ahead": "barbecue", "moves_left": None},
+          "second call: done again from D3", answer)
+    check(h.moves() == [face("west"), slide("west", 1), face("north"), face("east"), slide("east", 1), face("north")],
+          "second call: C2 tried again from C3, then D2 from D3", h.moves())
 
 
 @scenario("F7b", "P5", "I15 I20")
 def f7b_failed_face_rules_out():
     # The card is on C2, sure enough to try first; D2 is blocked, so is every way to C2 but C3. The robot reaches C3
-    # facing east; the quarter turn north is refused once, without a state.
+    # facing east; the quarter turn north is refused once, without a state. The reading after it shows the robot on C3
+    # facing east: C2 was not faced, so it is not ruled out (ROBOT-PILOTE.md, E4), and the next attempt turns again.
     h = Harness(at="A3", facing="east", truth={"C2": "barbecue"}, toolset="goal")
     h.fake.seen = [record("barbecue", "C2", 120, ["D2"])]
     block(h, "B2", "C1", "D2")
@@ -966,23 +983,39 @@ def f7b_failed_face_rules_out():
             return {"result": "refused", "why": "the robot is still moving"}
         return None
     h.fake.script["face"] = refuse_first
+    states = cards_ahead(h)
     answer = h.tool("go_to_card", card="barbecue")
-    check(refused == ["north"] and h.cell() == "C3" and pp.FACING[h.fake.facing] == "east",
-          "at C3, still facing east: the face north refused", [refused, h.cell(), pp.FACING[h.fake.facing]])
-    check(h.moves() == [slide("east", 2), face("north"),
-                        ["look_around", {}]], "one leg, the refused face, one look of the explore", h.moves())
-    check(answer == {"result": "gave up", "why": GO_TO_CARD_GAVE_UP, "moves_left": None},
-          "gave up, did not find itself", answer)
-    check([l["tool"] for l in h.log()] == ["explore"] * 7 + ["go_to_card"], "7 explores after the first attempt",
-          [l["tool"] for l in h.log()])
-    check(("barbecue", "C2") in h.P.ruled_out, "C2 ruled out though never faced", sorted(h.P.ruled_out))
-    # A new mission: the card is right in front of a quarter turn, nothing is refused any more; C2 stays ruled out.
-    h.P.configure({})
+    check(refused == ["north"] and ("C3", "east", None) in states, "the face north refused, read on C3 facing east",
+          [refused, states])
+    check(h.moves() == [slide("east", 2), face("north"), face("north")],
+          "one leg, the refused face, the same face again at the next attempt", h.moves())
+    check(answer == {"result": "done", "cell": "C3", "facing": "north", "card_ahead": "barbecue", "moves_left": None},
+          "done in front of C2, from C3 facing north", answer)
+    check([l["tool"] for l in h.log()] == ["go_to_card"], "no explore: C2 never ruled out", [l["tool"] for l in h.log()])
+    # Without the Strategist, the quarter turn north is stopped once: the adult puts the robot back on C4 facing north,
+    # the way C2 is faced from C3. Facing the right way from another cell rules nothing out: C3, then C2 faced.
+    h = Harness(at="A3", facing="east", truth={"C2": "barbecue"}, toolset="goal", obey=False)
+    h.fake.seen = [record("barbecue", "C2", 120, ["D2"])]
+    block(h, "B2", "C1", "D2")
+    stopped = []
+
+    def stop_first(direction):
+        if not stopped:
+            stopped.append(direction)
+            waiting(h, (2, 3, 0))
+            return {"result": "stopped", "why": "something touched the robot's bumper", "position_known": False,
+                    "what_to_do": h.fake.instruction()}
+        return None
+    h.fake.script["face"] = stop_first
+    resume_at(h, 1)
+    states = cards_ahead(h)
     answer = h.tool("go_to_card", card="barbecue")
-    check(answer == {"result": "gave up", "why": GO_TO_CARD_GAVE_UP, "moves_left": None} and not h.moves(),
-          "the next mission gives up without moving", [answer, h.moves()])
-    raise Known("go_to_card rules a cell out even when the face towards it failed, and keeps it ruled out for the whole "
-                "process, so the card next to the robot is never reached (stack/pilot.py:645-650)")
+    check(stopped == ["north"] and ("C4", "north", None) in states, "the face stopped, the robot put back on C4 facing "
+          "north, no card ahead", [stopped, states])
+    check(h.moves() == [slide("east", 2), face("north"), slide("north", 1)], "then from C4 to C3, already facing north",
+          h.moves())
+    check(answer == {"result": "done", "cell": "C3", "facing": "north", "card_ahead": "barbecue", "moves_left": None},
+          "done in front of C2, from C3 facing north", answer)
 
 
 @scenario("F7c", "P5", "I15 I20")
@@ -997,8 +1030,7 @@ def f7c_other_card_ahead():
           "another card ahead is not done: on to D2, from D3", answer)
     want = [slide("north", 2), face("east"),
             slide("east", 1), face("north")]
-    check(h.moves() == want, "C3 faced first, then D3", h.moves())
-    check(h.P.ruled_out == {("barbecue", "C2")}, "C2 ruled out, D2 not", sorted(h.P.ruled_out))
+    check(h.moves() == want, "C3 faced first, then D3, never C3 again", h.moves())
 
 
 @scenario("F7d", "P5", "I15 I20")
@@ -1012,8 +1044,10 @@ def f7d_could_also_be_less_sure():
           "done in front of B2, from B3 facing north", answer)
     want = [slide("north", 2), face("west"),
             slide("west", 1), face("north")]
-    check(h.moves() == want, "C3 faced first, then B3 (B2 at 120 cm before D2 at 130)", h.moves())
-    check(h.P.ruled_out == {("barbecue", "C2")}, "C2 ruled out, D2 never tried", sorted(h.P.ruled_out))
+    check(h.moves() == want, "C3 faced first, then B3 (B2 at 120 cm before D2 at 130), D2 never tried", h.moves())
+
+
+RULE_OUT = '        if state.get("cell") == cell_name(c, r) and state.get("facing") == fronts[(c, r)]:\n'
 
 
 @mutant("go_to_card tries the least sure place first", "F7a")
@@ -1022,17 +1056,41 @@ def m_least_sure(m):
                               "cell = max(candidates, key=candidates.get)"))
 
 
-@mutant("go_to_card never rules a place out", "F7a", "F7b")
+@mutant("go_to_card never rules a place out", "F7a", "F7c")
 def m_never_ruled_out(m):
-    rewrite(m, "go_to_card", ("PILOT.ruled_out.add((card, cell))", "pass"))
+    rewrite(m, "go_to_card", ("ruled_out.add(cell)  # faced", "pass  # faced"))
 
 
-@mutant("configure forgets the cells ruled out", "F7a", "F7b")
-def m_forget_ruled_out(m):
+@mutant("go_to_card rules a place out even when the face failed (before E4)", "F7b")
+def m_rule_out_always(m):
+    rewrite(m, "go_to_card", (RULE_OUT, "        if True:\n"))
+
+
+@mutant("go_to_card rules a place out when facing it from another cell", "F7b")
+def m_rule_out_facing_only(m):
+    rewrite(m, "go_to_card", (RULE_OUT, '        if state.get("facing") == fronts[(c, r)]:\n'))
+
+
+@mutant("go_to_card rules a place out when on the cell, whatever the way", "F7b")
+def m_rule_out_cell_only(m):
+    rewrite(m, "go_to_card", (RULE_OUT, '        if state.get("cell") == cell_name(c, r):\n'))
+
+
+@mutant("the cells ruled out kept for the process (Pilot.ruled_out, before E4)", "F7a")
+def m_keep_ruled_out(m):
+    m.KEPT_RULED_OUT = set()
+    rewrite(m, "go_to_card", ("unreachable, ruled_out = set(), set()", "unreachable, ruled_out = set(), KEPT_RULED_OUT"))
+
+
+@mutant("the cells ruled out kept for the mission, forgotten at configure", "F7a")
+def m_keep_ruled_out_mission(m):
+    m.KEPT_RULED_OUT = set()
+    rewrite(m, "go_to_card", ("unreachable, ruled_out = set(), set()", "unreachable, ruled_out = set(), KEPT_RULED_OUT"))
     configure = m.Pilot.configure
+
     def patched(self, settings):
         configure(self, settings)
-        self.ruled_out = set()
+        m.KEPT_RULED_OUT.clear()
     m.Pilot.configure = patched
 
 
@@ -1085,7 +1143,7 @@ def f8a_explore_first():
 @scenario("F8b", "P16", "I12 I13")
 def f8b_short_no_explore():
     # Three moves left: go_to_card explores; the first look (one move, as for the Referee) leaves 2, and explore stops
-    # there (stack/pilot.py:575), with most of the mat not seen.
+    # there (stack/pilot.py:598), with most of the mat not seen.
     h = Harness(at="C5", facing="north", limit=3, toolset="goal")
     answer = h.tool("go_to_card", card="barbecue")
     check(answer == {"result": "not found", "why": "the camera never saw a card barbecue", "moves_left": 2},
@@ -1095,22 +1153,29 @@ def f8b_short_no_explore():
                                                          "mat_covered": False, "moves_left": 2}),
                        ("go_to_card", [[], {"card": "barbecue"}], answer)], "pilot.jsonl: explore, then go_to_card",
           lines(h))
-    # Two moves left: no exploration at all, and the misleading message of P16 (a known limit, written in 5-pilote.md).
+    # Two moves left, the card never seen: no exploration, and the reason is the moves (ROBOT-PILOTE.md, E6).
     h = Harness(at="C5", facing="north", limit=2, toolset="goal")
     answer = h.tool("go_to_card", card="barbecue")
-    check(answer == {"result": "gave up", "why": GO_TO_CARD_GAVE_UP, "moves_left": 2},
-          "gave up at once, without cards_seen", answer)
-    check(h.calls() == [["robot_state", {}], ["seen_cards", {}]], "a reading and the record, nothing else", h.calls())
+    check(answer == {"result": "gave up", "why": "no moves left", "cards_seen": {}, "moves_left": 2},
+          "gave up at once: no moves left", answer)
+    check(not h.moves() and names(h)[:1] == ["robot_state"] and set(names(h)[1:]) == {"seen_cards"},
+          "a reading and the record, nothing else", h.calls())
     check([l[0] for l in lines(h)] == ["go_to_card"], "no explore line", lines(h))
-    raise Known("with 2 moves left or fewer, go_to_card does not explore a card the camera never saw and answers "
-                "gave up 'the robot did not find itself in front of the card barbecue', as if it had been seen "
-                "(stack/pilot.py:622-623, 653)")
+    # Two moves left, the card recorded on C3 but no place left to try (the first reading sees a box there: blocked):
+    # the reason stays "did not find itself", the moves are not the cause.
+    h = Harness(at="C5", facing="north", limit=2, toolset="goal", boxes={"C3"})
+    h.fake.seen = [record("barbecue", "C3", 60)]
+    answer = h.tool("go_to_card", card="barbecue")
+    check(answer == {"result": "gave up", "why": GO_TO_CARD_GAVE_UP, "moves_left": 2},
+          "seen, no place to try, 2 moves left: did not find itself", answer)
+    check(not h.moves() and [l[0] for l in lines(h)] == ["go_to_card"], "nothing moved, no explore",
+          [h.moves(), lines(h)])
 
 
 @scenario("F8c", "P12 P16", "I1 I12 I13")
 def f8c_stop_during_explore():
     # The mission stopped during the first look of the exploration: the next move raises the stop, explore gives up,
-    # and go_to_card passes on its gave up with the same why (without cards_seen: its own answer, stack/pilot.py:628).
+    # and go_to_card passes on its gave up with the same why (without cards_seen: its own answer, stack/pilot.py:656).
     h = Harness(at="C5", facing="north", toolset="goal")
     looks = []
     def look(**_):
@@ -1135,14 +1200,25 @@ def m_no_explore(m):
 
 @mutant("go_to_card explores with 2 moves left or fewer", "F8b")
 def m_explore_short(m):
-    rewrite(m, "go_to_card", ("            if PILOT.short(2):\n                break\n            looked",
-                              "            looked"))
+    rewrite(m, "go_to_card", ("            if PILOT.short(2):\n", "            if False:\n"))
 
 
 @mutant("go_to_card explores only with more than 3 moves left", "F8b")
 def m_explore_short3(m):
-    rewrite(m, "go_to_card", ("            if PILOT.short(2):\n                break\n            looked",
-                              "            if PILOT.short(3):\n                break\n            looked"))
+    rewrite(m, "go_to_card", ("            if PILOT.short(2):\n", "            if PILOT.short(3):\n"))
+
+
+NEVER_SEEN = '                if not any(s["card"] == card for s in PILOT.records()):\n                    raise Stuck("no moves left")'
+
+
+@mutant("go_to_card short of moves answers did not find itself for a card never seen (before E6)", "F8b")
+def m_short_never_seen(m):
+    rewrite(m, "go_to_card", (NEVER_SEEN, "                pass"))
+
+
+@mutant("go_to_card short of moves answers no moves left for a card seen too", "F8b")
+def m_short_always_no_moves(m):
+    rewrite(m, "go_to_card", (NEVER_SEEN, '                raise Stuck("no moves left")'))
 
 
 @mutant("go_to_card does not pass on the gave up of its explore", "F8c")
@@ -1151,9 +1227,12 @@ def m_explore_gave_up_lost(m):
 
 
 # --- F9: go_to_card, 8 attempts and their two end messages (P17) ------------------------------------------------------
+# The reason is kept during the attempts (ROBOT-PILOTE.md, E6): "no way ... now" as soon as one place had no way to it,
+# whatever the count of places and whatever the 8th attempt did.
 @scenario("F9a", "P17", "I12 I16")
 def f9a_one_place_no_way():
-    # One place (C3), its four fronts blocked: no way, then a wait of 10 s, again, for 8 attempts.
+    # One place (C3), its four fronts blocked: no way, then a wait of 10 s, again, for 8 attempts. The 8th waits and
+    # empties the places with no way: the reason is still the way.
     h = Harness(at="A6", facing="north", toolset="goal")
     h.fake.seen = [record("barbecue", "C3", 60)]
     block(h, "B3", "D3", "C2", "C4")
@@ -1164,14 +1243,11 @@ def f9a_one_place_no_way():
     check(not h.moves(), "nothing moved", h.moves())
     check([l["tool"] for l in h.log()] == ["go_to_card"], "a place with no way is not ruled out: no explore",
           [l["tool"] for l in h.log()])
-    check(answer == {"result": "gave up", "why": GO_TO_CARD_GAVE_UP, "moves_left": None},
-          "gave up: the last attempt waited and cleared the places with no way", answer)
-    raise Known("with one place and no way to it, go_to_card ends on 'did not find itself' and not 'no way to the card "
-                "... now': the 8th attempt waited and emptied unreachable (stack/pilot.py:616-620, 651-653)")
+    check(answer == {"result": "gave up", "why": NO_WAY, "moves_left": None}, "gave up: no way to the card now", answer)
 
 
 @scenario("F9b", "P17", "I12 I16")
-def f9b_two_places_no_way():
+def f9b_places_no_way():
     # Two places (C3, then D3), no way to either: C3 and D3 tried, a wait; three times, then C3 and D3 again.
     h = Harness(at="A6", facing="north", toolset="goal")
     h.fake.seen = [record("barbecue", "C3", 60, ["D3"])]
@@ -1181,12 +1257,41 @@ def f9b_two_places_no_way():
           h.calls("wait_for"))
     check(read_after_each_wait(h), "the state read again after each wait", h.calls())
     check(not h.moves(), "nothing moved", h.moves())
-    check([l["tool"] for l in h.log()] == ["go_to_card"], "no explore", [l["tool"] for l in h.log()])
+    check([l["tool"] for l in h.log()] == ["go_to_card"], "neither place ruled out: no explore",
+          [l["tool"] for l in h.log()])
     check(answer == {"result": "gave up", "why": NO_WAY, "moves_left": None}, "gave up: no way to the card now", answer)
-    check(not h.P.ruled_out, "neither place ruled out", sorted(h.P.ruled_out))
-    raise Known("with no way to any place, the end message depends on the count of places, not on why: 'no way to the "
-                "card ... now' with 2 places, 'did not find itself' with 1 or 3, since the 8th attempt tries a place or "
-                "waits and empties unreachable (stack/pilot.py:607, 616-620, 651-653)")
+    # Three places (C3, then B3 and D3), no way to any: three tried, a wait, three again, a wait at the 8th attempt.
+    # A3 is a box, which the first reading (column A) blocks; the others are blocked by hand, out of its sight.
+    h = Harness(at="A6", facing="north", toolset="goal", boxes={"A3"})
+    h.fake.seen = [record("barbecue", "C3", 60, ["B3", "D3"])]
+    block(h, "C4", "C2", "B4", "B2", "D4", "D2", "E3")
+    answer = h.tool("go_to_card", card="barbecue")
+    check(h.calls("wait_for") == [["wait_for", {"seconds": 10}]] * 2, "three places: 2 waits of 10 s (attempts 4 and 8)",
+          h.calls("wait_for"))
+    check(not h.moves() and [l["tool"] for l in h.log()] == ["go_to_card"], "three places: nothing moved, no explore",
+          [h.moves(), [l["tool"] for l in h.log()]])
+    check(answer == {"result": "gave up", "why": NO_WAY, "moves_left": None},
+          "three places: gave up, no way to the card now", answer)
+
+
+@scenario("F9c", "P17", "I12 I16")
+def f9c_one_place_no_way_one_reached():
+    # C3 has no way to it; E5 is reached, but the quarter turn towards it is always refused, so no attempt waits and
+    # E5 is never ruled out. One place had no way: the reason is the way, not "did not find itself" (E6).
+    h = Harness(at="A6", facing="north", toolset="goal")
+    h.fake.seen = [record("barbecue", "C3", 60), record("barbecue", "E5", 90)]
+    block(h, "B3", "D3", "C2", "C4", "D5", "F5", "E4")
+
+    def face_refused(direction, **_):
+        if (h.cell(), direction) in (("E6", "north"), ("D5", "east"), ("F5", "west"), ("E4", "south")):
+            return {"result": "refused", "why": "the robot is still moving"}
+        return None
+    h.fake.script["face"] = face_refused
+    answer = h.tool("go_to_card", card="barbecue")
+    check(h.calls("wait_for") == [], "no wait: a place was always left to try", h.calls("wait_for"))
+    check(h.moves() == [face("east"), slide("east", 4)] + [face("north")] * 7,
+          "to E6, then the refused face north at each of the 7 other attempts", h.moves())
+    check(answer == {"result": "gave up", "why": NO_WAY, "moves_left": None}, "gave up: no way to the card now", answer)
 
 
 @mutant("go_to_card tries 80 times", "F9a", "F9b")
@@ -1196,23 +1301,37 @@ def m_80_attempts(m):
 
 @mutant("a place with no way is ruled out", "F9a")
 def m_no_way_ruled_out(m):
-    rewrite(m, "go_to_card", ("unreachable.add(cell)", "PILOT.ruled_out.add((card, cell))"))
+    rewrite(m, "go_to_card", ("unreachable.add(cell)", "ruled_out.add(cell)"))
 
 
 @mutant("go_to_card tries again without waiting", "F9a", "F9b")
 def m_card_no_wait(m):
-    rewrite(m, "go_to_card", ('command("wait_for_event", 10)', "None"))
+    rewrite(m, "go_to_card", ("wait(10)", "None"))
 
 
-@mutant("go_to_card ends on did not find itself, way or no way", "F9b")
+@mutant("go_to_card ends on did not find itself, way or no way", "F9a", "F9b")
 def m_one_message(m):
-    rewrite(m, "go_to_card", ("    if unreachable:\n        return", "    if False:\n        return"))
+    rewrite(m, "go_to_card", ("    if no_way:\n        return", "    if False:\n        return"))
+
+
+@mutant("go_to_card's end message follows its last attempt (if unreachable, before E6)", "F9a", "F9b")
+def m_last_attempt_message(m):
+    rewrite(m, "go_to_card", ("    if no_way:\n        return", "    if unreachable:\n        return"))
 
 
 @mutant("go_to_card tries again without reading the state after the wait", "F9a", "F9b")
 def m_no_read_after_wait(m):
     rewrite(m, "go_to_card", ('    PILOT.read(command("robot_state"))\n            unreachable.clear()',
                               '    unreachable.clear()'))
+
+
+@mutant("go_to_card says no way only once every place had none", "F9c")
+def m_no_way_when_all(m):
+    rewrite(m, "go_to_card", ("            unreachable.add(cell)  # no way there now: try the next place, and this one "
+                              "again later\n            no_way = True\n",
+                              "            unreachable.add(cell)  # no way there now: try the next place, and this one "
+                              "again later\n"),
+            ("            unreachable.clear()\n", "            unreachable.clear()\n            no_way = True\n"))
 
 
 # --- F10: the robot waits for an adult --------------------------------------------------------------------------------
@@ -1258,8 +1377,8 @@ def f10c_resume_then_leave_lane():
                        "seen_cards", "seen_cards", "move", "seen_cards", "seen_cards", "move"],
           "two waits, Resume, out of the lane, then the way", h.calls())
     check(h.calls("move") == [slide("north", 1)] * 2, "two slides north of one cell", h.calls("move"))
-    # A cell on the lane: go_to_cell refuses it without travelling (pilot.py:672-677). Only the wait for the adult
-    # takes the robot out of the lane (pilot.py:285), so it stands on C4, not C5.
+    # A cell on the lane: go_to_cell refuses it without travelling (pilot.py:705-710). Only the wait for the adult
+    # takes the robot out of the lane (pilot.py:303), so it stands on C4, not C5.
     h = Harness(at="C5", facing="north", obey=False)
     waiting(h, (2, 4, 0))
     lanes(h, ["row 5"])
@@ -1350,7 +1469,7 @@ def f11b_more_than_six():
           "two look_arounds: more than 6 counts as the same number each round", h.calls())
     raise Known("with more than 6 places the Cartographer sends no could_be, so localize counts 99 places each round "
                 "and gives up at the second round even when places were ruled out (40, then 8), not only when none was "
-                "as 5-pilote.md P10 says: stack/pilot.py:300-301, stack/cartographer.py:1019-1022")
+                "as 5-pilote.md P10 says: stack/pilot.py:318-319, stack/cartographer.py:1019-1022")
 
 
 @scenario("F11c", "P9 P10", "I7 I16")
@@ -1420,7 +1539,7 @@ def f12_lanes():
     check(acting(h) == [["move", "north", 1], ["look_around", None, None]], "slide north 1 to C3, then look",
           acting(h))
     check([pos for name, _, pos in seen if name == "look_around"] == ["C3"], "the look from C3", seen)
-    # Row 4 and column C: no cell one step away is off both lanes; the look goes two cells away (pilot.py:216).
+    # Row 4 and column C: no cell one step away is off both lanes; the look goes two cells away (pilot.py:234).
     h = Harness(at="C4", facing="north")
     lanes(h, ["row 4", "column C"])
     seen = where_calls(h)
@@ -1456,7 +1575,7 @@ def f12_lanes():
                      "moves_left": None}, "refused, no cell off every lane within two steps: wait", answer)
     check(not h.moves(), "nothing moved", h.moves())
     # Row 3 and column C: the four cells next to C3 are on a lane; B4 and D4, two steps away, are the nearest to the
-    # robot in C5 (B4 first, pilot.py:194-196).
+    # robot in C5 (B4 first, pilot.py:212-214).
     h = Harness(at="C5", facing="north")
     lanes(h, ["row 3", "column C"])
     answer = h.tool("go_to_cell", cell="C3")
@@ -1464,7 +1583,7 @@ def f12_lanes():
                      "what_to_do": "go to B4 instead, next to it and off every lane", "moves_left": None},
           "refused, go to B4 instead (two steps away)", answer)
     check(not h.moves(), "nothing moved", h.moves())
-    # (d) travel leaves the lane before it plans the way (pilot.py:421-422): from C4 on row 4 to C2, first a stop on
+    # (d) travel leaves the lane before it plans the way (pilot.py:444-445): from C4 on row 4 to C2, first a stop on
     # C3, off the lane, then the way; not one slide of 2 cells planned from the lane.
     h = Harness(at="C4", facing="north")
     lanes(h, ["row 4"])
@@ -1616,15 +1735,46 @@ def m_forget_late(m):
     m.Pilot.configure = patched
 
 
-# --- F15: explore without a bound under a commands limit --------------------------------------------------------------
+# --- F15: explore under a limit of the adults, and without a bound ----------------------------------------------------
 @scenario("F15", "-", "I16")
-def f15_explore_endless():
-    # Every command that acts refused for good (a commands limit, no moves limit: short() never sees it). The robot's
-    # own cell C5 is the best vantage (score 22, no other cell reaches 33), travel there is True at once, the refused
-    # look adds nothing to covered and reads the state again: the same three calls for ever.
+def f15_explore_limit():
+    # Every command that acts refused for good (a commands limit, no moves limit: short() never sees it). A refusal
+    # that says a limit of the adults ends the tool at once, with its own words (ROBOT-PILOTE.md, E2 (a)). Before, the
+    # refused look added nothing to covered, the robot's own cell stayed the best vantage, and explore never ended.
     h = Harness(at="C5", facing="north", toolset="goal")
     for name in ACTS:
         h.fake.script[name] = lambda **_: dict(NO_COMMANDS)
+    answer = explore_bounded(h, 300)
+    check(answer == {"result": "gave up", "why": NO_COMMANDS["why"], "cards_seen": {}, "moves_left": None},
+          "commands limit: gave up with the Cartographer's words", answer)
+    check(names(h) == ["robot_state", "look_around", "seen_cards"], "a reading, the refused look, the record for "
+          "cards_seen; nothing after the refusal", h.calls())
+    check(h.cell() == "C5" and lines(h) == [("explore", [[], {}], answer)], "nothing moved, one line",
+          [h.cell(), lines(h)])
+    # A cells limit: the first look is done, a slide to the next vantage too; the look there is refused.
+    h = Harness(at="C5", facing="north", toolset="goal")
+    looks = []
+
+    def look(**_):
+        looks.append(h.cell())
+        return dict(NO_CELLS) if len(looks) == 2 else None
+    h.fake.script["look_around"] = look
+    answer = explore_bounded(h, 300)
+    check(answer.get("result") == "gave up" and answer.get("why") == NO_CELLS["why"]
+          and set(answer) == {"result", "why", "cards_seen", "moves_left"}, "cells limit: gave up with the "
+          "Cartographer's words", answer)
+    check(len(looks) == 2 and looks[1] != "C5" and h.calls()[-2:] == [["look_around", {}], ["seen_cards", {}]],
+          "the second look, refused on another cell, is the last command", [looks, h.calls()[-3:]])
+
+
+@scenario("F15b", "-", "I16")
+def f15b_explore_endless():
+    # Every look_around refused for a reason that is not a limit of the adults (the battery too low): the robot's own
+    # cell C5 stays the best vantage (score 22, no other cell reaches 33), travel there is True at once, the refused
+    # look adds nothing to covered and reads the state again: the same three calls for ever.
+    h = Harness(at="C5", facing="north", toolset="goal")
+    for name in ACTS:
+        h.fake.script[name] = lambda **_: dict(BATTERY)
     answer = explore_bounded(h, 300)
     calls = names(h)
     loop = ["seen_cards", "look_around", "robot_state"]
@@ -1634,28 +1784,46 @@ def f15_explore_endless():
           calls[:12])
     check(h.P.covered == set() and h.cell() == "C5" and h.log() == [], "nothing covered, nothing moved, no line",
           [sorted(h.P.covered), h.cell(), h.log()])
-    # Under the Strategist, only a stop ends it: the next look raises it (stack/pilot.py:83-84).
+    # Under the Strategist, only a stop ends it: the next look raises it (stack/pilot.py:93-94).
     h = Harness(at="C5", facing="north", toolset="goal")
     for name in ACTS:
-        h.fake.script[name] = lambda **_: dict(NO_COMMANDS)
+        h.fake.script[name] = lambda **_: dict(BATTERY)
     looks = []
+
     def look(**_):
         looks.append(1)
         if len(looks) == 20:
             h.mission.stop()
-        return dict(NO_COMMANDS)
+        return dict(BATTERY)
     h.fake.script["look_around"] = look
     answer = explore_bounded(h, 300)
     check(answer == {"result": "gave up", "why": "the mission was stopped", "cards_seen": {}, "moves_left": None},
           "a stop ends it", answer)
     check(len(looks) == 20 and not h.calls("move", "face", "turn", "step_forward"), "20 refused looks, no other move",
           names(h)[-6:])
-    raise Known("explore never ends when every look_around is refused for good (a commands limit of the adults): the "
-                "robot's own cell stays the best vantage, travel there is True at once and a refused look adds nothing "
-                "to covered; only a stop of the mission ends it (stack/pilot.py:574-583, 477-483)")
+    raise Known("explore never ends when every look_around is refused for good for a reason that is not a limit of the "
+                "adults (the battery too low): the robot's own cell stays the best vantage, travel there is True at once "
+                "and a refused look adds nothing to covered; only a stop of the mission ends it (stack/pilot.py:597-606, "
+                "496-509). The bound of the loop (ROBOT-PILOTE.md, E2 (b)) is not written yet")
 
 
-@mutant("a refused look_around does not read the state again", "F15")
+@mutant("a refusal for a limit of the adults goes on (before E2 (a))", "F15", "F23")
+def m_limit_goes_on(m):
+    rewrite(m, "Pilot.read", ("            raise Stuck(answer[\"why\"])", "            pass"))
+
+
+@mutant("only the moves limit ends a tool", "F15", "F23")
+def m_limit_moves_only(m):
+    rewrite(m, "Pilot.read", ('"the adults allow" in str(answer.get("why", ""))',
+                              'str(answer.get("why", "")).startswith("no moves left")'))
+
+
+@mutant("a limit of the adults ends the tool with its own words lost", "F15", "F23")
+def m_limit_words_lost(m):
+    rewrite(m, "Pilot.read", ("            raise Stuck(answer[\"why\"])", "            raise Stuck(\"no moves left\")"))
+
+
+@mutant("a refused look_around does not read the state again", "F15b")
 def m_refused_look_no_read(m):
     rewrite(m, "Pilot.look_around", ('            self.read(command("robot_state"))  # refused after',
                                      "            pass  # refused after"))
@@ -1664,6 +1832,8 @@ def m_refused_look_no_read(m):
 # --- F16, F17: two legs that go wrong (P2) ----------------------------------------------------------------------------
 @scenario("F16", "P2", "I17")
 def f16_busy_blocks():
+    # A refusal blocks the next cell only when it says a thing in front (ROBOT-PILOTE.md, E9): "another move is still
+    # running" blocks nothing, and the same slide goes again.
     h = Harness(at="C5", facing="north")
     refused = []
 
@@ -1675,12 +1845,24 @@ def f16_busy_blocks():
     h.fake.script["move"] = once
     answer = h.tool("go_to_cell", cell="C3")
     check(refused == [slide("north", 2)[1]], "the first slide refused: another move is running", refused)
-    check(either(h.moves(), [slide("north", 2)] + BY_B, [slide("north", 2)] + BY_D),
-          "C4, seen free, avoided: round it by column B or D (10 each)", h.moves())
+    check(h.moves() == [slide("north", 2)] * 2, "C4, seen free, not blocked: the same slide again", h.moves())
     check(answer["result"] == "done" and answer["cell"] == "C3", "done on C3", answer)
-    check(h.P.is_blocked(xy("C4")), "C4 blocked", sorted(h.P.blocked))
-    raise Known("a move refused because another move is still running marks the next cell blocked, though the "
-                "sensor saw it free, and the way goes round it (stack/pilot.py:377-379)")
+    check(not h.P.is_blocked(xy("C4")), "C4 not blocked", sorted(h.P.blocked))
+    # The other way round: "something is in front of the robot" (REASONS["obstacle"]) blocks C4, and the way goes round.
+    h = Harness(at="C5", facing="north")
+    refused = []
+
+    def obstacle(**args):
+        if not refused:
+            refused.append(args)
+            return {"result": "refused", "why": OBSTACLE}
+        return None
+    h.fake.script["move"] = obstacle
+    answer = h.tool("go_to_cell", cell="C3")
+    check(h.P.is_blocked(xy("C4")), "an obstacle refused: C4 blocked", sorted(h.P.blocked))
+    check(either(h.moves(), [slide("north", 2)] + BY_B, [slide("north", 2)] + BY_D),
+          "an obstacle refused: round C4 by column B or D (10 each)", h.moves())
+    check(answer["result"] == "done" and answer["cell"] == "C3", "an obstacle refused: done on C3", answer)
 
 
 @scenario("F17", "P2", "I17")
@@ -1693,20 +1875,67 @@ def f17_face_shows_blocked():
         return None
     h.fake.script["move"] = note
     answer = h.tool("go_to_cell", cell="C3")
-    # Facing east, the Pilot knows nothing of C4: north 2 (6) is the cheapest. The face north reads 29 cm: C4 blocked.
-    check(sent[:1] == [(slide("north", 2)[1], True)], "the first slide goes north from C5, C4 already blocked", sent)
-    # The slide stops at once (something in the way); then by column D, whose D5 the first reading saw free (10).
-    want = [face("north"), slide("north", 2), face("east"), slide("east", 1), face("north"), slide("north", 2),
+    # Facing east, the Pilot knows nothing of C4: north 2 (6) is the cheapest. The face north reads 29 cm: C4 blocked,
+    # and the leg ends there, without a slide (ROBOT-PILOTE.md, E9). The new plan goes by column D, whose D5 the first
+    # reading saw free (10).
+    check(sent[:1] == [(slide("east", 1)[1], True)], "no slide north from C5: the first slide goes east, C4 blocked",
+          sent)
+    want = [face("north"), face("east"), slide("east", 1), face("north"), slide("north", 2),
             face("west"), slide("west", 1)]
-    check(h.moves() == want, "then round C4 by column D", h.moves())
+    check(h.moves() == want, "the face north, then round C4 by column D", h.moves())
     check(answer["result"] == "done" and answer["cell"] == "C3" and answer["facing"] == "west", "done on C3", answer)
-    raise Known("the reading after the face of a leg marks its first cell blocked, and the slide goes anyway: "
-                "leg checks no is_blocked after face (stack/pilot.py:353-369)")
+    # The other half of E9: the state read after the face names a card on the first cell (card_ahead, the signal that
+    # stops a step). The plan went round the cards the Pilot knew; this one is not in the record yet. On the real stack
+    # the Cartographer records the card the camera saw, so the next plan goes round it: the check saves one refused
+    # slide per card newly seen. The fake records nothing, so without the check it slid north 8 times, all stopped.
+    # (b) A5 facing south, a card on A4 the record does not hold: no slide north after the face north.
+    h = Harness(at="A5", facing="south", truth={"A4": "barbecue"})
+    answer = h.tool("go_to_cell", cell="A2")
+    after = h.moves()[h.moves().index(face("north")) + 1:] if face("north") in h.moves() else None
+    check(after is not None and not [m for m in after if m[0] == "move"], "(b) the face north showed a card on A4: no "
+          "slide after it", h.moves())
+    # (c) C5 facing east, a card on C4: the face north shows it, and the camera records it then (as the real
+    # Cartographer does): no slide north, the new plan goes round C4 by column B or D.
+    h = Harness(at="C5", facing="east", truth={"C4": "water-point"})
+
+    def seen_on_face(direction, **_):
+        if direction == "north" and h.cell() == "C5":
+            h.fake.seen = [record("water-point", "C4", 30)]
+        return None
+    h.fake.script["face"] = seen_on_face
+    answer = h.tool("go_to_cell", cell="C3")
+    check(h.moves()[:1] == [face("north")] and h.moves()[1:2] != [slide("north", 2)],
+          "(c) the face north showed a card on C4: no slide north from C5", h.moves())
+    check(either(h.moves(), [face("north")] + BY_B, [face("north")] + BY_D), "(c) the face north, then round C4 by "
+          "column B or D", h.moves())
+    check(answer["result"] == "done" and answer["cell"] == "C3", "(c) done on C3",
+          {k: v for k, v in answer.items() if k != "state"})
+
+
+FIRST_TAKEN = ('            if self.is_blocked((c0 + dc, r0 + dr)) or (self.state.get("card_ahead") or {}).get("card"):'
+               '\n')
+CARD_AHEAD = ' or (self.state.get("card_ahead") or {}).get("card"):\n'
 
 
 @mutant("a refused leg blocks nothing", "F16")
 def m_refusal_blocks_nothing(m):
-    rewrite(m, "Pilot.leg", ("if \"card\" not in why and not self.ball_recent():", "if False:"))
+    rewrite(m, "Pilot.leg", ('if answer.get("why") == REASONS["obstacle"] and not self.ball_recent():', "if False:"))
+
+
+@mutant("any refusal without card blocks the next cell (before E9)", "F16")
+def m_refusal_blocks_any(m):
+    rewrite(m, "Pilot.leg", ('if answer.get("why") == REASONS["obstacle"] and not self.ball_recent():',
+                             'if "card" not in why and not self.ball_recent():'))
+
+
+@mutant("a leg slides after its face showed the first cell blocked (before E9)", "F17")
+def m_leg_ignores_face(m):
+    rewrite(m, "Pilot.leg", (FIRST_TAKEN, "            if False:\n"))
+
+
+@mutant("a leg slides after its face showed a card on the first cell (before E9)", "F17")
+def m_leg_ignores_card_ahead(m):
+    rewrite(m, "Pilot.leg", (CARD_AHEAD, ":\n"))
 
 
 @mutant("the cells before the thing are not marked free", "F17")
@@ -1714,33 +1943,45 @@ def m_sensor_no_free(m):
     rewrite(m, "Pilot.note_distance", ("self.free.add((cell[0] + dc * d, cell[1] + dr * d))", "pass"))
 
 
-# --- F18: done while the place is lost (P5) ---------------------------------------------------------------------------
+# --- F18: done only with a place known (P5) ---------------------------------------------------------------------------
 @scenario("F18", "P5", "I15")
 def f18_done_place_lost():
     # The card on C3, sure; the robot slides to C4 and faces it. The reading in front of the card says the place is
-    # lost (the real Cartographer still gives card_ahead then, stack/cartographer.py:995-999).
+    # lost (the real Cartographer still gives card_ahead then, stack/cartographer.py:995-999). go_to_card finds its
+    # place first (one look_around, which finds it), then tries again: done names C4 (ROBOT-PILOTE.md, E3).
     h = Harness(at="C5", facing="north", truth={"C3": "barbecue"}, toolset="goal")
     h.fake.seen = [record("barbecue", "C3", 60)]
+    lost_once = []
 
     def robot_state():
-        if h.cell() != "C4" or h.fake.frame:
+        if h.cell() != "C4" or lost_once:
             return None
+        lost_once.append(1)
         state = h.fake.state()
         h.fake.frame = True  # a reading farther than the border: the Cartographer counts from here again
         return dict(state, cell=None, facing=None, position_known=False)
     h.fake.script["robot_state"] = robot_state
+
+    def found(**_):
+        h.fake.frame = False  # the look_around finds the place again
+    h.fake.script["look_around"] = found
     answer = h.tool("go_to_card", card="barbecue")
-    check(h.moves() == [slide("north", 1)], "one leg to C4", h.moves())
-    check(h.P.state.get("position_known") is False, "the Pilot read the place lost", h.P.state)
-    check(answer == {"result": "done", "cell": None, "facing": None, "card_ahead": "barbecue", "moves_left": None},
-          "done, with cell and facing null", answer)
-    raise Known("go_to_card answers done with cell and facing null when the reading in front of the card says the place "
-                "is lost: it checks card_ahead, never position_known (stack/pilot.py:647-649)")
+    check(lost_once, "the reading in front of the card said the place lost", lost_once)
+    check(h.moves() == [slide("north", 1), ["look_around", {}]], "one leg to C4, then one look to find its place",
+          h.moves())
+    check(answer == {"result": "done", "cell": "C4", "facing": "north", "card_ahead": "barbecue", "moves_left": None},
+          "done from C4 facing north, once the place is known", answer)
+    check([l["tool"] for l in h.log()] == ["go_to_card"], "no explore", [l["tool"] for l in h.log()])
 
 
 @mutant("go_to_card trusts the state of its last move, not a new reading", "F18")
 def m_no_new_reading(m):
     rewrite(m, "go_to_card", ('state = PILOT.read(command("robot_state"))', "state = PILOT.state"))
+
+
+@mutant("go_to_card answers done with the place lost (before E3)", "F18")
+def m_done_place_lost(m):
+    rewrite(m, "go_to_card", ('        if not state.get("position_known"):\n', "        if False:\n"))
 
 
 # --- F19: face, in the route set --------------------------------------------------------------------------------------
@@ -1844,7 +2085,7 @@ def m_moves_light(m):
 def f21_memory_kept():
     # Mission 1: a wall of boxes on column D. The robot, on C5, sees D5 blocked at its first look; the other cells of D
     # are found blocked only when a leg tries them, so a vantage beyond the wall looks reachable until the last one is
-    # found: that target goes into covered (stack/pilot.py:583). The camera never looks at column H (4 cells from C).
+    # found: that target goes into covered (stack/pilot.py:606). The camera never looks at column H (4 cells from C).
     wall = {f"D{r}" for r in range(1, 7)}
     h = Harness(at="C5", facing="north", boxes=wall, toolset="goal")
     travels = spy_travel(h)
@@ -1861,32 +2102,31 @@ def f21_memory_kept():
     check(column_h <= set(never), "the camera never looked at column H", never)
     check(not {pp.BASE.cell_xy(c) for c in column_h} & h.P.covered, "column H is not in covered either",
           sorted(h.P.covered))
-    # Still mission 1: a card recorded on B2 where there is none. go_to_card faces B2, rules it out, then explores
-    # (found: the record is still there) up to its 8th attempt.
+    # Still mission 1: a card recorded on B2 where there is none. go_to_card faces B2, rules it out (for this call,
+    # F7a), then explores (found: the record is still there) up to its 8th attempt.
     h.fake.seen.append(record("barbecue", "B2", 60, seen_from="B4 facing north"))
     answer = h.tool("go_to_card", card="barbecue")
     check(answer == {"result": "gave up", "why": GO_TO_CARD_GAVE_UP, "moves_left": None}, "the card is not on B2",
           answer)
-    check(h.P.ruled_out == {("barbecue", "B2")}, "B2 ruled out for the barbecue", h.P.ruled_out)
     # Mission 2, without bricks: the settings and the robot's state start again, what it knows of the mat stays. No
     # ball in this world: a lane and a refused cell are put by hand on D2, a box (blocked: no way, no vantage, changes
     # nothing in mission 2), so that keeping them is checked too.
     h.P.lanes.add(("cell", xy("D2")))
     h.P.ball_refused[xy("D2")] = h.clock.now()
     kept = {k: type(getattr(h.P, k))(getattr(h.P, k)) for k in
-            ("covered", "blocked", "free", "ruled_out", "looked_from", "lanes", "ball_refused")}
+            ("covered", "blocked", "free", "looked_from", "lanes", "ball_refused")}
     h.configure({})
     check(h.P.settings == pp.DEFAULTS and h.P.state == {}, "defaults, the state forgotten", [h.P.settings, h.P.state])
-    check({k: getattr(h.P, k) for k in kept} == kept, "covered, blocked, free, ruled_out... kept", sorted(
+    check({k: getattr(h.P, k) for k in kept} == kept, "covered, blocked, free, looked_from... kept", sorted(
         k for k in kept if getattr(h.P, k) != kept[k]))
     second = h.tool("explore")
     check(second == {"result": "done", "cards_seen": {"barbecue": ["B2"]}, "not_sure": [], "mat_covered": True,
                      "moves_left": None}, "mission 2: explore has nothing left to see", second)
     check(not h.moves(), "mission 2: explore moves nothing", h.moves())
     raise Known(f"explore answers mat_covered true while the camera never looked at {', '.join(never)}: it means no "
-                "vantage left with a way to it (stack/pilot.py:496-501, 593), not the whole mat seen (its docstring, "
-                f":568-570); and {', '.join(pp.name_of(*f) for f in sorted(failed))}, targets with no way to them, went "
-                "into covered for good, kept in the next missions (:583)")
+                "vantage left with a way to it (stack/pilot.py:511-528, 616), not the whole mat seen (its docstring, "
+                f":591-593); and {', '.join(pp.name_of(*f) for f in sorted(failed))}, targets with no way to them, went "
+                "into covered for good, kept in the next missions (:606)")
 
 
 @mutant("an unreachable vantage is not marked covered", "F21")
@@ -1900,7 +2140,7 @@ def m_forget_mat(m):
     configure = m.Pilot.configure
     def patched(self, settings):
         configure(self, settings)
-        self.covered, self.blocked, self.free, self.ruled_out, self.looked_from = set(), {}, set(), set(), set()
+        self.covered, self.blocked, self.free, self.looked_from = set(), {}, set(), set()
     m.Pilot.configure = patched
 
 
@@ -1913,7 +2153,9 @@ def m_forget_balls(m):
     m.Pilot.configure = patched
 
 
-# --- F22, F22b: a stop during the waits (P12, P3) ---------------------------------------------------------------------
+# --- F22: a stop or a pause during the Pilot's own waits (P12, P3, P11) ----------------------------------------------
+# Before each wait of its own (a lane's watch, a ball coming closer, go_to_card's 10 s), the Pilot heeds the mission
+# (ROBOT-PILOTE.md, E1): a stop ends the tool before the next wait, a pause is acknowledged before it.
 @scenario("F22", "P12", "I21")
 def f22_stop_in_lane_watch():
     # (0) Without a stop: LANE_WATCHES watches of LANE_WATCH_S, each followed by a reading, then the leg crosses.
@@ -1924,41 +2166,118 @@ def f22_stop_in_lane_watch():
     check(h.calls(*LEG_CALLS) == want, "(0) three watches of 5 s, then one move north", h.calls(*LEG_CALLS))
     check(answer.get("result") == "done" and answer.get("cell") == "C3", "(0) done on C3",
           {k: v for k, v in answer.items() if k != "state"})
-    # (1) The group stops the mission during the first watch.
+    # (1) The group stops the mission during the first watch: seen before the second, the move never sent.
     h = Harness(at="C5", facing="north")
     lanes(h, ["row 4"])       # C4 on the way, its ball never seen going away
     stopped = []
     h.fake.script["wait_for"] = stop_in_first_wait(h, stopped)
     answer = h.tool("go_to_cell", cell="C3")
-    # Today the stop is seen at the next command that acts: the leg ends its LANE_WATCHES watches first, then gives
-    # up before the move, which is never sent. The bound held (I21): at most LANE_WATCHES watches of LANE_WATCH_S in
-    # all, so at most 2 more after the stop, and their readings. Seeing the stop sooner still passes.
     got = h.calls(*LEG_CALLS)
-    check(not h.moves() and all(c in (READ, WAIT5) for c in got) and 1 <= got.count(WAIT5) <= 3,
-          "(1) at most three watches of 5 s, readings only, no move", [c[0] for c in got])
+    check(got == [READ, WAIT5, READ], "(1) one watch of 5 s and its reading, then nothing", [c[0] for c in got])
     check(answer == {"result": "gave up", "why": "the mission was stopped", "cards_seen": {}, "moves_left": None},
           "(1) gave up: the mission was stopped", answer)
     late = round(h.clock.monotonic() - stopped[0], 1)
-    check(late <= 15.6, "(1) the answer at most 15.6 s after the stop (the rest of the first watch, two more, three "
-          "readings)", late)
+    check(late <= 5.2, "(1) the answer at most 5.2 s after the stop (the rest of the watch, one reading)", late)
 
 
 @scenario("F22b", "P3 P12", "I16 I21")
 def f22b_stop_in_ball_wait():
+    # A ball keeps coming closer; the group stops the mission during the first wait. Before, no command that acts
+    # followed: go_to_cell waited 47 more times (249.6 s) and answered not there, without the stop.
     h = Harness(at="C5", facing="north")
     h.fake.state_hook = ball_closer(h)
     stopped = []
     h.fake.script["wait_for"] = stop_in_first_wait(h, stopped)
     answer = h.tool("go_to_cell", cell="C3")
     check(not h.moves(), "nothing moved after the stop", h.moves())
-    waits = h.calls("wait_for")
-    late = round(h.clock.monotonic() - stopped[0], 1) if stopped else None
-    if answer.get("result") == "not there" and waits == [WAIT5] * 48 and late == 249.6:
-        raise Known("a stop during the waits for a ball coming closer is never seen: no command that acts follows, "
-                    "go_to_cell waits 47 more times (8 plans x 6, 249.6 s) and answers not there, without the stop "
-                    "(stack/pilot.py:81-86, 356-359, 420)")
-    check(answer.get("result") == "gave up" and answer.get("why") == "the mission was stopped",
-          "gave up: the mission was stopped", [answer.get("result"), answer.get("why"), len(waits), late])
+    check(h.calls("wait_for") == [WAIT5] and h.calls()[-3:-1] == [WAIT5, READ],
+          "one wait, the one the stop came in, then its reading: no wait after the stop", h.calls())
+    check(answer == {"result": "gave up", "why": "the mission was stopped", "cards_seen": {}, "moves_left": None},
+          "gave up: the mission was stopped", answer)
+    late = round(h.clock.monotonic() - stopped[0], 1)
+    check(late <= 5.2, "the answer at most 5.2 s after the stop", late)
+
+
+@scenario("F22c", "P12 P17", "I16 I21")
+def f22c_stop_in_card_wait():
+    # The world of F9a (one place, no way to it): the group stops the mission during go_to_card's first wait of 10 s.
+    # The next attempt finds no way again, and the stop is seen before the second wait.
+    h = Harness(at="A6", facing="north", toolset="goal")
+    h.fake.seen = [record("barbecue", "C3", 60)]
+    block(h, "B3", "D3", "C2", "C4")
+    stopped = []
+    h.fake.script["wait_for"] = stop_in_first_wait(h, stopped)
+    answer = h.tool("go_to_card", card="barbecue")
+    check(h.calls("wait_for") == [["wait_for", {"seconds": 10}]], "one wait of 10 s, the one the stop came in",
+          h.calls("wait_for"))
+    check(not h.moves(), "nothing moved", h.moves())
+    check(answer == {"result": "gave up", "why": "the mission was stopped", "cards_seen": {"barbecue": ["C3"]},
+                     "moves_left": None}, "gave up: the mission was stopped", answer)
+    late = round(h.clock.monotonic() - stopped[0], 1)
+    check(late <= 10.2, "the answer at most 10.2 s after the stop (the rest of the wait, one reading)", late)
+
+
+@scenario("F22d", "P3 P11", "I2 I21")
+def f22d_pause_in_ball_wait():
+    # A ball coming closer during the first two waits, then gone. The group pauses the mission for 30 s during the
+    # first wait: the pause is acknowledged before the second wait (held.json written, where the robot stands), cleared
+    # once the mission goes on, and only then the robot moves. Before, the second wait went on without a word, and the
+    # acknowledgement came only at the move.
+    h = Harness(at="C5", facing="north")
+    waits = []
+
+    def ball(state):
+        if len(waits) < 2:
+            state["ball_last_seen"] = {"how": "getting closer to the robot", "at": "12:00:00", "t": h.clock.now() - 1}
+    h.fake.state_hook = ball
+
+    def wait_for(seconds):
+        waits.append(h.clock.monotonic())
+        if len(waits) == 1:
+            h.mission.pause(30, "go")
+        h.clock.advance(seconds)
+        return {"result": "nothing happened", "waited_seconds": seconds}
+    h.fake.script["wait_for"] = wait_for
+    held, when = h.pilot.HELD, []
+
+    def spy(where):
+        h.fake.op["calls"].append(["held", where and {k: where[k] for k in ("cell", "facing")}])
+        when.append(round(h.clock.monotonic() - waits[0], 1))
+        held(where)
+    h.pilot.HELD = spy
+    answer = h.tool("go_to_cell", cell="C3")
+    got = h.calls(*LEG_CALLS, "held")
+    want = [READ, WAIT5, READ, ["held", {"cell": "C5", "facing": "north"}], ["held", None], WAIT5, READ,
+            slide("north", 2)]
+    check(got == want, "a wait, its reading, the pause acknowledged on C5 then cleared, the second wait, the move", got)
+    check(when == [5.2, 30.2], "acknowledged 5.2 s after the pause began, cleared when it ended", when)
+    check(h.common.acks == 1 and pp.common.held_where() is None, "one acknowledgement, cleared before the move",
+          [h.common.acks, pp.common.held_where()])
+    check(answer.get("result") == "done" and answer.get("cell") == "C3", "done on C3",
+          {k: v for k, v in answer.items() if k != "state"})
+
+
+@scenario("F22e", "P12", "I16 I21")
+def f22e_stop_before_ball_refusal_wait():
+    # The slide north is refused for a ball, and the group stopped the mission meanwhile: the wait that follows a
+    # refusal for a ball heeds the mission too (E1), so the tool ends without waiting.
+    h = Harness(at="C5", facing="north")
+    stopped = []
+
+    def move(**_):
+        if not stopped:
+            h.mission.stop()
+            stopped.append(h.clock.monotonic())
+        return {"result": "refused", "why": "a ball was seen near C4 less than 10 s ago",
+                "what_to_do": "watch it go away (wait_for_event), then try again"}
+    h.fake.script["move"] = move
+    answer = h.tool("go_to_cell", cell="C3")
+    check(h.calls("wait_for") == [] and len(h.calls("move")) == 1, "one slide, refused, then no wait",
+          h.calls(*LEG_CALLS))
+    check(answer == {"result": "gave up", "why": "the mission was stopped", "cards_seen": {}, "moves_left": None},
+          "gave up: the mission was stopped", answer)
+    late = round(h.clock.monotonic() - stopped[0], 1)
+    check(late <= 0.2, "the answer at most 0.2 s after the stop", late)
 
 
 @mutant("a lane is watched once more (LANE_WATCHES 4)", "F22")
@@ -1976,7 +2295,7 @@ def m_lanes_not_watched(m):
     m.Pilot.lanes_crossed = lambda self, dc, dr, cells: set()
 
 
-@mutant("the stop not checked before a move", "F22")
+@mutant("the stop not checked before a move", "F8c", "F15b")
 def m_stop_ignored(m):
     moves = {"step_forward", "move", "turn", "look_around", "face", "set_light"}
     def patched(name, *args):
@@ -1986,6 +2305,86 @@ def m_stop_ignored(m):
             return m.CART.wait_for(*args)
         return m.CART.call(lambda: getattr(m.CART, name)(*args), is_move=name in moves)
     m.command = patched
+
+
+@mutant("a wait of the Pilot's own heeds neither stop nor pause (before E1)", "F22", "F22b", "F22c", "F22d")
+def m_wait_not_heeded(m):
+    rewrite(m, "wait", ("    heed()\n", ""))
+
+
+@mutant("a wait of the Pilot's own heeds the pause, not the stop", "F22", "F22b", "F22c")
+def m_wait_pause_only(m):
+    rewrite(m, "wait", ("    heed()\n", "    if ASK is not None:\n        hold_still()\n"))
+
+
+@mutant("a wait of the Pilot's own heeds the stop, not the pause", "F22d")
+def m_wait_stop_only(m):
+    rewrite(m, "wait", ("    heed()\n", '    if ASK is not None and word() == "stop":\n'
+                                       '        raise Stuck("the mission was stopped")\n'))
+
+
+@mutant("go_to_card waits 10 s without heeding the mission", "F22c")
+def m_card_wait_not_heeded(m):
+    rewrite(m, "go_to_card", ("wait(10)", 'command("wait_for_event", 10)'))
+
+
+@mutant("a leg waits after a refusal for a ball without heeding the mission", "F22e")
+def m_ball_refusal_wait_not_heeded(m):
+    rewrite(m, "Pilot.leg", ("                for_a_ball += 1\n                wait(5)\n",
+                             '                for_a_ball += 1\n                command("wait_for_event", 5)\n'))
+
+
+@mutant("a leg watches a lane without heeding the mission", "F22")
+def m_lane_watch_not_heeded(m):
+    rewrite(m, "Pilot.leg", ("                wait(LANE_WATCH_S)\n", '                command("wait_for_event", LANE_WATCH_S)\n'))
+
+
+@mutant("a leg waits for a ball without heeding the mission", "F22b", "F22d")
+def m_ball_wait_not_heeded(m):
+    rewrite(m, "Pilot.leg", ("                wait(5)  # cross only when the ball goes away",
+                             '                command("wait_for_event", 5)'))
+
+
+# --- F23: a limit of the adults inside a goal tool (E2 (a), E9) -------------------------------------------------------
+@scenario("F23", "P14", "I12 I16 I17")
+def f23_limit_in_goal_tool():
+    # go_to_card to a card sure on C2: the slide north 2 towards C3 is refused for a limit of the adults (cells, or
+    # moves while the Pilot read no limit). The tool gives up at once with the Cartographer's words, and C4 is not
+    # blocked: a limit says nothing of the mat (ROBOT-PILOTE.md, E2 (a), E9).
+    for refusal in (NO_CELLS, NO_MOVES):
+        what = refusal["why"].split(":")[0]
+        h = Harness(at="C5", facing="north", truth={"C2": "barbecue"}, toolset="goal")
+        h.fake.seen = [record("barbecue", "C2", 90)]
+        h.fake.script["move"] = lambda refusal=refusal, **_: dict(refusal)
+        answer = h.tool("go_to_card", card="barbecue")
+        check(answer == {"result": "gave up", "why": refusal["why"], "cards_seen": {"barbecue": ["C2"]},
+                         "moves_left": None}, f"{what}: gave up with the Cartographer's words", answer)
+        check(h.moves() == [slide("north", 2)] and h.calls()[-1] == SEEN, f"{what}: one slide, refused, then only the "
+              "record for cards_seen", h.calls())
+        check(not h.P.is_blocked(xy("C4")), f"{what}: C4 not blocked", sorted(h.P.blocked))
+        check([l["tool"] for l in h.log()] == ["go_to_card"], f"{what}: no explore", [l["tool"] for l in h.log()])
+    # A commands limit: the first quarter turn of the leg is refused, the same way.
+    h = Harness(at="C5", facing="east", truth={"C2": "barbecue"}, toolset="goal")
+    h.fake.seen = [record("barbecue", "C2", 90)]
+    h.fake.script["face"] = lambda **_: dict(NO_COMMANDS)
+    answer = h.tool("go_to_card", card="barbecue")
+    check(answer == {"result": "gave up", "why": NO_COMMANDS["why"], "cards_seen": {"barbecue": ["C2"]},
+                     "moves_left": None}, "commands: gave up with the Cartographer's words", answer)
+    check(h.moves() == [face("north")], "commands: the refused quarter turn, nothing else", h.moves())
+    check(h.P.state == {}, "commands: the state forgotten (a first quarter turn may be done): the next tool reads "
+          "where the robot is", h.P.state)
+
+
+@mutant("a limit refusal keeps the state read before it", "F23")
+def m_limit_keeps_state(m):
+    rewrite(m, "Pilot.read", ("            self.state = {}  # a first quarter turn may be done", "            pass  #"))
+
+
+@mutant("a limit refusal goes on and blocks the next cell (before E2 (a) and E9)", "F23")
+def m_limit_blocks(m):
+    rewrite(m, "Pilot.read", ("            raise Stuck(answer[\"why\"])", "            pass"))
+    rewrite(m, "Pilot.leg", ('if answer.get("why") == REASONS["obstacle"] and not self.ball_recent():',
+                             'if "card" not in why and not self.ball_recent():'))
 
 
 # --- running ----------------------------------------------------------------------------------------------------------

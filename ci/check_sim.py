@@ -2237,8 +2237,8 @@ def stack_scenarios(sim, env):
           and reply.get("result") == "refused" and "a card is on C3" in reply.get("why", "") and r["cell"] == "C5"
           and r["collisions"] == 0, (record, reply, r, done.stderr[-400:]))
 
-    # The second quarter turn of a face refused (the adults allow one command): the refusal carries no state, the
-    # Pilot reads it again and says where the robot really faces.
+    # The second quarter turn of a face refused (the adults allow one command): the Pilot gives up with the adults'
+    # words (ROBOT-PILOTE.md, E2) and forgets the state, the robot facing east after the first quarter turn.
     one = with_rules("one-command", limits={"commands": 1})
     sim.act(do="load_world", mat=big, world={"cards": [], "boxes": [], "balls": []})
     script = ("import json, sys; sys.path.insert(0, 'stack'); import common, pilot; common.mission_begins(); "
@@ -2246,9 +2246,9 @@ def stack_scenarios(sim, env):
     done = subprocess.run([PYTHON, "-I", "-c", script], env=one, cwd=GUIDE, capture_output=True, text=True, timeout=60)
     reply = json.loads(done.stdout or "{}")
     r = sim.state()["robot"]
-    check("face south with one command allowed: the second quarter turn is refused, the Pilot answers not done with "
-          "the state read again, facing east as the robot does", reply.get("result") == "not done"
-          and (reply.get("state") or {}).get("facing") == "east" and near(r["heading"] % 360, 90, 2),
+    check("face south with one command allowed: the second quarter turn is refused, the Pilot gives up with the "
+          "adults' words (E2), the robot faces east", reply.get("result") == "gave up"
+          and "the adults allow 1 commands" in reply.get("why", "") and near(r["heading"] % 360, 90, 2),
           (reply, r, done.stderr[-400:]))
 
     # A mission file of the wrong shape, straight to strategist.py: the closed refusal, never a traceback.

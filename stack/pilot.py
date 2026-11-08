@@ -20,7 +20,7 @@ import math
 
 import clock
 import common
-from cartographer import STOP_IF, Cartographer
+from cartographer import REASONS, STOP_IF, Cartographer
 from common import COLORS, FACING, STATE_DIR, cell_name, cell_xy
 
 MAT = common.load_json(common.MAT_PATH)
@@ -78,13 +78,28 @@ CART.hold_wanted = lambda: word() in ("pause", "stop")
 def command(name, *args):
     """One command of the mat, through the Cartographer (and the Referee's door)."""
     moves = {"step_forward", "move", "turn", "look_around", "face", "set_light"}
-    if ASK is not None and name in moves:
-        hold_still()
-        if word() == "stop":
-            raise Stuck("the mission was stopped")
+    if name in moves:
+        heed()
     if name == "wait_for_event":
         return CART.wait_for(*args)
     return CART.call(lambda: getattr(CART, name)(*args), is_move=name in moves)
+
+
+def heed():
+    """Before a command that acts, or a wait of the Pilot's own: wait while the mission is paused, then stop the tool
+    if it is stopped. Nothing without a mission."""
+    if ASK is not None:
+        hold_still()
+        if word() == "stop":
+            raise Stuck("the mission was stopped")
+
+
+def wait(seconds):
+    """A wait of the Pilot's own, in a goal or route tool. No command that acts follows a wait for a ball: without
+    heed() first, a stop was seen only minutes later, and a pause acknowledged at the end of the tool (ROBOT-PILOTE.md,
+    E1)."""
+    heed()
+    return command("wait_for_event", seconds)
 
 
 class Stuck(Exception):
@@ -113,7 +128,6 @@ class Pilot:
         self.blocked = {}      # cell -> time it was seen blocked
         self.ball_refused = {} # cell -> time a leg towards it was refused BALL_WAITS times for a ball
         self.free = set()      # cells the robot went through or the distance sensor saw free
-        self.ruled_out = set() # (card, cell): the robot faced the cell from next to it, and that card was not there
         self.looked_from = set()
         self.pending = set()   # cells the Cartographer says the camera has not looked at yet (camera_coverage)
         self.tried = set()     # vantages chosen once already for them
@@ -153,6 +167,11 @@ class Pilot:
             # The robot refuses every move until it is charged: before (8 November 2026), explore asked again and again,
             # 11,000 quarter turns refused in 20 minutes of a mission.
             raise Stuck("the battery is too low")
+        if answer.get("result") == "refused" and "the adults allow" in str(answer.get("why", "")):
+            # A limit of the adults (moves, commands, cells): nothing more of that kind this mission. Before, a look
+            # refused for good left explore looping on the same cell (ROBOT-PILOTE.md, E2).
+            self.state = {}  # a first quarter turn may be done: the next tool reads where the robot is
+            raise Stuck(answer["why"])
         state = answer.get("state") if isinstance(answer.get("state"), dict) else answer
         if "cell" in state and "position_known" in state:
             self.state = state
@@ -361,9 +380,14 @@ class Pilot:
                 raise Stuck("no moves left")
             if not self.face(direction) or self.state.get("cell") != start:
                 return 0  # plan again: finding its place or an adult's help may move the robot first
+            c0, r0 = cell_xy(start)
+            if self.is_blocked((c0 + dc, r0 + dr)) or (self.state.get("card_ahead") or {}).get("card"):
+                # The state read after the face shows the first cell taken, by a thing or a card: plan again
+                # (ROBOT-PILOTE.md, E9). The plan already went round the cards the Pilot knew.
+                return 0
             ball = self.state.get("ball_last_seen") or {}
             if self.settings["careful_balls"] and self.ball_recent() and "closer" in ball.get("how", ""):
-                command("wait_for_event", 5)  # cross only when the ball goes away
+                wait(5)  # cross only when the ball goes away
                 self.read(command("robot_state"))
                 continue
             crossed = self.lanes_crossed(dc, dr, cells)
@@ -372,19 +396,20 @@ class Pilot:
                 # where the leg crosses it (each run of the balls mission was hit once crossing a lane unseen, bench
                 # of 7 November). After LANE_WATCHES watches without seeing it, the ball is far: go.
                 watched += 1
-                command("wait_for_event", LANE_WATCH_S)
+                wait(LANE_WATCH_S)
                 self.read(command("robot_state"))
                 continue
             answer = self.read(command("move", direction, cells, []))
             why = answer.get("why", "") + " " + answer.get("stopped_because", "")
             if answer.get("result") == "refused" and "ball" in why:
                 for_a_ball += 1
-                command("wait_for_event", 5)
+                wait(5)
                 self.read(command("robot_state"))
                 continue
             (c, r), _ = self.here()
             if answer.get("result") == "refused":
-                if "card" not in why and not self.ball_recent():
+                if answer.get("why") == REASONS["obstacle"] and not self.ball_recent():
+                    # Only a thing in front blocks the cell; not another move running, nor a rule (E9).
                     self.blocked[(c + dc, r + dr)] = clock.now()
                 return 0
             moved = answer.get("cells_moved", 0)
@@ -628,28 +653,33 @@ def go_to_card(card):
     """Take the robot right in front of a card, facing it, by the shortest way the robot knows. If the camera has not
     seen this card yet, explore the mat first. Answers where the robot stopped, or why it could not."""
     # A card seen from far may be on a neighbour of its probable cell (could_also_be): the cells are tried from the
-    # surest, and a cell faced from next to it without that card is ruled out.
+    # surest, and a cell faced from next to it without that card is ruled out, for this call only: the Pilot forgets
+    # the goal once reached or given up (ROBOT-HERMES.md, section 3). Before, a cell stayed ruled out for the whole
+    # process, even when the turn towards it had failed (ROBOT-PILOTE.md, E4).
     # A place with no way to it now (a ball keeps its lane) is not ruled out: before (8 November 2026, seeds 10 and
     # 18 of the forest), the barbecue on F3 was ruled out with its two neighbours because the ball kept column E, and
     # the robot gave up. The ways are tried again once the ball has had time to pass.
     PILOT.here()  # the cells of the record mean something once the robot knows where it is on the mat
-    unreachable = set()
+    unreachable, ruled_out = set(), set()
+    no_way = False  # one of its places had no way to it: the reason of a give up (E6)
     for attempt in range(8):
         candidates = {}
         for s in PILOT.records():
             if s["card"] != card:
                 continue
             for cell, far in [(s["cell"], s["distance_cm"])] + [(c, s["distance_cm"] + CELL_CM) for c in s["could_also_be"]]:
-                if (card, cell) not in PILOT.ruled_out and cell not in unreachable and \
+                if cell not in ruled_out and cell not in unreachable and \
                         not PILOT.is_blocked(cell_xy(cell)):
                     candidates[cell] = min(far, candidates.get(cell, 1e9))
         if not candidates and unreachable:
-            command("wait_for_event", 10)  # no way to any of its places now: let the ball pass, then try again
+            wait(10)  # no way to any of its places now: let the ball pass, then try again
             PILOT.read(command("robot_state"))
             unreachable.clear()
             continue
         if not candidates:
             if PILOT.short(2):
+                if not any(s["card"] == card for s in PILOT.records()):
+                    raise Stuck("no moves left")  # never seen, and too few moves to look for it (E6)
                 break
             looked = explore(card)  # never seen, or every place ruled out: look again
             if looked.get("result") == "gave up":
@@ -670,15 +700,20 @@ def go_to_card(card):
         goals = {f for f in goals if not PILOT.on_lane(f)} or goals  # never wait in a ball's lane if it can be helped
         if not PILOT.travel(goals):
             unreachable.add(cell)  # no way there now: try the next place, and this one again later
+            no_way = True
             continue
         (c, r), _ = PILOT.here()
         PILOT.face(fronts[(c, r)])
         clock.sleep(0.5)  # the camera names a card after 200 ms standing still
         state = PILOT.read(command("robot_state"))
+        if not state.get("position_known"):
+            PILOT.here()  # the place was lost on the way: find it, then try again; done names the card's cell (E3)
+            continue
         if (state.get("card_ahead") or {}).get("card") == card:
             return {"result": "done", "cell": state["cell"], "facing": state["facing"], "card_ahead": card}
-        PILOT.ruled_out.add((card, cell))
-    if unreachable:
+        if state.get("cell") == cell_name(c, r) and state.get("facing") == fronts[(c, r)]:
+            ruled_out.add(cell)  # faced from next to it, and that card was not there; else the attempt counts only
+    if no_way:
         return {"result": "gave up", "why": f"no way to the card {card} now (a ball's lane, or something in the way)"}
     return {"result": "gave up", "why": f"the robot did not find itself in front of the card {card}"}
 
