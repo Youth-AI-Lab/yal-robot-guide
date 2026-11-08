@@ -621,7 +621,11 @@ def go_to_card(card):
         if not candidates:
             if PILOT.short(2):
                 break
-            explore(card)  # never seen, or every place ruled out: look again
+            looked = explore(card)  # never seen, or every place ruled out: look again
+            if looked.get("result") == "gave up":
+                # explore is a tool of its own (@logged): it turned an adult's wait, or another reason to stop, into
+                # an answer. Passed on as it is: else the Strategist never waits for the adult (4a's review, 8 Nov).
+                return {"result": "gave up", "why": looked.get("why", "")}
             if not any(s["card"] == card for s in PILOT.records()):
                 return {"result": "not found", "why": f"the camera never saw a card {card}"}
             continue

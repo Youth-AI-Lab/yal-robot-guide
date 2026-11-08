@@ -263,13 +263,14 @@ and report), none of which drives the robot. Its instructions are [interpreter/f
 
 One command starts the simulator, the stack with the Strategist's model, the link, and Open WebUI
 with the chatbot "Feurisson robot" (the same Open WebUI as the workshops, without accounts). Both
-models, the Strategist's and Feurisson's, are DeepSeek v4 Flash through OpenRouter, paid with the
-pair's key; OpenRouter is asked to avoid companies that may collect the data, which does not stop a
-provider from keeping what it receives. The Strategist stops a mission at 0.25 US dollars, counted
-from the costs OpenRouter sends back. Nothing caps Feurisson's conversation: set a limit on the key
-itself, on OpenRouter.
+models, the Strategist's and Feurisson's, are DeepSeek v4 Flash through OpenRouter, each paid with a
+key of its own, so that each has its own limit and its own count; OpenRouter is asked to avoid
+companies that may collect the data, which does not stop a provider from keeping what it receives.
+The Strategist stops a mission at 0.25 US dollars, counted from the costs OpenRouter sends back.
+Nothing caps Feurisson's conversation: set a limit on each key, on OpenRouter.
 
-1. Save an OpenRouter key (`sk-or-...`), as in the workshops:
+1. Save Feurisson's OpenRouter key (`sk-or-...`), as in the workshops, and create a second one, with
+   its own limit, for the Strategist:
 
    ```bash
    workshop-login
@@ -285,8 +286,12 @@ itself, on OpenRouter.
    robot-session start
    ```
 
-   The first time, it downloads Open WebUI (about 1.6 GB, a few minutes). You should see
+   It asks for the Strategist's key (not shown, never saved) and refuses Feurisson's. The first time,
+   it downloads Open WebUI (about 1.6 GB, a few minutes). You should see
    `Ready (Open WebUI answered in … s).`
+
+   For a session of adults, or to try the simulator alone, keep the traces:
+   `robot-session start --keep-traces` (see step 4).
 
 3. In the **Ports** tab (next to Terminal): **Robot simulator** (8780) shows the robot; **Open WebUI**
    (3000), then choose "Feurisson robot" in the box where you type, and ask it a mission. Keep both
@@ -298,7 +303,11 @@ itself, on OpenRouter.
    robot-session stop
    ```
 
-   Open WebUI and its conversations are erased. `robot-session status` says what runs.
+   By default, the traces are erased: the missions and their conversations with the model, the
+   Referee's journal, the map of the terrain, the counters (all of `.robot-sim`), and Open WebUI with
+   its conversations. That is the rule for a session with young people. Started with
+   `--keep-traces`, `.robot-sim` stays, and Open WebUI's conversations are saved in it before Open
+   WebUI is removed. `robot-session status` says what runs.
 
 **With Albert API** (French public servants, teachers included: no price, hosted in France), instead of
 steps 1 and 2:
@@ -307,12 +316,12 @@ steps 1 and 2:
 robot-session start --albert <model>
 ```
 
-It asks for your Albert key (not shown, never saved) and checks it with Albert's list of models. `<model>`
-is Feurisson's; the Strategist's is `deepseek-v4-flash-0731`, the only model of Albert seen doing the
-missions. Albert counts requests and tokens per minute and per day, model by model.
+It asks for two Albert keys, Feurisson's then the Strategist's (not shown, never saved), and checks them
+with Albert's list of models. `<model>` is Feurisson's; the Strategist's is `deepseek-v4-flash-0731`, the
+only model of Albert seen doing the missions. Albert counts requests and tokens per minute and per day, model by model.
 
 > ⚠️ **Important.** Open WebUI has no accounts here: anyone who opens it is its administrator and
-> can read the key. `robot-session start` stops everything if port 3000 or 8780 is public, but a
+> can read Feurisson's key. `robot-session start` stops everything if port 3000 or 8780 is public, but a
 > port made public afterwards is not seen. Never make them public.
 
 > ℹ️ **Note.** The link listens only on Docker's network inside the Codespace, with a random token:

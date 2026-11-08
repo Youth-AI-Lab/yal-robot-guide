@@ -13,7 +13,9 @@ What it checks:
     it is now go into the instructions; a stop right after a pause in the same answer is refused;
   - the link answers neither on 127.0.0.1 (the Ports tab) nor without its token;
   - a second start is refused and leaves the session running;
-  - robot-session stop removes Open WebUI, its conversations, its network and the processes;
+  - robot-session stop removes Open WebUI, its conversations, its network and the processes, and erases the traces
+    (.robot-sim), unless the session was started with --keep-traces (then they stay, with the conversations saved);
+  - the Strategist with a model needs a key of its own, refused when it is Feurisson's, and found in no file;
   - the key is in no file of the session and on no command line;
   - after a Codespace restart: a pid of pids.json that is now another program is neither counted nor stopped, and
     what an earlier session left in Docker does not stop the next start.
@@ -259,9 +261,16 @@ def first_session(key, gateway, env):
     check("the key is on no command line", key not in lines)
 
 
-def gone(name):
+def gone(name, kept=False):
     stopped = session("stop")
     check(f"{name}: robot-session stop", stopped.returncode == 0, stopped.stderr[-300:])
+    traces = GUIDE / ".robot-sim"
+    if kept:
+        check(f"{name}: --keep-traces: .robot-sim stays, with Open WebUI's conversations saved in it",
+              traces.exists() and list(traces.glob("conversations-*.json")), stopped.stdout[-300:])
+    else:
+        check(f"{name}: the traces are erased (.robot-sim)", not traces.exists(),
+              sorted(str(p.relative_to(traces)) for p in traces.rglob("*"))[:10] if traces.exists() else None)
     left = [x[0] + " " + x[2] for x in (["container", "inspect", OWUI], ["volume", "inspect", VOLUME],
                                          ["network", "inspect", NETWORK])
             if subprocess.run(["docker", *x], capture_output=True).returncode == 0]
@@ -287,13 +296,30 @@ def after_restart(env):
         made = subprocess.run(["docker", "create", "--name", OWUI, "-v", f"{VOLUME}:/app/backend/data", OWUI_IMAGE],
                               capture_output=True, text=True)
         check("after a restart: an old Open WebUI is left in Docker", made.returncode == 0, made.stderr[-300:])
-        started = subprocess.run([SESSION_CMD, "start"], env=env, capture_output=True, text=True)
+        started = subprocess.run([SESSION_CMD, "start", "--keep-traces"], env=env, capture_output=True, text=True)
         check("… and start still goes through", started.returncode == 0 and "Ready" in started.stdout,
               (started.stdout + started.stderr)[-600:])
-        gone("second session")
+        gone("second session", kept=True)
         check("… and the other program was never stopped", other.poll() is None)
     finally:
         other.kill()
+
+
+def two_keys(env, key):
+    """The Strategist with a model: its key is asked for at start, and must not be Feurisson's."""
+    env = {k: v for k, v in env.items() if k != "ROBOT_STRATEGIST"}  # openrouter:fake-model: it needs a key
+    same = subprocess.run([SESSION_CMD, "start"], env=env, input=key + "\n", capture_output=True, text=True)
+    check("the Strategist given Feurisson's key: start refused", same.returncode != 0 and "of its own" in same.stderr,
+          (same.stdout + same.stderr)[-300:])
+    other = "sk-or-v1-" + "1" * 64
+    started = subprocess.run([SESSION_CMD, "start"], env=env, input=other + "\n", capture_output=True, text=True)
+    check("the Strategist with a key of its own: start goes through", started.returncode == 0
+          and "Ready" in started.stdout, (started.stdout + started.stderr)[-400:])
+    files = [p for p in (GUIDE / ".robot-sim").rglob("*") if p.is_file()]
+    check("the Strategist's key is in no file of .robot-sim", not any(other.encode() in p.read_bytes() for p in files))
+    lines = subprocess.run(["ps", "-eo", "args"], capture_output=True, text=True).stdout
+    check("the Strategist's key is on no command line", other not in lines)
+    gone("two keys")
 
 
 def main():
@@ -323,6 +349,8 @@ def main():
             finally:
                 gone("first session")
             subprocess.run(["docker", "network", "create", NETWORK], capture_output=True)  # the fake model's address
+            two_keys(env, key)
+            subprocess.run(["docker", "network", "create", NETWORK], capture_output=True)
             after_restart(env)
             check("nobody waits for an adult after stop", not (GUIDE / ".robot-sim" / "waiting.json").exists())
     finally:

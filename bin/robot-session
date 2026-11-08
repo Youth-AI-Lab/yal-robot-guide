@@ -2,18 +2,27 @@
 """The whole robot in this Codespace, simulated: the simulator, the stack with the Strategist and its model, the
 Interpreter's link, and Open WebUI with Feurisson, the Interpreter, ready to chat.
 
-    robot-session start      everything, in order; then open the Ports tab: Robot simulator (8780), Open WebUI (3000)
-    robot-session start --albert <model>
+    robot-session start [--keep-traces]
+                             everything, in order; then open the Ports tab: Robot simulator (8780), Open WebUI (3000)
+    robot-session start --albert <model> [--keep-traces]
                              the same with Albert API (DINUM, for French public servants): <model> is Feurisson's,
-                             the Strategist's is deepseek-v4-flash-0731; the Albert key is asked for (or read on
-                             stdin), never saved
+                             the Strategist's is deepseek-v4-flash-0731
     robot-session status     what runs
-    robot-session stop       everything stops; Open WebUI's conversations are erased
+    robot-session stop       everything stops; the traces are erased, or kept with --keep-traces at start
 
-The key is the pair's, saved by workshop-login (an OpenRouter key, sk-or-...): never shown, never on a command line.
-It pays for both models, the Strategist's and Feurisson's (DeepSeek v4 Flash, whatever workshop-login --model chose,
-with OpenRouter told to avoid companies that may collect the data); the Strategist stops a mission at RUN_CAP_USD of
-stack/strategist.py. workshop-login --europe is refused for now: the Strategist has not been tried with its models.
+Two keys, one per tier (decision of Sébastien, 8 November 2026), never shown, never on a command line: Feurisson's is
+the pair's, saved by workshop-login (an OpenRouter key, sk-or-...); the Strategist's, another one, is asked for at
+start (typed, not shown, or the first line on stdin). With --albert, two Albert keys are asked for, Feurisson's then
+the Strategist's. Each key has its own limit and its own count, and a runaway Strategist cannot use up Feurisson's.
+Both models are DeepSeek v4 Flash through OpenRouter (whatever workshop-login --model chose, with OpenRouter told to
+avoid companies that may collect the data); the Strategist stops a mission at RUN_CAP_USD of stack/strategist.py,
+counted from the costs OpenRouter sends back. workshop-login --europe is refused for now: the Strategist has not been
+tried with its models.
+
+The traces (decision of Sébastien, 8 November 2026): by default, stop erases everything the session wrote in
+.robot-sim (missions and their conversations with the model, the Referee's journal, the map of the terrain, the
+counters) and Open WebUI with its conversations: a session with young people. --keep-traces keeps .robot-sim, and saves
+Open WebUI's conversations there before removing it: a session of adults, or the simulator alone.
 With --albert, both models are models of Albert API: no price, the content is not kept (metadata are, 24 months),
 hosted in France; quotas per minute and per day, per model. Tried on 7 November 2026: deepseek-v4-flash-0731 did both
 missions as the Strategist; Mistral Small 3.2 failed as the Strategist (the same refused call again and again, a
@@ -67,7 +76,7 @@ FILTER = "feurisson_robot"
 BOT, SERVER = "feurisson-robot", "robot-mission"
 SCRIPTS = {"simulator": "sim/robot_sim.py", "link": "stack/interpreter_link.py"}
 # The kit's choices (kit/.devcontainer/bin/openwebui): no built-in tool of Open WebUI (memories, other conversations,
-# notes, code…), so Feurisson has only the link's six tools; notes, automations and the calendar off for the instance.
+# notes, code…), so Feurisson has only the link's tools; notes, automations and the calendar off for the instance.
 BUILTIN_CATEGORIES = ["automations", "calendar", "channels", "chats", "code_interpreter", "files",
                       "image_generation", "knowledge", "memory", "notes", "notifications", "skills", "subagents",
                       "tasks", "time", "user_input", "web_search"]
@@ -120,14 +129,39 @@ def saved_key():
             "strategist": "openrouter:" + MODEL, "again": "robot-session start"}
 
 
-def albert_key(model):
-    """An Albert key, typed (not shown) or on stdin; it stays in memory, and goes to the link and to Open WebUI. The
-    key and the model are checked first, by Albert's list of models (free)."""
-    model = model.removeprefix("albert:")
-    key = getpass.getpass("Albert key (not shown): ") if sys.stdin.isatty() else sys.stdin.read()
+def typed_key(question):
+    """A key, typed (not shown) or the next line on stdin: it stays in memory."""
+    key = getpass.getpass(question) if sys.stdin.isatty() else sys.stdin.readline()
     key = key.strip()
     if not key or any(c.isspace() for c in key):
-        fail("No Albert key given (one line, no spaces).")
+        fail("No key given (one line, no spaces).")
+    return key
+
+
+def strategist_key(use):
+    """The Strategist's own key: another key of the same provider, checked first (free)."""
+    if use["url"] == ALBERT_URL:
+        key = typed_key("The Strategist's Albert key, another one (not shown): ")
+        albert_models(key)
+    else:
+        key = typed_key("The Strategist's key, another OpenRouter key (sk-or-..., not shown): ")
+        if not key.startswith("sk-or-"):
+            fail("The Strategist's key must be an OpenRouter key (sk-or-...).")
+        if not os.environ.get("ROBOT_OPENAI_BASE_URL"):  # the checks talk to a fake model: no key to check
+            request = urllib.request.Request(OPENROUTER_URL + "/key", headers={"Authorization": "Bearer " + key})
+            try:
+                urllib.request.urlopen(request, timeout=30).read()
+            except urllib.error.HTTPError as e:
+                fail(f"OpenRouter refused the Strategist's key (HTTP {e.code}).")
+            except OSError as e:
+                fail(f"OpenRouter does not answer: {e}")
+    if key == use["key"]:
+        fail("The Strategist needs a key of its own, not Feurisson's: create a second key (with its own limit) and "
+             f"type it here. Then: {use['again']}")
+    return key
+
+
+def albert_models(key):
     request = urllib.request.Request(ALBERT_URL + "/models", headers={"Authorization": "Bearer " + key})
     try:
         with urllib.request.urlopen(request, timeout=30) as r:
@@ -136,6 +170,15 @@ def albert_key(model):
         fail(f"Albert refused the key (HTTP {e.code}).")
     except OSError as e:
         fail(f"Albert does not answer: {e}")
+    return models
+
+
+def albert_key(model):
+    """Feurisson's Albert key, typed (not shown) or on stdin; it stays in memory, and goes to Open WebUI. The key and
+    the models are checked first, by Albert's list of models (free)."""
+    model = model.removeprefix("albert:")
+    key = typed_key("Feurisson's Albert key (not shown): ")
+    models = albert_models(key)
     for wanted in (model, ALBERT_STRATEGIST, SMALL[ALBERT_URL]):
         if wanted not in models:
             fail(f"Albert has no model {wanted} today. Its models: {', '.join(sorted(m for m in models if m))}")
@@ -360,15 +403,20 @@ def refuse_public(public, again):
          f"-> Port Visibility -> Private. Then type: {again}")
 
 
-def start(albert=None):
+def start(albert=None, keep=False):
     if running():
         fail("A session already runs: robot-session status, or robot-session stop first.")
     use = albert_key(albert) if albert else saved_key()
+    if keep:
+        use["again"] += " --keep-traces"
+    strategist = os.environ.get("ROBOT_STRATEGIST", use["strategist"])  # "none", "fake": the checks
+    use["strategist_key"] = strategist_key(use) if needs_key(strategist) else ""
     if shutil.which("docker") is None or sh("docker", "info", check=False).returncode != 0:
         fail("Docker does not answer in this Codespace: wait a minute after it opens, then try again.")
     stop(quiet=True)  # what an earlier session left (a Codespace stopped without robot-session stop)
     SESSION.mkdir(parents=True, exist_ok=True)
     os.chmod(SESSION, 0o700)
+    (SESSION / "session.json").write_text(json.dumps({"traces": "keep" if keep else "erase"}))
     try:
         seconds = begin(use)
     except BaseException as e:
@@ -396,7 +444,7 @@ def begin(use):
     link = background("link", [PYTHON, "-I", "stack/interpreter_link.py", "--host", address, "--port", str(LINK_PORT),
                                "--allowed-host", f"{address}:{LINK_PORT}", "--model", strategist]
                       + (["--cap", os.environ["ROBOT_CAP_USD"]] if os.environ.get("ROBOT_CAP_USD") else []),
-                      env=env, stdin=use["key"] if needs_key(strategist) else None)
+                      env=env, stdin=use["strategist_key"] or None)
     wait_ready("link", link, "READY robot-mission")
     wait_port("link", link, address, LINK_PORT)
     say("3. Open WebUI, with Feurisson…")
@@ -404,10 +452,33 @@ def begin(use):
 
 
 def ready(seconds):
+    kept = traces_kept()
     say(f"Ready (Open WebUI answered in {seconds} s).\n"
         f"  The robot: Ports tab, Robot simulator ({SIM_PORT}).\n"
         f"  Feurisson: Ports tab, Open WebUI ({OWUI_PORT}), then choose \"Feurisson robot\" and ask it a mission.\n"
-        "  Keep both ports private. To end: robot-session stop")
+        "  Keep both ports private. To end: robot-session stop\n"
+        + ("  Traces: kept in .robot-sim when the session stops (--keep-traces: adults, or the simulator alone)."
+           if kept else "  Traces: erased when the session stops (a session with young people). For adults or the "
+                        "simulator alone: robot-session start --keep-traces"))
+
+
+def traces_kept():
+    try:
+        return json.loads((SESSION / "session.json").read_text()).get("traces") == "keep"
+    except (OSError, ValueError):
+        return False  # erased: the rule, unless --keep-traces was chosen at start
+
+
+def save_conversations():
+    """--keep-traces: Open WebUI's conversations, into .robot-sim, before Open WebUI goes."""
+    try:
+        token = api("POST", "/auths/signin", {"email": "", "password": ""})["token"]
+        chats = api("GET", "/chats/all", token=token)
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    path = STATE / f"conversations-{time.strftime('%Y%m%d-%H%M%S')}.json"
+    path.write_text(json.dumps(chats, ensure_ascii=False, indent=1) + "\n")
+    return path
 
 
 def status():
@@ -422,7 +493,12 @@ def status():
 
 def stop(quiet=False):
     """Ends the processes of the session (only those: their pid, start time and script), removes Open WebUI, its
-    volume (the conversations) and its network. quiet: within start, the logs and the network stay."""
+    volume (the conversations) and its network, then erases the traces (.robot-sim), unless the session was started
+    with --keep-traces: then Open WebUI's conversations are saved in .robot-sim first, and .robot-sim stays. quiet:
+    within start, the logs and the network stay, nothing is erased."""
+    session = SESSION.exists()
+    kept = traces_kept()
+    saved = save_conversations() if not quiet and kept and open_webui_runs() else None
     for entry in running().values():
         try:
             os.killpg(int(entry["pid"]), signal.SIGTERM)
@@ -452,17 +528,27 @@ def stop(quiet=False):
     if left:
         fail(f"Could not remove: {', '.join(left)}. Docker may still be starting: try robot-session stop again in a "
              "minute.")
-    shutil.rmtree(SESSION, ignore_errors=True)
-    say("Stopped. Open WebUI's conversations are erased; the map of the terrain stays in .robot-sim "
-        "(robot-session start again, or delete that folder).")
+    if kept:
+        shutil.rmtree(SESSION, ignore_errors=True)
+        say("Stopped. The traces stay in .robot-sim (--keep-traces)"
+            + (f"; Open WebUI's conversations are saved in {saved.relative_to(GUIDE)}." if saved else "."))
+    elif session:
+        shutil.rmtree(STATE, ignore_errors=True)  # missions, conversations with the model, journals, map, counters
+        say("Stopped. The traces are erased: .robot-sim and Open WebUI's conversations.")
+    else:
+        say("Stopped. No session was running here: nothing to erase.")
 
 
 def main():
     args = sys.argv[1:]
-    if args[:2] == ["start", "--albert"] and len(args) == 3:
-        start(albert=args[2])
-    elif len(args) == 1 and args[0] in ("start", "status", "stop"):
-        {"start": start, "status": status, "stop": stop}[args[0]]()
+    keep = "--keep-traces" in args
+    rest = [a for a in args if a != "--keep-traces"]
+    if rest[:2] == ["start", "--albert"] and len(rest) == 3:
+        start(albert=rest[2], keep=keep)
+    elif rest == ["start"]:
+        start(keep=keep)
+    elif not keep and len(rest) == 1 and rest[0] in ("status", "stop"):
+        {"status": status, "stop": stop}[rest[0]]()
     else:
         fail(__doc__.split("\n\n")[1])
 
