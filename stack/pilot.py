@@ -32,6 +32,10 @@ STEP = {"north": (0, -1), "east": (1, 0), "south": (0, 1), "west": (-1, 0)}
 CAMERA_CM = 120
 REPLANS = 8          # new plans in one go_to before giving up
 BALL_WAITS = 6       # waits for a ball, in one leg, before giving up the leg
+# A cell where a leg was refused BALL_WAITS times for a ball: the ways avoid it this long, and the travel gives up its
+# goal at once. Before (8 November 2026), a survey without a model stayed more than ten minutes on E4, a cell of the
+# ball's column, refused 93 times towards E3: 6 waits per leg, 8 plans per goal, every goal through E3.
+BALL_AVOID_S = 60
 LANE_WATCHES, LANE_WATCH_S = 3, 5  # before crossing a lane whose ball was not seen going away: watch, at most this long
 BALL_RECENT_S = RULES["ball_seen_recently_s"]
 ADULT_WAIT_S = 150   # how long to wait for an adult's Resume
@@ -87,6 +91,7 @@ def hold_still():
 class Pilot:
     def __init__(self):
         self.blocked = {}      # cell -> time it was seen blocked
+        self.ball_refused = {} # cell -> time a leg towards it was refused BALL_WAITS times for a ball
         self.free = set()      # cells the robot went through or the distance sensor saw free
         self.ruled_out = set() # (card, cell): the robot faced the cell from next to it, and that card was not there
         self.looked_from = set()
@@ -321,7 +326,7 @@ class Pilot:
         """Face the way, then go forwards: the distance sensor and the camera watch the way."""
         dc, dr = STEP[direction]
         start = self.state.get("cell")
-        watched = 0
+        watched, for_a_ball = 0, 0
         for _ in range(BALL_WAITS):
             if self.short(1):
                 raise Stuck("no moves left")
@@ -344,6 +349,7 @@ class Pilot:
             answer = self.read(command("move", direction, cells, []))
             why = answer.get("why", "") + " " + answer.get("stopped_because", "")
             if answer.get("result") == "refused" and "ball" in why:
+                for_a_ball += 1
                 command("wait_for_event", 5)
                 self.read(command("robot_state"))
                 continue
@@ -358,6 +364,10 @@ class Pilot:
             if moved < cells and "something was in the way" in why and not self.ball_recent():
                 self.blocked[(c + dc, r + dr)] = clock.now()
             return moved
+        if for_a_ball:
+            (c, r), _ = self.here()
+            self.ball_refused[(c + dc, r + dr)] = clock.now()
+            return -2  # the ball keeps the way: the travel gives up this goal, and the ways avoid that cell a while
         return 0
 
     def path(self, goals, avoid):
@@ -388,6 +398,8 @@ class Pilot:
     def travel(self, goals):
         """Go to the nearest of `goals`; True when there, False when no way is left."""
         for _ in range(REPLANS):
+            if not self.leaving:
+                self.leave_lane()  # never wait on a ball's lane: the ball hits a robot that stands still too
             (c, r), _ = self.here()
             if (c, r) in goals:
                 return True
@@ -397,7 +409,9 @@ class Pilot:
                 if (c, r) in goals:
                     return True
             cards = self.card_cells()
-            way = self.path(goals - cards, cards)  # a card seen on the way may lie on a goal
+            now = clock.now()
+            kept = {cell for cell, when in self.ball_refused.items() if now - when < BALL_AVOID_S}
+            way = self.path(goals - cards, cards | kept)  # a card seen on the way may lie on a goal
             if way is None:
                 return False
             dc, dr = way[0][0] - c, way[0][1] - r
@@ -406,7 +420,8 @@ class Pilot:
             while n < len(way) and n < self.settings["max_leg"] and \
                     (way[n][0] - way[n - 1][0], way[n][1] - way[n - 1][1]) == (dc, dr):
                 n += 1
-            self.leg(direction, n)
+            if self.leg(direction, n) == -2:
+                return False
         (c, r), _ = self.here()
         return (c, r) in goals
 

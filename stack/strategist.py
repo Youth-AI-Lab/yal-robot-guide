@@ -382,6 +382,9 @@ def without_model(mission):
     6 November). The same report, built by code."""
     start, cards, outcome, why = clock.monotonic(), [], "done", ""
     for step in mission["steps"]:
+        if clock.monotonic() - start > TIMEOUT_S:  # as with a model: a mission that ends, whatever the Pilot does
+            outcome = "limit"
+            break
         do = step["do"]
         for _ in range(3):  # an adult's help between two tries: the step again, from where the robot is put back
             if do == "set_light":
