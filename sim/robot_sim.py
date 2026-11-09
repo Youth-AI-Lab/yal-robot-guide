@@ -579,18 +579,25 @@ class World:
                 # An adult does what the Cartographer asks ("put the robot back on cell …, facing …"), then
                 # presses Resume. Without such a request: back on the cell where the interrupted move
                 # started, if the robot waits for an adult; a robot that waits for nobody stays put.
-                asked = None
+                asked, asked_start = None, False
                 try:
                     saved = json.loads((self.state_dir / "terrain.json").read_text(encoding="utf-8"))
+                    # back is a cell of the mat only when the place is on the mat; counted from the start (frame),
+                    # it is a place of that frame: then the move_start below, where the last move started, even when
+                    # the robot waits for nobody (a stack stopped during a move the robot finished).
                     if not saved.get("sure", True) and saved.get("back"):
-                        asked = saved["back"]
+                        if saved.get("frame"):
+                            asked_start = True
+                        else:
+                            asked = saved["back"]
                 except (OSError, ValueError):
                     pass
                 if asked is not None and self.firmware.motion is None:
                     col, row, facing = asked
                     self.x, self.y = (col + 0.5) * self.cell, (row + 0.5) * self.cell
                     self.heading = float(facing * 90)
-                elif self.move_start is not None and self.firmware.motion is None and self.firmware.wait_adult:
+                elif self.move_start is not None and self.firmware.motion is None and (self.firmware.wait_adult
+                                                                                        or asked_start):
                     x, y, h = self.move_start
                     self.x = (int(x // self.cell) + 0.5) * self.cell
                     self.y = (int(y // self.cell) + 0.5) * self.cell

@@ -75,7 +75,8 @@ PHRASE = {
     "limit": r"no (commands|cells) left: the adults allow \d+ (commands|cells) per mission",
     "off_mat": r"the next cell is outside the mat",
     "card": r"a card (is on the next cell|was seen on the next cell that way) \((?P<cell>\w+)\): the robot never "
-            r"drives onto a card",
+            r"drives onto a card|a card seen from far could be on the next cell that way \((?P<maybe>\w+)\): sideways "
+            r"and backwards the robot counts every cell a card could be on",  # which of the two: FC7 of fixed_cartographer
     "ball_forward": r"a ball was seen near (?P<cell>\w+) less than \d+ s ago",
     "blind_lane": r"(?P<cell>\w+) is on the lane of a ball, and the robot cannot see \w+ while it faces \w+: .+",
     "blind_ball": r"a ball was seen near (?P<cell>\w+) less than \d+ s ago, and the robot cannot see \w+ while .+",
@@ -648,7 +649,8 @@ def check_refusal(result, code, details, method, broke):
     m = re.fullmatch(PHRASE[code], why)
     if not m:
         broke("a refusal of the Referee is said in its phrase", [code, why])
-    elif "cell" in m.groupdict() and details.get("cell") and m["cell"] != details["cell"]:
+    elif details.get("cell") and (m.groupdict().get("cell") or m.groupdict().get("maybe") or details["cell"]) \
+            != details["cell"]:
         broke("the phrase names the cell the Referee gave", [code, details, why])
     if ("what_to_do" in result) != (code in TO_DO):
         broke("what_to_do only for the codes that have one", [code, result])
@@ -657,7 +659,8 @@ def check_refusal(result, code, details, method, broke):
 def check_state(state, after, limits, broke):
     keys = set(state) - {"since_last_call"}
     extra = keys - STATE_KEYS
-    if not STATE_KEYS <= keys or extra - {"program_error", "position", "since_start", "how_to_find_it", "could_be"}:
+    if not STATE_KEYS <= keys or extra - {"program_error", "position", "since_start", "how_to_find_it", "could_be",
+                                          "possible_places"}:
         broke("robot_state has its closed fields", sorted(keys ^ STATE_KEYS))
         return
     known = state["position_known"]
@@ -669,21 +672,26 @@ def check_state(state, after, limits, broke):
         broke("robot_state: no cell while the place is unknown or relative", [state["cell"], after])
     if not after["sure"] and not state["waiting_for_adult"]:
         broke("robot_state: after a stop, it waits for an adult", state)
-    frame_part = {"position", "since_start", "how_to_find_it"}
+    frame_part = {"position", "since_start", "how_to_find_it", "possible_places"}
     if (frame_part <= keys) != (after["frame"] and after["sure"]) or (keys & frame_part and not frame_part <= keys):
         broke("robot_state: position, since_start, how_to_find_it exactly while the place is relative", sorted(keys))
     if "position" in state:
         if ("could_be" in state) != (state["position"] == "probable") or len(state.get("could_be", [])) > 6:
             broke("robot_state: could_be only when probable, 6 places at most", [state["position"],
                                                                                    state.get("could_be")])
+        n = state.get("possible_places")
+        if not isinstance(n, int) or isinstance(n, bool) or n < 1 or (state["position"] == "probable") != (n <= 6) \
+                or ("could_be" in state and len(state["could_be"]) != n):
+            broke("robot_state: possible_places counts the places, could_be lists them up to 6",
+                  [state["position"], n, state.get("could_be")])
     moves = limits.get("moves")
     if (moves is None) != (state["moves_left"] is None) or (
             moves is not None and not (isinstance(state["moves_left"], int) and state["moves_left"] >= 0)):
         broke("moves_left is null without a limit of the adults", [limits, state["moves_left"]])
     counts = state["counts"]
-    if not isinstance(counts, dict) or not set(common.COUNTS) - {"missions"} <= set(counts) or "since" not in counts \
+    if not isinstance(counts, dict) or set(counts) - {"limits_per_mission"} != {"since", "commands", "cells", "moves"} \
             or ("limits_per_mission" in counts) != bool(limits):
-        broke("counts: the counters, since when, and the limits when there are", counts)
+        broke("counts: the Referee's counters, since when, and the limits when there are", counts)
     if (state["cells_not_looked_at_yet"] is None) != after["frame"]:
         broke("cells_not_looked_at_yet: counted only while the place on the mat is known", [state, after])
 
@@ -841,8 +849,10 @@ def check_call(method, args, result, before, after, fake, said, notes, run, brok
             else:
                 reason = result.get("stopped_because")
                 if done[1] == "all" and done[2]["card_stop"]:
-                    ok = reason == (f"it stopped before {done[2]['card_stop']}, where the camera saw a card: it never "
-                                    "drives onto a card")
+                    ok = reason in (f"it stopped before {done[2]['card_stop']}, where the camera saw a card: it never "
+                                    "drives onto a card",
+                                    f"it stopped before {done[2]['card_stop']}, where a card seen from far could be: "
+                                    "sideways and backwards it never drives onto a cell a card could be on")
                 elif done[1] == "all" and len(moves[-1]["cells"]) < args["cells"]:
                     ok = re.fullmatch(r"the mat ends after %d cells? that way" % k, reason or "") is not None
                 else:
@@ -910,9 +920,15 @@ def check_call(method, args, result, before, after, fake, said, notes, run, brok
             broke("look_around: four looks, each with its closed fields", looked)
     if method == "seen_cards" and word is None:
         cards = result.get("cards_seen")
-        if not isinstance(cards, list) or "camera_coverage" not in result:
+        if not isinstance(cards, list) or "camera_coverage" not in result or "cells_seen_free" not in result:
             broke("seen_cards has its closed fields", sorted(result))
             return
+        free = result["cells_seen_free"]
+        trusted = RULES["blind_only_into_cells_seen_free_for_s"]
+        if not isinstance(free, dict) or (after["frame"] and free) or any(
+                c not in CELLS or not isinstance(s, int) or not 0 <= s < trusted for c, s in free.items()):
+            broke("cells_seen_free: cells of the mat seen free less than the Referee's time ago, none while relative",
+                  free)
         for card in cards:
             names = [card.get("cell")] + list(card.get("could_also_be") or [])
             if after["frame"]:

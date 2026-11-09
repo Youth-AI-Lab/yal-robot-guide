@@ -9,14 +9,23 @@ wrote on disk and what it answered.
 The scenarios:
     FC1   moving() writes the map before the move goes out (I6); the fake calls moving() itself, as the real Referee
           does, so the order in referee.py is not tested here
-    FC2   a sure card that left the camera's view stays forbidden for 10 min (I18); FC2b: dated at its last SEEN (KNOWN)
+    FC2   a sure card that left the camera's view stays forbidden for 10 min (I18); FC2b: 10 min from the GONE, even
+          after 11 min in view (E11, fixed on 8 November 2026)
     FC3   a bump that stops a slide becomes a lane, on its cell and the line across, for 600 s (I19); FC3b: less than
           half a cell from the last one; FC3c: two bumps on one column make the column, dated by the newer
     FC4   two like cards side by side stay two (I17); FC4b: a closer sighting between them merges them (KNOWN)
     FC5   the compass is believed at 25 degrees from a quarter turn at most, robot still, nobody awaited (I13)
     FC6   a pause between the two quarter turns of face (I10), and only the first counted (I9)
-    FC7   a card seen from far blocks nothing forwards; with caution, the cells of could_also_be are not given to the
-          Referee (E1, KNOWN)
+    FC7   a card seen from far blocks nothing forwards; with caution, every cell of could_also_be is given to the
+          Referee (E1)
+    FC8   an argument outside the language is refused in words, nothing sent (E10)
+    FC9   counts in robot_state: the Referee's counters only (E5)
+    FC10  possible_places: how many places are left, at every size (E7 of ROBOT-PILOTE.md)
+    FC11  cells_seen_free in seen_cards: the cells seen free less than 120 s ago, none while relative (E5 of
+          ROBOT-PILOTE.md)
+    FC12  the adult is never sent onto a sure box (E11)
+    FC13  a reading no place of the mat can give is ignored: the place kept, no cell free through it (found by the
+          probe, seed 32)
 Each scenario is followed by its mutants: a rule of the Cartographer removed or changed by rewrite() (one method of
 cartographer.py, its text changed in place) or by a constant of the loaded module.
 
@@ -103,7 +112,7 @@ class Referee:
         self.fields = {"resumes": "0", "pose": "1", "moving": "0", "wait_adult": "0", "estop": "0", "dist": "none",
                        "looked": "1", "heading": "none", "boxes": "none", "card": "none", "battery": "90",
                        "bumper": "0", "warning": "0", "last_stop": "none", "fault": "none", "slid": "0"}
-        self.queue, self.sent = [], []
+        self.queue, self.sent, self.reads = [], [], []
         self.on_slide = self.on_turn = None
 
     def door(self, is_move, body): return body()
@@ -111,7 +120,9 @@ class Referee:
     def close(self): pass
     def limits(self): return {}
     def moves_left(self): return None
-    def state(self): return dict(self.fields)
+    def state(self):
+        self.reads.append("STATE")
+        return dict(self.fields)
 
     def events(self):
         out, self.queue = self.queue, []
@@ -148,6 +159,7 @@ class World:
         self.rules = {**pc.RULES, "start": None, "mat_north_up": True, "landmarks": {}, "limits": {}, **(rules or {})}
         self.cart = m.Cartographer(pc.MAT, self.rules)
         self.ref = Referee()
+        self.ref.limits = lambda: dict(self.rules.get("limits") or {})  # the adults' limits of this scenario's rules
         self.cart.referee = self.ref
         if at:
             self.put(*at)
@@ -247,8 +259,8 @@ def fc2():
 
 @mutant("card_cells forgets the cards that left the view", "FC2")
 def m_placed_ignored(m):
-    rewrite(m, "card_cells", ("return sure | {c for c, t in self.placed.items() if now - t < LANE_FOR_S}",
-                              "return sure"))
+    rewrite(m, "card_cells", ("return cells | {c for c, t in self.placed.items() if now - t < LANE_FOR_S}",
+                              "return cells"))
 
 
 @mutant("a card that left the view is forbidden for ever", "FC2")
@@ -258,16 +270,34 @@ def m_placed_forever(m):
 
 @scenario("FC2b", "I18, E11")
 def fc2b():
-    """A sure card that stays 11 min in view, then GONE: placed is dated at the SEEN, not at the GONE."""
+    """A sure card that stays 11 min in view, then GONE: forbidden 10 min from the GONE (before 8 November 2026, from
+    its last SEEN, so no longer at all)."""
     w = world(at=("C5", "north"))
     w.sight("SEEN", "barbecue", 0, 60)
     w.clock.sleep(660)
-    w.sight("GONE", "barbecue", 0, 60)
+    w.cart.saw("GONE", "barbecue:0:60:7", 3000)  # the robot noted it 3 s before this read
     w.clock.sleep(1)
-    check("C3" not in w.cart.card_cells(caution=True), "E11 as written: no longer forbidden 1 s after GONE",
-          sorted(w.cart.card_cells(caution=True)))
-    raise Known("E11: a sure card kept 11 min in view, then GONE, is no longer forbidden 1 s later "
-                "(placed dated at its last sure SEEN, not at GONE)")
+    check("C3" in w.cart.card_cells(caution=True), "4 s after GONE: forbidden", sorted(w.cart.card_cells(caution=True)))
+    w.clock.sleep(595)
+    check("C3" in w.cart.card_cells(), "599 s after GONE: still forbidden", sorted(w.cart.card_cells()))
+    w.clock.sleep(2)
+    check("C3" not in w.cart.card_cells(), "601 s after GONE: no longer", sorted(w.cart.card_cells()))
+
+
+@mutant("placed not dated when a sure card leaves the view", "FC2b")
+def m_gone_undated(m):
+    rewrite(m, "saw", ('self.placed[s["cell"]] = clock.now() - age_ms / 1000', "pass"))
+
+
+@mutant("placed dated at the read, not when the card left the view", "FC2b")
+def m_gone_read_time(m):
+    rewrite(m, "saw", ('self.placed[s["cell"]] = clock.now() - age_ms / 1000', 'self.placed[s["cell"]] = clock.now()'))
+
+
+@mutant("the age of GONE read as seconds", "FC2b")
+def m_gone_age_seconds(m):
+    rewrite(m, "saw", ('self.placed[s["cell"]] = clock.now() - age_ms / 1000',
+                       'self.placed[s["cell"]] = clock.now() - age_ms'))
 
 
 @scenario("FC3", "I19")
@@ -499,21 +529,234 @@ def m_face_counted(m):
 
 @scenario("FC7", "E1")
 def fc7():
-    """A dry grass card in C2, seen from C5 at 90 cm: probable C2, could also be B2, D2, C1, C3. With caution (a slide
-    sideways or backwards), the Referee should count every cell it could be on."""
+    """A dry grass card in C2, seen from C5 at 90 cm: probable C2, could also be B2, D2, C1, C3. Forwards it blocks
+    nothing (the robot stops in front of a card by itself); with caution (a slide sideways or backwards), the Referee
+    counts every cell it could be on (E1, 8 November 2026; before, C2 alone)."""
     w = world(at=("C5", "north"))
     w.sight("SEEN", "dry-grass", 0, 90)
     (cell, also), = w.entries("dry-grass")
     check(cell == "C2" and {"B2", "D2", "C1", "C3"} <= set(also), "C2, could also be B2, D2, C1, C3", [cell, also])
     check("C2" not in w.cart.card_cells(), "forwards, a card seen from far blocks nothing", sorted(w.cart.card_cells()))
     given = w.cart.card_cells(caution=True)
-    check(given == {"C2"}, "E1 as written: with caution, C2 alone", sorted(given))
-    raise Known(f"E1: with caution, card_cells gives {sorted(given)}, not the cells of could_also_be {list(also)}")
+    check(given == {"C2"} | set(also), "with caution: C2 and every cell of could_also_be", sorted(given))
+    said = w.cart.say({"result": "refused", "rule": "card", "cell": "D2"})
+    check("could be on the next cell that way (D2)" in said.get("why", "") and "closer" in said.get("what_to_do", ""),
+          "a slide refused at D2 says a card seen from far could be there, not that one was seen there", said)
+    said = w.cart.say({"result": "refused", "rule": "card", "cell": "C2"})
+    check("a card was seen on the next cell that way (C2)" in said.get("why", ""), "at C2: a card was seen there", said)
+    w.sight("GONE", "dry-grass", 0, 90)
+    check("C2" not in w.cart.card_cells(), "out of view, a card seen from far still blocks nothing forwards",
+          sorted(w.cart.card_cells()))
+
+
+@mutant("a slide refused at a cell of could_also_be says a card was seen there", "FC7")
+def m_could_said_seen(m):
+    rewrite(m, "say", ("            if not self.card_surely_on(cell):", "            if False:"))
+
+
+@mutant("a card seen from far placed when it leaves the view", "FC7")
+def m_gone_far_placed(m):
+    rewrite(m, "saw", ('if not s.get("could_also_be") and not self.frame:', "if not self.frame:"))
+
+
+@mutant("caution gives the probable cell only", "FC7")
+def m_caution_probable(m):
+    rewrite(m, "card_cells", ('cells = {c for s in self.seen for c in [s["cell"]] + list(s.get("could_also_be") or [])}',
+                              'cells = {s["cell"] for s in self.seen}'))
 
 
 @mutant("a card seen from far placed too", "FC7")
 def m_far_card_placed(m):
     rewrite(m, "saw", ("if not others and not self.frame:", "if not self.frame:"))
+
+
+@scenario("FC8", "E10, I2")
+def fc8():
+    """An argument outside the language: refused in words, before anything is sent, and the cable stays open (before 8
+    November 2026: an exception taken for an answer of the robot that could not be read, the cable closed)."""
+    w = world(at=("C5", "north"))
+    closed = []
+    w.ref.close = lambda: closed.append(1)
+    tries = {"move up": lambda: w.cart.move("up", 2, []), "move 0": lambda: w.cart.move("north", 0, []),
+             "move 5": lambda: w.cart.move("north", 5, []), "move True": lambda: w.cart.move("north", True, []),
+             "move '2'": lambda: w.cart.move("north", "2", []), "stop_if": lambda: w.cart.move("north", 2, ["wall"]),
+             "face": lambda: w.cart.face("up"), "turn": lambda: w.cart.turn("around"),
+             "light": lambda: w.cart.set_light("pink")}
+    for name, action in tries.items():
+        answer = w.cart.call(action, is_move=True)
+        check(answer.get("result") == "refused" and "nothing was sent" in answer.get("why", ""),
+              f"{name}: refused in words", answer)
+    for seconds in (0, 31, "5", True):
+        answer = w.cart.wait_for(seconds)
+        check(answer.get("result") == "refused" and "seconds" in answer.get("why", ""), f"wait_for {seconds!r}", answer)
+    check(w.ref.sent == [] and not closed, "nothing sent, the cable not closed", [w.ref.sent, closed])
+    reads = len(w.ref.reads)
+    answer = w.cart.call(lambda: w.cart.move("up", 2, []), is_move=True,
+                         check=lambda: w.cart.wrong(direction="up", cells=2, stop_if=[]))
+    check(answer.get("result") == "refused" and len(w.ref.reads) == reads,
+          "with the check given to call: refused before anything is read", [answer, w.ref.reads[reads:]])
+    w.ref.on_slide = lambda terrain, cells: {"result": "done", "cells_done": 0, "why": "all", "card_stop": None,
+                                             "edge": False}
+    answer = w.cart.call(lambda: w.cart.move("north", 4, ["card_ahead", "ball_seen"]), is_move=True)
+    check(answer.get("result") == "done" and w.ref.sent[0][:2] == ["slide", "F"], "a move of the language goes", answer)
+
+
+@mutant("call reads the robot before the check", "FC8")
+def m_check_late(m):
+    rewrite(m, "call", ("        refusal = check() if check else None\n        if refusal:\n            return refusal\n", ""))
+
+
+@mutant("a direction outside the language goes on", "FC8")
+def m_no_direction_check(m):
+    rewrite(m, "wrong", ('if name == "direction" and value not in FACING:', "if False:"))
+
+
+@mutant("cells outside 1 to 4 go on", "FC8")
+def m_no_cells_check(m):
+    rewrite(m, "wrong", ("not 1 <= value <= most", "False"))
+
+
+@mutant("seconds outside 1 to 30 go on", "FC8")
+def m_no_seconds_check(m):
+    rewrite(m, "wrong", ("not 0 < value <= 30", "False"))
+
+
+@scenario("FC9", "E5")
+def fc9():
+    """counts in robot_state: the Referee's counters (commands, cells, moves) and since when; never the calls to the
+    model, their cost, or the Pilot's operations, even when they were counted."""
+    w = world(at=("C5", "north"))
+    pc.common.count("model_usd", 0.5)
+    pc.common.count("model_calls", 3)
+    pc.common.count("operations", 2)
+    pc.common.count("commands", 1)
+    counts = w.cart.robot_state()["counts"]
+    check(set(counts) == {"since", "commands", "cells", "moves"} and counts["commands"] == 1
+          and counts["since"] == "the session began", "the Referee's counters only, since the session began", counts)
+    pc.common.mission_begins()
+    pc.common.count("commands", 2)
+    counts = w.cart.robot_state()["counts"]
+    check(counts["since"] == "the mission began" and counts["commands"] == 2, "during a mission: since it began", counts)
+    w2 = world(rules={"limits": {"moves": 40}}, at=("C5", "north"))
+    counts = w2.cart.robot_state()["counts"]
+    check(counts.get("limits_per_mission") == {"moves": 40}, "and the adults' limits when there are", counts)
+
+
+@mutant("counts gives the session's counters during a mission", "FC9")
+def m_counts_session(m):
+    rewrite(m, "counts", ('part = both["this_mission"] or both["session"]', 'part = both["session"]'))
+
+
+@mutant("counts gives the cost of the model", "FC9")
+def m_counts_cost(m):
+    rewrite(m, "counts", ('for k in ("commands", "cells", "moves")', 'for k in ("commands", "cells", "moves", "model_usd")'))
+
+
+@scenario("FC10", "E7 of ROBOT-PILOTE.md")
+def fc10():
+    """possible_places counts the places left while the place is counted from the start: 192 on the 8 x 6 mat with the
+    start unknown (no could_be beyond 6); 4 with the start cell alone (could_be lists them); none on the mat."""
+    w = world(rules={"start": "unknown"})
+    state = w.cart.robot_state()
+    check(state.get("position") == "unknown" and state.get("possible_places") == 192 and "could_be" not in state,
+          "start unknown: 192 places, unknown, no list", {k: state.get(k) for k in ("position", "possible_places")})
+    w = world(rules={"start": {"cell": "C5"}, "mat_north_up": False})
+    state = w.cart.robot_state()
+    check(state.get("position") == "probable" and state.get("possible_places") == 4 and len(state["could_be"]) == 4,
+          "start C5 alone: 4 places, listed", {k: state.get(k) for k in ("position", "possible_places", "could_be")})
+    w = world(at=("C5", "north"))
+    check("possible_places" not in w.cart.robot_state(), "on the mat: no possible_places")
+
+
+@mutant("possible_places not given", "FC10")
+def m_no_possible_places(m):
+    rewrite(m, "robot_state", ('state["possible_places"] = len(places)', "pass"))
+
+
+@scenario("FC11", "E5 of ROBOT-PILOTE.md, I11")
+def fc11():
+    """cells_seen_free: from C5 facing north, a reading of 100 cm says C4, C3, C2 free (each up to its far side plus
+    8 cm); given with their age while it is under 120 s (the Referee's rule), then no more; none while the place is
+    counted from the start. With the adults' rule at 60 s, none after 61 s."""
+    w = world(at=("C5", "north"), rules={"blind_only_into_cells_seen_free_for_s": 60})
+    w.ref.fields["dist"] = "100"
+    w.cart.fields()
+    w.clock.sleep(61)
+    check(w.cart.seen_cards()["cells_seen_free"] == {}, "rule 60 s: none after 61 s",
+          w.cart.seen_cards()["cells_seen_free"])
+    w = world(at=("C5", "north"))
+    w.ref.fields["dist"] = "100"
+    w.cart.fields()
+    check(w.cart.seen_cards()["cells_seen_free"] == {"C2": 0, "C3": 0, "C4": 0}, "C2, C3, C4 free, 0 s ago",
+          w.cart.seen_cards()["cells_seen_free"])
+    w.clock.sleep(119)
+    check(w.cart.seen_cards()["cells_seen_free"] == {"C2": 119, "C3": 119, "C4": 119}, "119 s later: still, 119",
+          w.cart.seen_cards()["cells_seen_free"])
+    w.clock.sleep(2)
+    check(w.cart.seen_cards()["cells_seen_free"] == {}, "121 s later: no longer", w.cart.seen_cards()["cells_seen_free"])
+    w = world(rules={"start": "unknown", "mat_north_up": False})
+    w.ref.fields["dist"] = "100"
+    w.cart.fields()
+    check(w.cart.frame and w.cart.free and w.cart.seen_cards()["cells_seen_free"] == {},
+          "counted from the start: cells seen free kept, none given", [len(w.cart.free), w.cart.frame is not None])
+
+
+@mutant("cells_seen_free ignores the adults' rule", "FC11")
+def m_free_fixed_rule(m):
+    rewrite(m, "seen_cards", ('self.rules.get("blind_only_into_cells_seen_free_for_s", 120)', "120"))
+
+
+@mutant("cells_seen_free gives cells too old for the Referee", "FC11")
+def m_free_any_age(m):
+    rewrite(m, "seen_cards", ("if now - t < trusted}", "}"))
+
+
+@mutant("cells_seen_free names cells while the place is counted from the start", "FC11")
+def m_free_in_frame(m):
+    rewrite(m, "seen_cards", ("free = {} if self.frame else {c:", "free = {c:"))
+
+
+@scenario("FC12", "I4, E11")
+def fc12():
+    """The adult's cell off a ball's lane: never a cell where the camera saw a box from 3 points of view. C5 is a lane
+    (a bump there); the nearest cells off its row and column are B4 and D4, both looked at; B4 holds a sure box."""
+    w = world(at=("C5", "north"))
+    now = w.clock.now()
+    w.cart.lanes = {"cell:C5": now}
+    w.cart.looked = {"B4": now, "D4": now}
+    w.cart.boxes = {"B4": [now, ["A4:east", "B5:north", "C4:west"]]}
+    check(w.cart.off_lane_near((2, 4)) == (3, 3), "D4, not the box on B4", w.cart.off_lane_near((2, 4)))
+
+
+@mutant("the adult may be sent onto a sure box", "FC12")
+def m_adult_on_box(m):
+    rewrite(m, "off_lane_near", ("and name not in boxes and", "and"))
+
+
+@scenario("FC13", "I12, E11")
+def fc13():
+    """From C5 facing north (the border 135 cm away for the sensor), a reading of 1000 cm, that no place of the mat can
+    give: ignored, the place kept. A reading of 200 cm, that other places can give: the place no longer believed."""
+    w = world(at=("C5", "north"))
+    w.ref.fields["dist"] = "1000"
+    w.cart.fields()
+    check(w.cart.frame is None and (w.cart.col, w.cart.row, w.cart.facing) == (2, 4, 0), "1000 cm: ignored, still C5",
+          [w.cart.frame, w.cart.col, w.cart.row])
+    check(not w.cart.free, "and no cell noted free through it", sorted(w.cart.free))
+    w.ref.fields["dist"] = "200"
+    w.cart.fields()
+    check(w.cart.frame and w.cart.frame["candidates"], "200 cm: the place lost, other places kept",
+          None if not w.cart.frame else len(w.cart.frame["candidates"]))
+
+
+@mutant("a misreading still notes cells free", "FC13")
+def m_misreading_frees(m):
+    rewrite(m, "fields", ("            if self.localize(dist):\n", "            if self.localize(dist) or True:\n"))
+
+
+@mutant("a reading no place can give loses the place", "FC13")
+def m_misreading_unsettles(m):
+    rewrite(m, "unsettle", ("        if not places:\n", "        if False:\n"))
 
 
 # --- running them -------------------------------------------------------------------------------------------------------

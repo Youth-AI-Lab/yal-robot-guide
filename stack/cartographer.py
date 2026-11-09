@@ -20,11 +20,12 @@ To the Referee: moves of the robot (forwards, backwards, to its left, to its rig
 """
 import json
 import math
+import os
 import re
 
 import clock
 import common
-from common import FACING, FACING_STEP, STATE_DIR, cell_name, cell_xy
+from common import COLORS, FACING, FACING_STEP, STATE_DIR, cell_name, cell_xy
 from link import RobotNotConnected
 from referee import Referee
 
@@ -216,7 +217,12 @@ class Cartographer:
                  "placed": self.placed, "presses": self.presses, "looked": self.looked, "blocked": self.blocked,
                  "boxes": self.boxes, "covered_said": self.covered_said, "pose_logged": self.pose_logged, "frame": self.frame, "notices": self.notices,
                  "hit": self.hit}
-        (STATE_DIR / "terrain.json").write_text(json.dumps(saved) + "\n", encoding="utf-8")
+        # Written aside, then renamed: a stack killed while writing leaves the last whole map, never half of one
+        # (load() would then start again from the start cell, sure of it).
+        path = STATE_DIR / "terrain.json"
+        aside = path.with_name(f"terrain.json.{os.getpid()}.tmp")
+        aside.write_text(json.dumps(saved) + "\n", encoding="utf-8")
+        os.replace(aside, path)
 
     # Where the robot is on the mat --------------------------------------------------------------------------------
     # While the Cartographer does not know it, it counts in a frame relative to where the robot started: the start is
@@ -310,17 +316,20 @@ class Cartographer:
     def localize(self, dist):
         """A reading of the distance sensor, standing still: rules out the places it could not come from. One place left:
         the Cartographer knows where the robot is. A reading far beyond the border from the place it believed: it no
-        longer believes it."""
+        longer believes it. Returns False for a reading that fits no place of the mat (a misreading): ignored, and it
+        says nothing of the terrain either."""
         if self.frame:
             kept = [st for st in self.frame["candidates"]
                     if self.possible(*self.to_mat(st, self.col, self.row, self.facing), dist)]
-            if kept:  # none left: a reading that fits no place (a misreading): ignored
-                self.frame["candidates"] = kept
-                if len(kept) == 1:
-                    self.settle(kept[0], ("the compass, " if self.rules.get("mat_north_up", True) else "")
-                                + "the distance sensor and the border")
+            if not kept:  # none left: a reading that fits no place (a misreading): ignored
+                return False
+            self.frame["candidates"] = kept
+            if len(kept) == 1:
+                self.settle(kept[0], ("the compass, " if self.rules.get("mat_north_up", True) else "")
+                            + "the distance sensor and the border")
         elif dist > self.way_to_border(self.col, self.row, self.facing) + DOUBT_CM:
-            self.unsettle(dist)
+            return self.unsettle(dist)
+        return True
 
     def stepped(self):
         """A move that went: the places from which it would have left the mat are ruled out."""
@@ -360,12 +369,18 @@ class Cartographer:
         here = [self.col, self.row, self.facing]
         places = [[c, r, f] for c in range(self.mat["cols"]) for r in range(self.mat["rows"]) for f in range(4)
                   if (dist is None or self.possible(c, r, f, dist)) and (facing is None or f == facing)]
+        if not places:
+            # A reading no place of the mat can give (a misreading): ignored, as localize() does in a relative frame.
+            # Before (8 November 2026, found by the probe of the Cartographer, seed 32), the place was lost with no
+            # place left possible, and could never be found again.
+            return False
         self.rebase(lambda c, r, f=0: self.from_mat(here, c, r, f), lambda x, y: self.point_from_mat(here, x, y),
                     {"candidates": places})
         why = ("the distance sensor reads farther than the border from where it believed it (the wheels may have "
                "slipped)" if dist is not None else f"the compass says it faces {FACING[facing]}, not {FACING[here[2]]}")
         self.notices.append(f"the Cartographer no longer knows where the robot is: {why}; it counts from here again, "
                             "and looks for its place")
+        return True
 
     def rebase(self, pose, point, frame):
         """Everything the Cartographer keeps, moved from its frame to another (the mat, or relative to a start)."""
@@ -456,13 +471,15 @@ class Cartographer:
             facing = self.compass(fields)
             if facing is not None:
                 self.orient(facing)
+        dist = None if fields.get("dist", "none") == "none" else int(fields["dist"])
         if (self.sure and fields.get("moving") == "0" and fields.get("wait_adult") == "0"
-                and fields.get("estop") == "0" and fields.get("dist", "none") != "none"):
-            self.localize(int(fields["dist"]))
-            self.note_free(int(fields["dist"]))
+                and fields.get("estop") == "0" and dist is not None):
+            if self.localize(dist):
+                self.note_free(dist)
+            else:
+                dist = None  # a misreading: no cell free, none met, through it (it would open slides sideways)
         if self.sure and fields.get("looked") == "1":
-            self.note_looked(None if fields.get("dist", "none") == "none" else int(fields["dist"]),
-                             self.box_points(fields))
+            self.note_looked(dist, self.box_points(fields))
         self.log_pose(fields)
         return fields
 
@@ -538,7 +555,13 @@ class Cartographer:
             self.landmark(label, x, y, max(CAMERA_MIN_ERROR_CM, CAMERA_ERROR * cm + CAMERA_MIN_ERROR_CM))
         u = max(CAMERA_MIN_ERROR_CM, CAMERA_ERROR * cm + CAMERA_MIN_ERROR_CM)  # grows with the distance
         if kind == "GONE":
-            self.seen = [s for s in self.seen if not (s["card"] == label and math.hypot(s["x"] - x, s["y"] - y) < max(s["u"], u))]
+            gone = [s for s in self.seen if s["card"] == label and math.hypot(s["x"] - x, s["y"] - y) < max(s["u"], u)]
+            for s in gone:
+                # A sure card that leaves the camera's view stays on its cell LANE_FOR_S from now (a box hides it).
+                # Before (8 November 2026), from its last SEEN: a card kept 11 min in view was no longer forbidden.
+                if not s.get("could_also_be") and not self.frame:
+                    self.placed[s["cell"]] = clock.now() - age_ms / 1000
+            self.seen = [s for s in self.seen if s not in gone]
             return None
         cell, others = self.cells_near(x, y, u)
         at = clock.stamp(seconds_ago=age_ms / 1000)
@@ -773,12 +796,21 @@ class Cartographer:
     # The Referee's questions about the terrain ----------------------------------------------------------------
     def card_cells(self, caution=False):
         """The cells where the Cartographer placed a card the camera recognised, when it is sure of the cell (a card
-        seen from far could be on a neighbour: it would then block the cell in front of it), and the cells of sure
-        cards that left the camera's view in the last LANE_FOR_S (hidden by a box, they are still there). caution:
-        every probable cell, sure or not (for a slide sideways, which no camera watches)."""
+        seen from far could be on a neighbour: it would then block the cell in front of it; forwards, the robot stops
+        in front of a card by itself), and the cells of sure cards that left the camera's view in the last LANE_FOR_S
+        (hidden by a box, they are still there). caution: every cell each card could be on, its could_also_be included
+        (for a slide sideways or backwards, which no camera watches: "a cell that could hold a card counts as holding
+        one", decision E1 of ROBOT-CARTOGRAPHE.md, 8 November 2026; before, the probable cell only)."""
         now = clock.now()
-        sure = {s["cell"] for s in self.seen if caution or not s.get("could_also_be")}
-        return sure | {c for c, t in self.placed.items() if now - t < LANE_FOR_S}
+        if caution:
+            cells = {c for s in self.seen for c in [s["cell"]] + list(s.get("could_also_be") or [])}
+        else:
+            cells = {s["cell"] for s in self.seen if not s.get("could_also_be")}
+        return cells | {c for c, t in self.placed.items() if now - t < LANE_FOR_S}
+
+    def card_surely_on(self, cell):
+        """A card the camera placed for sure on this cell, or its probable cell; not a cell of could_also_be only."""
+        return cell in self.placed or any(s["cell"] == cell for s in self.seen)
 
     def lane_names(self):
         """The lanes balls were seen on in the last LANE_FOR_S, in words: "row 4", "column E", "cell E3"."""
@@ -940,6 +972,7 @@ class Cartographer:
         """The nearest cell off every ball's lane where an adult can put the robot down (two steps at most, known free,
         no card, nothing standing there), or None."""
         cards = {cell_xy(c) for c in self.card_cells(caution=True)}
+        boxes = self.box_cells()
         # A lane known only as a cell (a bump during a quarter turn): its ball rolls on its row or on its column. A
         # cell on neither comes first, then the others.
         now = clock.now()
@@ -954,7 +987,7 @@ class Cartographer:
                     if wary and any(c == mc or r == mr for mc, mr in met):
                         continue
                     if name and not self.on_lane((c, r)) and (c, r) not in cards and name not in self.blocked \
-                            and (name in self.free or name in self.looked):
+                            and name not in boxes and (name in self.free or name in self.looked):
                         return c, r
         return None
 
@@ -980,12 +1013,14 @@ class Cartographer:
                 f"{FACING[facing]}, then to press Resume on the robot. Do not try to move it before.")
 
     def counts(self):
-        """The counters, since the mission began (or the session, without a mission), and the adults' limits."""
+        """The Referee's counters (commands sent that act, cells gone through, moves of its rule), since the mission
+        began (or the session, without a mission), and the adults' limits. Not the Strategist's nor the Pilot's
+        (calls to the model, their cost, operations): a tier speaks of its neighbours only (decision E5 of
+        ROBOT-CARTOGRAPHE.md, 8 November 2026)."""
         both = common.counts()
         part = both["this_mission"] or both["session"]
         out = {"since": "the mission began" if both["this_mission"] is not None else "the session began"}
-        out.update({k: part[k] for k in common.COUNTS if k != "missions"})
-        out["model_usd"] = round(out["model_usd"], 4)
+        out.update({k: part.get(k, 0) for k in ("commands", "cells", "moves")})
         limits = self.referee.limits()
         if limits:
             out["limits_per_mission"] = limits
@@ -1023,6 +1058,12 @@ class Cartographer:
             what = "stop here if it is the one you look for, or go round it"
             if step:
                 return self.refused(f"a card is on the next cell ({cell}): the robot never drives onto a card", what_to_do=what)
+            if not self.card_surely_on(cell):
+                # Since E1 (8 November 2026), sideways and backwards a card seen from far blocks every cell it could be
+                # on: this one is a neighbour of the card's probable cell.
+                return self.refused(f"a card seen from far could be on the next cell that way ({cell}): sideways and "
+                                    "backwards the robot counts every cell a card could be on",
+                                    what_to_do="face that way to see it from closer, or go round it")
             return self.refused(f"a card was seen on the next cell that way ({cell}): the robot never drives onto a card",
                                 what_to_do=what)
         if rule == "ball_forward":
@@ -1102,6 +1143,9 @@ class Cartographer:
             state["program_error"] = f"{FAULTS.get(fields['fault'], fields['fault'])}: {FAULT_TO_DO}"
         if self.frame and self.sure:
             state["position"] = "probable" if len(places) <= 6 else "unknown"
+            # How many places are still possible, at every size (decision E7 of ROBOT-PILOTE.md): a look that rules
+            # none out shows, beyond the 6 that could_be lists.
+            state["possible_places"] = len(places)
             state["since_start"] = self.pose_text(self.col, self.row, self.facing)
             if len(places) <= 6:
                 state["could_be"] = [f"{cell_name(c, r)} facing {FACING[f]}" for c, r, f in places]
@@ -1124,10 +1168,16 @@ class Cartographer:
         if self.frame:
             cards = [dict(c, cell=None, could_also_be=[], where="not known yet: the Cartographer does not know yet where "
                                                               "the robot is on the mat") for c in cards]
-        return {"cards_seen": cards, "camera_coverage": self.coverage(),
+        # The cells the distance sensor saw free, and how many seconds ago, as long as the Referee trusts such a
+        # reading (blind_only_into_cells_seen_free_for_s): what the Pilot plans its way with (decision E5 of
+        # ROBOT-PILOTE.md). None while the place is counted from the start (they would be cells of that frame).
+        now, trusted = clock.now(), self.rules.get("blind_only_into_cells_seen_free_for_s", 120)
+        free = {} if self.frame else {c: int(now - t) for c, t in sorted(self.free.items()) if now - t < trusted}
+        return {"cards_seen": cards, "camera_coverage": self.coverage(), "cells_seen_free": free,
                 "note": "The camera sees up to 120 cm ahead, wider when farther, and guesses the distance: the "
                         "farther the card, the less sure its cell (could_also_be). Seen again from closer, the "
-                        "estimate gets better. The robot's own cell comes from counting its moves, not from a measure."}
+                        "estimate gets better. The robot's own cell comes from counting its moves, not from a measure. "
+                        "cells_seen_free: the cells the distance sensor saw free, with how many seconds ago."}
 
     def ahead(self):
         dc, dr = FACING_STEP[self.facing]
@@ -1169,7 +1219,32 @@ class Cartographer:
             return self.interrupted(answer["why"])
         return self.say(answer, step=True)
 
+    def wrong(self, **args):
+        """An argument outside the Cartographer's language, said in words, nothing sent to the robot (decision E10 of
+        ROBOT-CARTOGRAPHE.md, 8 November 2026; before, it raised inside the call and was taken for an answer of the robot
+        that could not be read, and the cable was closed). None when all are fine. Given to call() as its check, it runs
+        before anything is read too; each command checks again, for a caller that does not."""
+        most = self.rules.get("max_cells_per_move", 4)
+        for name, value in args.items():
+            if name == "direction" and value not in FACING:
+                return self.refused(f"direction must be north, east, south or west, not {value!r}: nothing was sent")
+            if name == "way" and value not in ("left", "right"):
+                return self.refused(f"a quarter turn is left or right, not {value!r}: nothing was sent")
+            if name == "cells" and (isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= most):
+                return self.refused(f"cells must be a whole number from 1 to {most}, not {value!r}: nothing was sent")
+            if name == "stop_if" and (not isinstance(value, (list, tuple)) or any(c not in STOP_IF for c in value)):
+                return self.refused(f"stop_if is a list of {', '.join(STOP_IF)}, not {value!r}: nothing was sent")
+            if name == "color" and value not in COLORS:
+                return self.refused(f"color must be one of {', '.join(COLORS)}, not {value!r}: nothing was sent")
+            if name == "seconds" and (isinstance(value, bool) or not isinstance(value, (int, float))
+                                      or not 0 < value <= 30):
+                return self.refused(f"seconds must be a number from 1 to 30, not {value!r}: nothing was sent")
+        return None
+
     def turn(self, direction, counted=True):
+        wrong = self.wrong(way=direction)
+        if wrong:
+            return wrong
         if not self.sure:
             return self.refused("wait_adult", what_to_do=self.adult_instruction())
         kind = {"left": "L", "right": "R"}[direction]
@@ -1178,6 +1253,9 @@ class Cartographer:
     def move(self, direction, cells, stop_if):
         """Slide towards a side of the mat without turning: the Cartographer turns the direction of the mat into a
         direction of the robot (forwards, backwards, to its left, to its right), from the way it faces."""
+        wrong = self.wrong(direction=direction, cells=cells, stop_if=stop_if)
+        if wrong:
+            return wrong
         if not self.sure:
             return self.refused("wait_adult", what_to_do=self.adult_instruction())
         if self.frame:
@@ -1200,7 +1278,10 @@ class Cartographer:
             return self.say(answer, direction=direction)
         why = answer["why"]
         reason = WHY_DONE.get(why, why)
-        if why == "all" and answer.get("card_stop"):
+        if why == "all" and answer.get("card_stop") and not self.card_surely_on(answer["card_stop"]):
+            reason = (f"it stopped before {answer['card_stop']}, where a card seen from far could be: sideways and "
+                      "backwards it never drives onto a cell a card could be on")
+        elif why == "all" and answer.get("card_stop"):
             reason = f"it stopped before {answer['card_stop']}, where the camera saw a card: it never drives onto a card"
         elif why == "all" and answer.get("edge"):
             n = answer["cells_done"]
@@ -1248,6 +1329,9 @@ class Cartographer:
 
     def face(self, direction):
         """Turn on the spot until the robot faces north, east, south or west: one move, or none."""
+        wrong = self.wrong(direction=direction)
+        if wrong:
+            return wrong
         if not self.sure:
             return self.refused("wait_adult", what_to_do=self.adult_instruction())
         if self.frame:
@@ -1268,13 +1352,16 @@ class Cartographer:
         return result
 
     def set_light(self, color):
-        return self.say(self.referee.light(color))
+        return self.wrong(color=color) or self.say(self.referee.light(color))
 
     # One call ---------------------------------------------------------------------------------------------------
-    def call(self, action, is_move=False):
+    def call(self, action, is_move=False, check=None):
         """One call of the Pilot, through the Referee's door: up-to-date map before (the events first, so that the
         action answers from an up-to-date record), what happened during it after, and the map on disk whatever
-        happened."""
+        happened. check: the arguments' check (wrong), run first: a refusal then reads nothing and sends nothing."""
+        refusal = check() if check else None
+        if refusal:
+            return refusal
         def body():
             self.load()
             try:
@@ -1329,6 +1416,9 @@ class Cartographer:
         happens during the wait. Events from before the wait (the robot kept them) come with the answer, marked, but
         do not end it: a caller that waits for a Resume or a ball would otherwise get them back at once, again and
         again (seen on 5 and 6 November)."""
+        wrong = self.wrong(seconds=seconds)
+        if wrong:
+            return wrong
         start = clock.monotonic()
         end = start + seconds
         earlier = []  # [time of the poll that read them, event]: events from before the wait

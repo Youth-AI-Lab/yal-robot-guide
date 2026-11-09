@@ -4,7 +4,8 @@ It judges each command of the Cartographer against the rules (rules.json, writte
 moves of a session in mat.json), refuses, sends what it allows to the Reflex through the link, watches the move
 until it ends, keeps the count of moves and the log of its decisions (.robot-sim/referee.jsonl). It never decides
 a move and never writes the rules it applies. For its rules about the terrain (a card on this cell? a ball's lane?)
-it asks the Cartographer, and it counts every cell an estimate could fall on (caution).
+it asks the Cartographer, and sideways or backwards it counts every cell an estimate could fall on (caution);
+forwards, where the camera looks and the robot stops in front of a card by itself, only the cells sure to hold one.
 
 Its language, from the Cartographer (moves of the robot, never directions of the mat):
     step(target)                   one cell forwards (MOVE F); target: the (col, row) of that cell, or None off the mat
