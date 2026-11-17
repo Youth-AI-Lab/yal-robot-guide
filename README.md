@@ -372,6 +372,10 @@ by default) ([TRIALS.md](TRIALS.md#which-size-of-tools-for-the-strategist-6-nove
    You should see its report, on one line, with `"outcome": "done"` and
    `"cards": [{"card": "barbecue", "cell": "F3"}]`.
 
+   If the ball touches the robot on the way, the robot stops between two cells and waits for an adult, and so does
+   the mission. On the page, press **An adult puts it back and presses Resume**: the mission goes on. On 17 November
+   2026, in a local dev container, the ball touched the robot once, and the mission ended after 95 seconds.
+
 2. **With a scripted model**, which checks the loop without any network: `--model fake`.
 
 3. **With a real model**, through OpenRouter. The key is read on stdin, never on the command line, and `--cap` sets
@@ -497,7 +501,8 @@ sends back. Nothing caps Feurisson's conversation: set a limit on each key, on O
    The model is DeepSeek v4 Flash whatever `--model` chose; `--europe` is refused for now (the Strategist has not
    been tried with its models): follow the steps below instead.
 
-2. Start everything:
+2. Stop the simulator of the earlier parts if it still runs (**Ctrl+C** in its terminal): `robot-session` starts its
+   own, on the same port. Then start everything:
 
    ```bash
    robot-session start
@@ -738,7 +743,7 @@ lose?
 
 No model and no key; on a GitHub runner, 14 minutes (17 November 2026). It plays each scenario of parts 2 and 3 through MCP, as an agent would,
 then gives missions to the Strategist with no model or a scripted one, then through the Interpreter's link over HTTP,
-as Open WebUI would, and reads in the simulator what really happened: 262 checks, all passed in the image 2026.11.5
+as Open WebUI would, and reads in the simulator what really happened: 263 checks, all passed in the image 2026.11.5
 on 17 November 2026 (a local dev container, no network; the checks call nothing outside it). A real Open WebUI
 (0.12.4) with a fake model, then with Albert's `gemma-4-31b-it` as the Interpreter, was tried apart, not in these
 checks.
@@ -746,7 +751,8 @@ checks.
 In this guide's Codespace, `python3 -I ci/check_session.py` checks part 6 all at once (`robot-session`), with a fake
 model in the Codespace and no cost: Open WebUI, Feurisson and its seven tools, a mission down to the robot, a second
 start refused, what stop erases, and what is left after a Codespace restart. About five minutes once Open WebUI is
-downloaded: 30 checks, all passed three times in a local dev container of the image 2026.11.5 on 7 November 2026. The
+downloaded: 49 checks, all passed in a local dev container of the image 2026.11.5 on 17 November 2026 (30 checks,
+passed three times, on 7 November 2026). The
 public ports are checked only in a real Codespace, not by it.
 
 [ci/probe_tiers.py](ci/probe_tiers.py) goes further, one tier at a time (`--tier reflex`, `referee`, `cartographer`,
