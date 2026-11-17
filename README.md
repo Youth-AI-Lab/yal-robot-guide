@@ -275,37 +275,62 @@ and saw **Real cell** and the Cartographer's `cell` disagree with the wheels sli
 
 ---
 
-## Part 4 - Real time or frozen time
+## Part 4 - Time: who can react, and how fast
 
-The **Time** list changes how the world behaves while the agent thinks:
+**Why.** The robot lives in a room where things keep moving while a model thinks. Each layer of the stack works at
+its own speed, and that speed decides what it may be trusted with.
 
-- **real time**: the ball keeps rolling while nobody moves, as in a room. A model takes seconds to
-  decide; meanwhile the world changes.
+![The four layers. Human: about a minute, the group corrects a wrong mission. Deliberative: about a minute, the Strategist's model is often wrong and the tiers below catch it. Executive: seconds, a wrong map is caught by the Referee and the Reflex. Reactive: every 10 ms, the fastest and safest, with the last word.](images/06-layers-time.svg)
+
+**Four layers, four speeds.** The Reflex checks its sensors every 10 ms (reactive layer). The Pilot, the Cartographer
+and the Referee work in seconds: in the simulator, a cell of 30 cm takes about 3 seconds at 10 cm/s (executive
+layer). A call to a model takes a few seconds, and a mission several minutes (deliberative layer). The group answers
+at its own pace (human layer).
+
+**The lower, the safer.** The Strategist's model is often wrong; the Pilot, the Referee and the Reflex catch it. The
+Pilot is wrong when the map is wrong; the Referee and the Reflex catch it. The Referee and the Reflex are not wrong by
+design, but a sensor can miss something, and a rule can be badly written: an adult puts the robot back, and the
+adults mend the rules between two sessions. At the top, the group checks each mission when Feurisson says it back.
+
+**This is why the reflexes are on the robot.** A study in a simulator measured that decisions of 2.5 to 14 seconds
+make language-model agents fail in a world that does not wait, and that fast fixed rules combined with a slower model
+do better ([Zheng et al., arXiv 2506.07223](https://arxiv.org/abs/2506.07223)).
+
+### Real time or frozen time
+
+The **Time** list of the page changes how the world behaves while the agent thinks:
+
+- **real time**: the ball keeps rolling while nobody moves, as in a room. A model takes seconds to decide; meanwhile
+  the world changes.
 - **frozen**: the world waits for the robot, as in a video game. Agents that play games, like
   [pokemon-agent](https://github.com/NousResearch/pokemon-agent), live in this world.
 
-This is why the reflexes are on the robot: a study in a simulator measured that decisions of 2.5 to
-14 seconds make language-model agents fail in a world that does not wait, and that fast fixed rules
-combined with a slower model do better
-([Zheng et al., arXiv 2506.07223](https://arxiv.org/abs/2506.07223)).
+**Faster than real time.** The **Speed** list (or `python3 -I sim/robot_sim.py --speed 5`) runs the world up to 10
+times faster. The stack must then follow the world's time, not the computer's: start it with `ROBOT_CLOCK=sim` in
+front of the command, for example `ROBOT_CLOCK=sim python3 -I stack/mission.py …`. The Drive buttons of the page
+already do. To try a mission as fast as the computer can go, without the page, use [sim/headless.py](sim/headless.py):
+the simulator and the stack in one program, the same run again with the same seed.
 
-**Faster than real time.** The **Speed** list (or `python3 -I sim/robot_sim.py --speed 5`) runs the
-world up to 10 times faster. The stack must then follow the world's time, not the computer's: start
-it with `ROBOT_CLOCK=sim` in front of the command, for example
-`ROBOT_CLOCK=sim python3 -I stack/mission.py …`. The Drive buttons of the page already do. To try a
-mission as fast as the computer can go, without the page, use
-[sim/headless.py](sim/headless.py): the simulator and the stack in one program, the same run again
-with the same seed.
+**Checkpoint.** You switched the **Time** list between **real time** and **frozen**, and saw how the ball behaves
+while nobody drives.
+
+**Think about it.** On a bench of 5 November, an agent took 6 seconds between two calls (median,
+[TRIALS.md](TRIALS.md#agents-of-your-own-drive-the-robot-5-and-6-november-2026)). What can happen on the mat in
+that time, and which tier will deal with it?
 
 ---
 
-## Part 5 - Give it a mission
+## Part 5 - The Pilot and the Strategist: a mission
 
-The Strategist takes a mission in a closed format: a list of steps, each one an action from a short
-list with one argument from a short list, and a personality. It never receives the group's words: it
-builds the sentences its model reads from these fields alone. The model closes each step with
-`step_done`, or the whole mission with `report`, whose fields are closed too. Until the Interpreter (the chatbot that turns the group's words
-into a mission) is written, [stack/mission.py](stack/mission.py) stands in for it.
+**Why.** Driving cell by cell is not what the group wants. The group wants a mission: "find the barbecue". Two tiers
+turn a mission into moves. The **Pilot** is code without a model: it knows how to reach a goal (the way, exploring,
+waiting for an adult). The **Strategist** is a loop around a model: it chooses which of the Pilot's tools to use
+next, and ends each mission with a report.
+
+**The mission is closed.** It is a list of steps, each one an action from a short list with one argument from a short
+list, and a personality. The Strategist never receives the group's words: it builds the sentences its model reads
+from these fields alone. The model closes each step with `step_done`, or the whole mission with `report`, whose
+fields are closed too. In a terminal, [stack/mission.py](stack/mission.py) stands in for Feurisson (part 6).
 
 | Step | Argument | What the robot does |
 |---|---|---|
@@ -314,8 +339,28 @@ into a mission) is written, [stack/mission.py](stack/mission.py) stands in for i
 | `find_card` | a card | finds out whether it is on the mat, and on which cell |
 | `survey` | a card | finds every card of that kind, with its cell |
 
-1. Without a model, the Pilot alone does each step (no network, no cost). With the simulator running,
-   in a second terminal:
+### What enters the model's context
+
+![What the Strategist writes into the conversation with its model: the closed mission turned into sentences by code, the personality's text bricks, and the answers of the tools. Never an image, never the group's words. The Strategist stops at 100 turns or 0.25 US dollars a mission.](images/07-model-context.svg)
+
+**The question of the series, for the Strategist.** Its model reads three things: the mission, turned into sentences
+by code; the instructions of the personality; and the answers of the tools (card names, cells such as "probably F3",
+what happened since the last call, refusals). It never reads an image, nor the group's words. The Strategist stops a
+mission at 100 turns, or when it has cost 0.25 US dollars ([stack/strategist.py](stack/strategist.py), `MAX_TURNS`
+and `RUN_CAP_USD`).
+
+**Three sizes of tools.** The Strategist gives its model the route tools by default (`go_to_cell`, `look_around`,
+`face`, `wait_for_event`, `seen_cards`, `set_light`, `robot_state`), or `--tools goal` (`explore`, `go_to_card`), or
+`--tools step` (the nine tools of part 7). The bigger the tools, the more the Pilot decides in code; the smaller, the
+more the model decides, and the more it costs. With the route tools, the personality changes how the robot drives
+without every step going through the model. On 6 November 2026, with the loop this one comes from (not yet this
+stack), a cautious personality looked around about three times more per cell than an adventurous one, and took fewer
+hits from the ball ([TRIALS.md](TRIALS.md#which-size-of-tools-for-the-strategist-6-november-2026)).
+
+### Run a mission
+
+1. **Without a model**, the Pilot alone does each step (no network, no cost). With the simulator running, in a second
+   terminal:
 
    ```bash
    python3 -I stack/mission.py reach_card:barbecue set_light:green --model none
@@ -324,75 +369,127 @@ into a mission) is written, [stack/mission.py](stack/mission.py) stands in for i
    You should see its report, on one line, with `"outcome": "done"` and
    `"cards": [{"card": "barbecue", "cell": "F3"}]`.
 
-2. With a scripted model, which checks the loop without any network: `--model fake`.
+2. **With a scripted model**, which checks the loop without any network: `--model fake`.
 
-3. With a real model, through OpenRouter. The key is read on stdin, never on the command line, and
-   `--cap` sets the most the mission may cost, in US dollars:
+3. **With a real model**, through OpenRouter. The key is read on stdin, never on the command line, and `--cap` sets
+   the most the mission may cost, in US dollars:
 
    ```bash
    read -rs KEY && printf %s "$KEY" | python3 -I stack/mission.py find_card:barbecue --model qwen-flash --cap 0.10; unset KEY
    ```
 
-   French public servants (teachers included) can use Albert API of the DINUM instead, with their
-   Albert key: `--model albert:deepseek-v4-flash` (or another of its models). No price; the content
-   is not kept; hosted in France.
+   French public servants (teachers included) can use Albert API of the DINUM instead, with their Albert key:
+   `--model albert:deepseek-v4-flash` (or another of its models). No price; the content is not kept; hosted in
+   France.
 
-   > [!WARNING]
-   > Each call sends the mission and the robot's state to the company or the administration that runs
-   > the model. Nothing about a person must go there.
+   > 🚫 **Warning.** Each call sends the mission and the robot's state to the company or the administration that
+   > runs the model. Nothing about a person must go there.
 
-4. A personality: `--personality cautious` or `--personality adventurous`, two compositions of
-   bricks from [stack/personality/bricks.json](stack/personality/bricks.json). A brick is either a
-   setting of the Pilot (code: always applied, such as "2 cells at most in one move") or an
-   instruction to the Strategist's model (text: often followed, sometimes forgotten). No brick can
-   loosen the Referee's rules.
+### The personality
 
-5. In another terminal, `python3 -I stack/mission.py pause`, then `resume`, or `stop`. The loop
-   handles it without asking the model: the robot stops on the next cell, as soon as possible (the
-   Pilot asks it, down to the Reflex: `HOLD` in the protocol), and no adult is needed.
+![A personality is made of bricks of two kinds: settings of the Pilot, which are code and always applied, and instructions to the Strategist's model, which are text, often followed and sometimes forgotten. No brick can loosen the Referee's rules.](images/08-personality.svg)
 
-What to read afterwards, in `.robot-sim/`: `missions/<time>/` (the mission, every message the model
-received and sent, the report, what it cost) and `referee.jsonl` (every command the Referee sent or
-refused, with the rule).
+Add `--personality cautious` or `--personality adventurous`: two compositions of bricks from
+[stack/personality/bricks.json](stack/personality/bricks.json). **A brick is either code or text.** A setting of the
+Pilot (such as "2 cells at most in one move") is code: always applied. An instruction to the Strategist's model (such
+as "look around before every move") is text: often followed, sometimes forgotten. Trying both kinds in the simulator
+shows a group which of its wishes always hold. No brick can loosen the Referee's rules.
 
-The Strategist offers its model one size of tools: the route tools by default (`go_to_cell`,
-`look_around`, `face`, `wait_for_event`, `seen_cards`, `set_light`, `robot_state`), `--tools goal`
-(`explore`, `go_to_card`) or `--tools step` (the nine tools of part 7). On 6 November 2026, with the
-loop this one comes from, one run per mission with Qwen3.8 Flash and DeepSeek v4 Flash: with the route
-tools, the adventurous card looked 0.20 to 0.28 times per cell and the cautious one 0.64 to 0.68, and
-the cautious one failed twice in ten runs, for lack of moves. Not yet run with this stack.
+### Pause, resume, stop
+
+In another terminal, `python3 -I stack/mission.py pause`, then `resume`, or `stop`. The loop handles it without
+asking the model: the Strategist passes it to the Pilot, which asks the robot to stop on the next cell, as soon as
+possible (`HOLD` in the protocol). No adult is needed.
+
+**What to read afterwards**, in `.robot-sim/`: `missions/<time>/` (the mission, every message the model received and
+sent, the report, what it cost) and `referee.jsonl` (every command the Referee sent or refused, with the rule).
+
+**Checkpoint.** The mission without a model ends with `"outcome": "done"`, and `missions/<time>/` holds what a model
+would have received.
+
+**Think about it.** Read the messages of a mission run with `--model fake`. Is there anything in them you would not
+want a company to receive?
 
 ---
 
-## Part 6 - Talk to it: the Interpreter (not tried with a group)
+## Part 6 - Feurisson, the Interpreter: talking with the group (not tried with a group)
 
-The Interpreter is a chatbot: Feurisson, the voice of the robot. It talks with the group in the
-group's words, turns their request into a mission in the closed format, says it back, and starts it
-only after the group says yes. It reaches the stack through one door,
-[stack/interpreter_link.py](stack/interpreter_link.py): an MCP server over HTTP with a token, seven
-tools (the closed lists, start, pause, add steps to a paused mission, resume, stop, the mission's state, progress
-and report), none of which drives the robot. Its instructions are [interpreter/feurisson.md](interpreter/feurisson.md).
+**Why.** The group does not speak in closed missions. Feurisson, the voice of the robot, is a chatbot: it talks with
+the group in the group's words, turns their request into a mission in the closed format, says it back, and starts it
+only after the group says yes. Then it tells them what happened.
+
+**One door, seven tools.** Feurisson reaches the stack through [stack/interpreter_link.py](stack/interpreter_link.py):
+an MCP server over HTTP with a token, with seven tools (the closed lists, start, pause, add steps to a paused mission,
+resume, stop, the mission's state, progress and report). None of them drives the robot. Its instructions are
+[interpreter/feurisson.md](interpreter/feurisson.md).
+
+### The life of a mission
+
+![The life of a mission: proposed, then running after the group's yes; pausing then paused; waiting for an adult after a touch; ended with the report; stopped; failed on an error. The step from proposed to running is held only by Feurisson's instructions; the other steps are held by code.](images/09-mission-lifecycle.svg)
+
+**What code holds, and what only the model holds.** Some promises are kept by the link, whatever Feurisson's model
+does: `stop_mission` is refused unless the group asked to stop, or the mission was paused at an earlier message (the
+group was asked first); steps can be added only to a paused mission; a report with a card the camera never placed
+there is refused; a mission whose model sends the same refused call four times ends. One promise is kept only by
+Feurisson's instructions: **saying the mission back and waiting for the group's yes before starting it.** The link
+cannot know whether the group said yes. A model can forget it; in the trials of 7 November, Mistral Small 3.2 on
+Albert API did ([TRIALS.md](TRIALS.md#interpreter-real-models-talk-with-a-scripted-group-7-november-2026)).
+
+### One mission, from end to end
+
+![One mission from end to end, as an illustration: the group asks for the barbecue, gently; Feurisson says it back and the group says yes; the Strategist's model chooses to look around; the group adds dry grass, the mission pauses, steps are added and it resumes; a ball touches the robot, an adult presses Resume; the report comes back in words.](images/10-mission-sequence.svg)
+
+The diagram is an illustration of how the tiers work together, not a recorded run. Follow it from the top: the
+mission is agreed (1); the Strategist's model chooses a route tool, and the robot looks around (2); the group adds
+something, so the mission pauses on the next cell, the new step is said back and added, and the mission resumes (3);
+a ball touches the robot, which stops between two cells: the Strategist does not call its model while it waits, so
+waiting costs nothing, and an adult puts the robot back (4); the report comes back up, and Feurisson says it in the
+group's words (5).
+
+### The filter in front of Feurisson
+
+Rewording Feurisson's instructions did not stop it from answering in the wrong language, nor from stopping a mission
+without asking. So `robot-session` gives Feurisson a filter,
+[interpreter/feurisson_filter.py](interpreter/feurisson_filter.py), which runs before each message of the group,
+outside the model:
+
+- **Names and details are masked.** A name, an age, a place where someone lives, a school, an e-mail or a phone
+  number in the group's messages becomes `[name]`, `[age]`, `[place]`, `[school]` or `[contact]`. This is done with
+  patterns, in French, English, Spanish, Catalan, Italian and Dutch, without any model: the detail never leaves the
+  Codespace. A name found once is taken out of the whole conversation. If Feurisson writes a bracket back ("Hello
+  [name]!"), the filter takes it out of the answer. The patterns miss a name given without "my name is" ("Léa and
+  Tom want…"): it is a help, not a guarantee. Check it with `python3 -I ci/check_filter.py`.
+- **The mission's state** is read just then and goes into Feurisson's instructions.
+- **The group's language.** A small, cheap model of the same provider (Mistral Small 3.2 through OpenRouter,
+  Ministral 8B with Albert) names the group's language, and the instructions say to answer in it. The group's message
+  goes to that small model too. If it names nothing, the filter asks once more, then guesses from common words ("the",
+  "le", "el"…); if it still cannot tell, the language named before stays.
+- **Stopping.** It tells the link whether the group asked to stop, which `stop_mission` needs.
+
+And, with or without the filter, when Feurisson reads `mission_status` again in the same answer while the mission
+runs, the link adds: tell the group now. DeepSeek used to read it in a loop until the mission ended, saying nothing.
+On 48 conversations played by a script, the filter took the answers in the wrong language from 25 to 0, and the
+missions stopped without asking from 4 to 0 ([TRIALS.md](TRIALS.md#interpreter-what-the-filter-changed-48-conversations)).
 
 ### All at once, in this guide's Codespace
 
-One command starts the simulator, the stack with the Strategist's model, the link, and Open WebUI
-with the chatbot "Feurisson robot" (the same Open WebUI as the workshops, without accounts). Both
-models, the Strategist's and Feurisson's, are DeepSeek v4 Flash through OpenRouter, each paid with a
-key of its own, so that each has its own limit and its own count; OpenRouter is asked to avoid
-companies that may collect the data, which does not stop a provider from keeping what it receives.
-The Strategist stops a mission at 0.25 US dollars, counted from the costs OpenRouter sends back.
-Nothing caps Feurisson's conversation: set a limit on each key, on OpenRouter.
+One command starts the simulator, the stack with the Strategist's model, the link, and Open WebUI with the chatbot
+"Feurisson robot" (the same Open WebUI as the workshops, without accounts). Both models, the Strategist's and
+Feurisson's, are DeepSeek v4 Flash through OpenRouter, each paid with a key of its own, so that each has its own limit
+and its own count. OpenRouter is asked to avoid companies that may collect the data, which does not stop a provider
+from keeping what it receives. The Strategist stops a mission at 0.25 US dollars, counted from the costs OpenRouter
+sends back. Nothing caps Feurisson's conversation: set a limit on each key, on OpenRouter.
 
-1. Save Feurisson's OpenRouter key (`sk-or-...`), as in the workshops, and create a second one, with
-   its own limit, for the Strategist:
+1. Save Feurisson's OpenRouter key (`sk-or-...`), as in the workshops, and create a second one, with its own limit,
+   for the Strategist:
 
    ```bash
    workshop-login
    ```
 
-   It ends with `Key OK (…). You can start: workshop bare`: that line is for the workshops; here, go on
-   with step 2. The model is DeepSeek v4 Flash whatever `--model` chose; `--europe` is refused for
-   now (the Strategist has not been tried with its models): follow the steps below instead.
+   It ends with `Key OK (…). You can start: workshop bare`: that line is for the workshops; here, go on with step 2.
+   The model is DeepSeek v4 Flash whatever `--model` chose; `--europe` is refused for now (the Strategist has not
+   been tried with its models): follow the steps below instead.
 
 2. Start everything:
 
@@ -400,16 +497,14 @@ Nothing caps Feurisson's conversation: set a limit on each key, on OpenRouter.
    robot-session start
    ```
 
-   It asks for the Strategist's key (not shown, never saved) and refuses Feurisson's. The first time,
-   it downloads Open WebUI (about 1.6 GB, a few minutes). You should see
-   `Ready (Open WebUI answered in … s).`
+   It asks for the Strategist's key (not shown, never saved) and refuses Feurisson's. The first time, it downloads
+   Open WebUI (about 1.6 GB, a few minutes). You should see `Ready (Open WebUI answered in … s).`
 
-   For a session of adults, or to try the simulator alone, keep the traces:
-   `robot-session start --keep-traces` (see step 4).
+   To try the simulator alone, or for a session of adults, keep the traces: `robot-session start --keep-traces`
+   (see step 4).
 
-3. In the **Ports** tab (next to Terminal): **Robot simulator** (8780) shows the robot; **Open WebUI**
-   (3000), then choose "Feurisson robot" in the box where you type, and ask it a mission. Keep both
-   ports private.
+3. In the **Ports** tab (next to Terminal): **Robot simulator** (8780) shows the robot; **Open WebUI** (3000), then
+   choose "Feurisson robot" in the box where you type, and ask it a mission. Keep both ports private.
 
 4. To end:
 
@@ -417,89 +512,46 @@ Nothing caps Feurisson's conversation: set a limit on each key, on OpenRouter.
    robot-session stop
    ```
 
-   By default, the traces are erased: the missions and their conversations with the model, the
-   Referee's journal, the map of the terrain, the counters (all of `.robot-sim`), and Open WebUI with
-   its conversations. That is the rule for a session with young people. Started with
-   `--keep-traces`, `.robot-sim` stays, and Open WebUI's conversations are saved in it before Open
-   WebUI is removed. `robot-session status` says what runs.
+   By default, the traces are erased: the missions and their conversations with the model, the Referee's journal,
+   the map of the terrain, the counters (all of `.robot-sim`), and Open WebUI with its conversations. This is the
+   rule planned for a session with young people. Started with `--keep-traces`, `.robot-sim` stays, and Open WebUI's
+   conversations are saved in it before Open WebUI is removed. `robot-session status` says what runs.
 
-**With Albert API** (French public servants, teachers included: no price, hosted in France), instead of
-steps 1 and 2:
+**With Albert API** (French public servants, teachers included: no price, hosted in France), instead of steps 1 and
+2:
 
 ```bash
 robot-session start --albert <model>
 ```
 
-It asks for two Albert keys, Feurisson's then the Strategist's (not shown, never saved), and checks them
-with Albert's list of models. `<model>` is Feurisson's; the Strategist's is `deepseek-v4-flash-0731`, the
-only model of Albert seen doing the missions. Albert counts requests and tokens per minute and per day, model by model.
+It asks for two Albert keys, Feurisson's then the Strategist's (not shown, never saved), and checks them with Albert's
+list of models. `<model>` is Feurisson's; the Strategist's is `deepseek-v4-flash-0731`, the only model of Albert seen
+doing the missions. Albert counts requests and tokens per minute and per day, model by model.
 
-> ⚠️ **Important.** Open WebUI has no accounts here: anyone who opens it is its administrator and
-> can read Feurisson's key. `robot-session start` stops everything if port 3000 or 8780 is public, but a
-> port made public afterwards is not seen. Never make them public.
+> ⚠️ **Important.** Open WebUI has no accounts here: anyone who opens it is its administrator and can read
+> Feurisson's key. `robot-session start` stops everything if port 3000 or 8780 is public, but a port made public
+> afterwards is not seen. Never make them public.
 
-> ℹ️ **Note.** The link listens only on Docker's network inside the Codespace, with a random token:
-> Open WebUI reaches it, the Ports tab does not. Checked without a model by
-> `python3 -I ci/check_session.py`, in a local dev container. Not yet tried in a real Codespace, nor
-> on screen.
-
-What real models did on 7 November 2026, one try each, the group played by a script, in French:
-- DeepSeek v4 Flash through OpenRouter, for both: the two missions done (the barbecue on F3; dry grass
-  on C2 and D2), 0.018 US dollars for two conversations. Feurisson waited for the yes every time, but
-  once gave no report after reading it, once said an old state without asking `mission_status`, and
-  once stopped a mission without asking the group first.
-- Mistral Small 3.2 on Albert, as Feurisson: it started missions before the yes, then called a tool
-  without a name, and Albert refused the rest of the conversation. As the Strategist: the same refused
-  call again and again, and a card reported where it never was. Not usable for either.
-- `deepseek-v4-flash-0731` on Albert, as the Strategist: the two missions done.
-
-The stack now refuses a report with a card the camera never placed there, and ends a mission whose
-model sends the same refused call four times.
-
-Rewording Feurisson's instructions did not stop it from answering in the wrong language or stopping a
-mission without asking. So `robot-session` gives Feurisson a filter,
-[interpreter/feurisson_filter.py](interpreter/feurisson_filter.py), which runs before each message of the
-group, outside the model:
-- first, a name, an age, a place where someone lives, a school, an e-mail or a phone number in the
-  group's messages becomes `[name]`, `[age]`, `[place]`, `[school]` or `[contact]`. This is done with
-  patterns, in French, English, Spanish, Catalan, Italian and Dutch, without any model: the detail never
-  leaves the Codespace. A name found once is taken out of the whole conversation. If Feurisson writes a
-  bracket back ("Hello [name]!"), the filter takes it out of the answer. The patterns miss a name given
-  without "my name is" ("Léa and Tom want…"): it is a help, not a guarantee. Check it with
-  `python3 -I ci/check_filter.py`;
-- the state of the mission, read just then, goes into Feurisson's instructions;
-- a small, cheap model of the same provider (Mistral Small 3.2 through OpenRouter, Ministral 8B with
-  Albert) names the group's language, and the instructions say to answer in it. The group's message goes to
-  that small model too. If it names nothing, the filter asks once more, then guesses from common words
-  ("the", "le", "el"…); if it still cannot tell, the language named before stays;
-- the link refuses `stop_mission` unless the group asked to stop, or the mission was paused at an earlier
-  message (the group was asked first).
-
-And, with or without the filter, when Feurisson reads `mission_status` again in the same answer while the
-mission runs, the link adds: tell the group now. DeepSeek used to read it in a loop until the mission
-ended, saying nothing.
-
-On 48 conversations with DeepSeek v4 Flash, played by a script: answers in the wrong language went from
-25 to 0 in 198 turns, missions stopped without asking from 4 to 0; with the note on `mission_status`,
-answers that said nothing to the group from 6 to 1.
+> ℹ️ **Note.** The link listens only on Docker's network inside the Codespace, with a random token: Open WebUI
+> reaches it, the Ports tab does not. Checked without a model by `python3 -I ci/check_session.py`, in a local dev
+> container. Not yet tried in a real Codespace, nor on screen.
 
 ### Step by step, on any computer
 
-1. With the simulator running, in a second terminal, start the link. The token is a secret of at
-   least 32 characters; keep it for Open WebUI:
+1. With the simulator running, in a second terminal, start the link. The token is a secret of at least 32
+   characters; keep it for Open WebUI:
 
    ```bash
    export MCP_TOKEN=$(python3 -c "import secrets; print(secrets.token_hex(24))")
    /opt/workshop/venv/bin/python -I stack/interpreter_link.py --model none --allowed-host 127.0.0.1:8790
    ```
 
-   You should see `READY robot-mission: http://127.0.0.1:8790/mcp, Strategist none with the route
-   tools`. `--model` is the Strategist's model, as in part 5 (`none`, `fake`, `albert:<model>`, a
-   model of OpenRouter; a key on stdin).
+   You should see `READY robot-mission: http://127.0.0.1:8790/mcp, Strategist none with the route tools`.
+   `--model` is the Strategist's model, as in part 5 (`none`, `fake`, `albert:<model>`, a model of OpenRouter; a key
+   on stdin).
 
-2. In Open WebUI, declare the link as a tool server of type MCP (Streamable HTTP), its address
-   ending in `/mcp`, authentication "bearer" with the token. From the environment, as the checks of
-   this guide do:
+2. In Open WebUI, declare the link as a tool server of type MCP (Streamable HTTP), its address ending in `/mcp`,
+   authentication "bearer" with the token. From the environment, as the checks of this guide do:
 
    ```json
    TOOL_SERVER_CONNECTIONS=[{"type": "mcp", "url": "http://<this computer>:8790/mcp", "path": "",
@@ -509,22 +561,26 @@ answers that said nothing to the group from 6 to 1.
 
    Where to do it on screen: TO BE COMPLETED (not looked at for this guide).
 
-3. Make a chatbot: the text of [interpreter/feurisson.md](interpreter/feurisson.md) as its System
-   Prompt, the tool server "Robot mission" switched on, **Function Calling: Native**.
+3. Make a chatbot: the text of [interpreter/feurisson.md](interpreter/feurisson.md) as its System Prompt, the tool
+   server "Robot mission" switched on, **Function Calling: Native**.
 
 4. Its model, through an OpenAI-compatible connection of Open WebUI:
    - **Albert API**, for French public servants (teachers included, through ProConnect): address
-     `https://albert.api.etalab.gouv.fr/v1`, your Albert key. No price; the content of the messages is
-     not kept (the date, the account, the model, the number of tokens and the IP address are, for 24
-     months); hosted in France. On 7 November 2026, `deepseek-v4-flash`, `gemma-4-31b-it`,
-     `gpt-oss-120b`, `mistral-small-3-2-24b-instruct-2506` and `ministral-3-8b-instruct-2512` all
-     called a tool correctly; the list changes (two of them leave on 1 December 2026).
+     `https://albert.api.etalab.gouv.fr/v1`, your Albert key. No price; the content of the messages is not kept (the
+     date, the account, the model, the number of tokens and the IP address are, for 24 months); hosted in France. On
+     7 November 2026, `deepseek-v4-flash`, `gemma-4-31b-it`, `gpt-oss-120b`, `mistral-small-3-2-24b-instruct-2506` and
+     `ministral-3-8b-instruct-2512` all called a tool correctly; the list changes (two of them leave on 1 December
+     2026).
    - **OpenRouter**, for the partners, as in the workshops.
 
-> [!WARNING]
-> Everything the group types goes to the company or the administration that runs the Interpreter's
-> model. Nothing about a person must go there, and nothing of this is ready for a group of young
-> people.
+> 🚫 **Warning.** Everything the group types goes to the company or the administration that runs the Interpreter's
+> model. Nothing about a person must go there, and nothing of this is ready for a group of young people.
+
+**Checkpoint.** Feurisson said a mission back and waited for your yes; the robot moved on the simulator's page; and
+`robot-session stop` (without `--keep-traces`) erased the traces in `.robot-sim`.
+
+**Think about it.** Only Feurisson's instructions make it wait for the group's yes. What could the stack check in
+code instead, and what would the group lose?
 
 ---
 
