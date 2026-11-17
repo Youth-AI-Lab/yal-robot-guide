@@ -14,10 +14,10 @@ loop: "One turn of the loop, every 10 ms" {
 }
 
 act: "Motors stop or move;\nthe light changes colour" {class: part}
-events: "Events kept on the robot\n(the last 16), read by the Referee" {class: part}
+events: "Events kept on the robot\n(the last 32), read by the Referee" {class: part}
 fault: "A mistake in reflex.py, or a late loop:\nwheels stop, then wait for an adult" {class: never}
 
 sensors -> loop.read
 loop.limits -> act
 loop.limits -> events
-loop.decide -> fault: "if it fails" {style.stroke-dash: 3}
+loop.decide -> fault: "if it fails" {style.stroke: "#dc2626"}

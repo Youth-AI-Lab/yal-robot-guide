@@ -43,7 +43,7 @@ classes: {
   # a layer (reactive, executive, deliberative, human)
   layer: {
     label.near: bottom-right
-    style: {fill: "#fbfbfd"; stroke: "#94a3b8"; stroke-dash: 3; border-radius: 14; font-size: 15; italic: true; font-color: "#475569"}
+    style: {fill: "#fbfbfd"; stroke: "#cbd5e1"; border-radius: 14; font-size: 15; italic: true; font-color: "#475569"}
   }
   # a tier of the stack
   tier: {
@@ -57,7 +57,7 @@ classes: {
     style: {fill: "#eff6ff"; stroke: "#3b82f6"; border-radius: 12; font-size: 18}
   }
   zone-internet: {
-    style: {fill: "#f8fafc"; stroke: "#94a3b8"; stroke-dash: 4; border-radius: 12; font-size: 18}
+    style: {fill: "#f8fafc"; stroke: "#94a3b8"; border-radius: 12; font-size: 18}
   }
   zone-sim: {
     style: {fill: "#f0fdf4"; stroke: "#22c55e"; border-radius: 12; font-size: 18}
@@ -75,6 +75,10 @@ classes: {
   spacer: {
     label: ""
     style: {opacity: 0}
+  }
+  # held only by a model's instructions, not by code (amber, dotted)
+  model-held: {
+    style: {border-radius: 8; fill: "#fffbeb"; stroke: "#d97706"; stroke-dash: 2; font-size: 15}
   }
   # what never happens, or never leaves
   never: {

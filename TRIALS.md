@@ -21,7 +21,7 @@ around: the route tools, used by default) or small ones (one step at a time). Wh
 through OpenRouter. When there are two numbers, there is one per model. These runs used the loop the Strategist comes
 from, not yet this stack.
 
-| Tools given to the model | Missions done | Cost of a run | Calls to the model |
+| Tools given to the model | Missions done | Cost of a run (average) | Calls to the model (median) |
 |---|---|---|---|
 | none: the Pilot alone | 5 out of 5 (no model, one run per mission) | 0 $ | 0 |
 | goal tools (`explore`, `go_to_card`) | 10 out of 10 | 0.0008 to 0.0017 $ | 4 |
@@ -31,7 +31,8 @@ from, not yet this stack.
 
 **Does the personality change the driving?** Yes, with both models, the way it should. The adventurous card looked
 around 0.20 and 0.28 times per cell and took 45 and 11 hits from the ball; the cautious one looked 0.64 and 0.68
-times per cell, took 7 and 2 hits, and ran out of moves twice.
+times per cell, took 7 and 2 hits, and ran out of moves twice (that bench gave 40 or 50 moves; this stack
+sets no limit by default).
 
 **No collision anywhere.** A ball touching the bumper is not one: the Reflex stops everything and an adult puts the
 robot back.
@@ -61,7 +62,7 @@ whose model sends the same refused call four times.
 
 Rewording Feurisson's instructions did not stop it from answering in the wrong language, nor from stopping a mission
 without asking. So the filter was written (part 6 of the README). On 48 conversations with DeepSeek v4 Flash, played
-by a script, 198 turns in all:
+by a script (the same 48 conversations, 198 turns, played without and with the filter):
 
 - answers in the wrong language: from 25 to 0;
 - missions stopped without asking the group: from 4 to 0;
@@ -71,8 +72,7 @@ by a script, 198 turns in all:
 
 ## Agents of your own drive the robot (5 and 6 November 2026)
 
-These trials used the nine step tools of part 7. The Hermes trials below ran through the earlier program, before the
-stack.
+These trials used the nine step tools of part 7. All of them ran before the stack, with the earlier program.
 
 **Two extra tools (5 November, Hermes).** With `look_around` and `face`, the models that wandered most found the card
 more often. This is why each of them counts as one move.
@@ -118,6 +118,8 @@ when it did not. And never count on the model for safety: the Reflex and the Ref
 ---
 
 ## Events pushed to Claude Code (3 November 2026)
+
+This trial ran before the stack, with the earlier program.
 
 With `ROBOT_CHANNEL=1`, `drive.py` pushes each event as it happens, as a Claude Code *channel* (part 7 of the README).
 Tried with Claude Code 2.1.291 then 2.1.317, signed in with claude.ai: each event started a turn with nobody typing,

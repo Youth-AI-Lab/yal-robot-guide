@@ -11,9 +11,9 @@ Digitale Wolven (Antwerp, Belgium), CSC Vent des Îles (La Rochelle, France).
 > one piece at a time.
 
 > 🚫 **Warning.** A prototype, for facilitators. Nothing here has run on a real robot, and real models have driven
-> the simulator only in a few trials ([TRIALS.md](TRIALS.md)). It is not ready for a group of young people yet: the
-> rules for that are not decided. The plan is that the facilitator does all the technical set-up, and the young
-> people only talk to Feurisson and watch the robot.
+> the simulator only in a few trials ([TRIALS.md](TRIALS.md)). It is not ready for a group of young people yet.
+> Do not use it with young people: the rules for that are not decided. The plan, once they are, is that the
+> facilitator does all the technical set-up, and the young people only talk to Feurisson and watch the robot.
 
 ### Goals
 
@@ -24,15 +24,15 @@ Digitale Wolven (Antwerp, Belgium), CSC Vent des Îles (La Rochelle, France).
 | drive the robot by hand, and say why some of your commands are refused | 3 |
 | explain why the fastest layer is the safest, and has the last word | 4 |
 | give the robot a mission, with or without a model, and read what the model received | 5 |
-| let Feurisson talk with a group, and say what holds its promises: code, or only its model | 6 |
+| let Feurisson talk with you, playing the group, and say what holds its promises: code, or only its model | 6 |
 | connect an agent of your own to the robot | 7 |
 | say where each program will run in a session | 8 |
 
 ### Why this approach?
 
 **One question organises everything.** The workshops of the series ask: *what enters the model's context, when, and
-who decides?* The robot answers it in a strict way. Two models take part, Feurisson's and the Strategist's. Neither
-ever receives an image. The Strategist never receives the group's words. Each program in between decides what it
+who decides?* The robot answers it in a strict way. Two models drive a mission, Feurisson's and the Strategist's, and a
+third, small one names the group's language (part 6). None of them ever receives an image. The Strategist never receives the group's words. Each program in between decides what it
 passes on, and each part of this guide says what that is.
 
 **The robot is a stack of tiers.** Each tier is a small program with one job. It talks only to the tier just above it
@@ -40,6 +40,9 @@ and the tier just below it, each in a language of its own. Commands go down, fro
 Information comes up, from the sensors to the group.
 
 ![The six tiers of the stack, from the group down to the robot. Commands go down on the left, information comes up on the right. The Interpreter and the Strategist send text to a model provider on the Internet; the Strategist never sends the group's words.](images/01-overview.svg)
+
+*How to read the diagrams of this guide: a dashed box or arrow is planned, not built yet; red shows what leaves for
+a model provider on the Internet; amber and dotted (part 6) is held only by a model's instructions, not by code.*
 
 **The lower the tier, the safer, and it has the last word.** The Reflex, on the robot, checks its sensors every
 10 ms and stops it without asking anyone. A model takes seconds to answer and is often wrong. So the model sits
@@ -108,8 +111,8 @@ which the stack opens as it will open the real robot's USB cable.
 
 **The Drive panel.** It moves the robot by hand. **North**, **West**, **South**, **East** and the arrow keys of the
 keyboard go towards a side of the mat: the robot turns as needed, then moves one cell. **↑ Forward**, **↺ Left**,
-**↻ Right** are one move each. Each button goes through the whole stack, down to the Referee, with the same rules an
-agent has: part 3 explains this.
+**↻ Right** are one move each. Each button goes through the Pilot, the Cartographer and the Referee, with the same rules
+an agent has: part 3 explains this.
 
 **Checkpoint.** The page shows the robot on its start cell, and **Forward** moves it one cell.
 
@@ -239,11 +242,9 @@ that refused it.
 
 ### Try the rules
 
-1. Drag a box onto the cell in front of the robot (the dashed square), then **Forward**: refused, "something is in
-   front of the robot".
-2. Turn towards the edge of the mat and **Forward**: refused, the next cell is outside the mat.
-3. Drag a card onto the cell in front of the robot, then **State**: `card_ahead` names it.
-4. In the second terminal, `python3 -I stack/drive.py move north 3 card_ahead`: the robot slides up to three cells
+1. Turn towards the edge of the mat and **Forward**: refused, the next cell is outside the mat.
+2. Drag a card onto the cell in front of the robot, then **State**: `card_ahead` names it.
+3. In the second terminal, `python3 -I stack/drive.py move north 3 card_ahead`: the robot slides up to three cells
    and stops on the cell in front of the first card it meets. Then `python3 -I stack/drive.py move east`: refused,
    the robot only sees in front of it. `face east`, `face north`, then `move east` again: now that the distance
    sensor has seen the cell free, the robot slides there without turning.
@@ -288,9 +289,10 @@ layer). A call to a model takes a few seconds, and a mission several minutes (de
 at its own pace (human layer).
 
 **The lower, the safer.** The Strategist's model is often wrong; the Pilot, the Referee and the Reflex catch it. The
-Pilot is wrong when the map is wrong; the Referee and the Reflex catch it. The Referee and the Reflex are not wrong by
-design, but a sensor can miss something, and a rule can be badly written: an adult puts the robot back, and the
-adults mend the rules between two sessions. At the top, the group checks each mission when Feurisson says it back.
+Pilot is wrong when the map is wrong, for instance when the wheels slip; the Referee judges with that same map, so it
+is the Reflex, with the robot's own sensors, that catches it. The Referee and the Reflex follow fixed rules, but a
+sensor can miss something, and a rule can be badly written: an adult puts the robot back, and the adults mend the
+rules between two sessions. At the top, the group checks each mission when Feurisson says it back.
 
 **This is why the reflexes are on the robot.** A study in a simulator measured that decisions of 2.5 to 14 seconds
 make language-model agents fail in a world that does not wait, and that fast fixed rules combined with a slower model
@@ -346,16 +348,17 @@ fields are closed too. In a terminal, [stack/mission.py](stack/mission.py) stand
 **The question of the series, for the Strategist.** Its model reads three things: the mission, turned into sentences
 by code; the instructions of the personality; and the answers of the tools (card names, cells such as "probably F3",
 what happened since the last call, refusals). It never reads an image, nor the group's words. The Strategist stops a
-mission at 100 turns, or when it has cost 0.25 US dollars ([stack/strategist.py](stack/strategist.py), `MAX_TURNS`
-and `RUN_CAP_USD`).
+mission at 100 turns, or when it has cost 0.25 US dollars by default (`--cap` changes it;
+[stack/strategist.py](stack/strategist.py), `MAX_TURNS` and `RUN_CAP_USD`).
 
 **Three sizes of tools.** The Strategist gives its model the route tools by default (`go_to_cell`, `look_around`,
 `face`, `wait_for_event`, `seen_cards`, `set_light`, `robot_state`), or `--tools goal` (`explore`, `go_to_card`), or
 `--tools step` (the nine tools of part 7). The bigger the tools, the more the Pilot decides in code; the smaller, the
 more the model decides, and the more it costs. With the route tools, the personality changes how the robot drives
 without every step going through the model. On 6 November 2026, with the loop this one comes from (not yet this
-stack), a cautious personality looked around about three times more per cell than an adventurous one, and took fewer
-hits from the ball ([TRIALS.md](TRIALS.md#which-size-of-tools-for-the-strategist-6-november-2026)).
+stack), a cautious personality looked around about three times more per cell than an adventurous one, took fewer
+hits from the ball, and ran out of moves twice in ten runs (that bench gave 40 or 50 moves; this stack sets no limit
+by default) ([TRIALS.md](TRIALS.md#which-size-of-tools-for-the-strategist-6-november-2026)).
 
 ### Run a mission
 
@@ -419,7 +422,8 @@ the group in the group's words, turns their request into a mission in the closed
 only after the group says yes. Then it tells them what happened.
 
 **One door, seven tools.** Feurisson reaches the stack through [stack/interpreter_link.py](stack/interpreter_link.py):
-an MCP server over HTTP with a token, with seven tools (the closed lists, start, pause, add steps to a paused mission,
+an MCP server (Model Context Protocol: a standard way for a chatbot or an agent to call tools) over HTTP with a
+token, with seven tools (the closed lists, start, pause, add steps to a paused mission,
 resume, stop, the mission's state, progress and report). None of them drives the robot. Its instructions are
 [interpreter/feurisson.md](interpreter/feurisson.md).
 
@@ -427,10 +431,12 @@ resume, stop, the mission's state, progress and report). None of them drives the
 
 ![The life of a mission: proposed, then running after the group's yes; pausing then paused; waiting for an adult after a touch; ended with the report; stopped; failed on an error. The step from proposed to running is held only by Feurisson's instructions; the other steps are held by code.](images/09-mission-lifecycle.svg)
 
-**What code holds, and what only the model holds.** Some promises are kept by the link, whatever Feurisson's model
-does: `stop_mission` is refused unless the group asked to stop, or the mission was paused at an earlier message (the
-group was asked first); steps can be added only to a paused mission; a report with a card the camera never placed
-there is refused; a mission whose model sends the same refused call four times ends. One promise is kept only by
+**What code holds, and what only the model holds.** Some promises are kept by code, whatever Feurisson's model does.
+The link adds steps only to a paused mission. With `robot-session`, whose filter tells the link about each new
+message of the group, the link also refuses `stop_mission` unless the group asked to stop, or the mission was paused
+at an earlier message (the group was asked first); without the filter, this rule does not apply. Lower down, the
+Strategist refuses a report with a card the camera never placed there, and ends a mission whose model sends the same
+refused call four times. One promise is kept only by
 Feurisson's instructions: **saying the mission back and waiting for the group's yes before starting it.** The link
 cannot know whether the group said yes. A model can forget it; in the trials of 7 November, Mistral Small 3.2 on
 Albert API did ([TRIALS.md](TRIALS.md#interpreter-real-models-talk-with-a-scripted-group-7-november-2026)).
@@ -650,7 +656,7 @@ starts coming closer, going away, or leaves its sight, and the Cartographer says
 **What happened between two calls.** MCP works by questions and answers: an agent learns nothing while it thinks. So
 every answer of the stack carries `since_last_call`: what happened to the robot since that caller's last call
 (something touched the bumper, came close in front, a move stopped, the emergency button, Resume), with how many
-seconds ago. The robot itself remembers its last 16 events (`EVENTS` in the protocol), so nothing is lost when nobody
+seconds ago. The robot itself remembers its last 32 events (`EVENTS` in the protocol), so nothing is lost when nobody
 listens; an agent, a terminal and the page each have their own count. `wait_for_event` lets an agent watch; it never
 makes it fast enough to protect the robot: the reflexes do that.
 
@@ -672,7 +678,9 @@ pushes each event as it happens, as a Claude Code *channel*: Claude Code's own r
 sessions only, started with
 `MCP_PROTOCOL_NEGOTIATION=legacy ENABLE_TOOL_SEARCH=false claude --dangerously-load-development-channels server:robot`
 ([channels](https://code.claude.com/docs/en/channels)). Keep `ENABLE_TOOL_SEARCH=false`: by default Claude Code
-loads MCP tools only on demand, and the model then answers that it has no tool for the robot. OpenCode and Hermes have
+loads MCP tools only on demand, and the model then answers that it has no tool for the robot. Tried on 3 November 2026
+with Claude Code 2.1.291 then 2.1.317, signed in with claude.ai, before this stack. Not tried with 2.1.303 nor with an
+API key ([TRIALS.md](TRIALS.md#events-pushed-to-claude-code-3-november-2026)). OpenCode 2.1.4 and Hermes v0.22.5 have
 no such way: they read `since_last_call`.
 
 **What the trials showed.** The model makes the main difference, more than the agent around it. Agents said they had
@@ -694,24 +702,28 @@ crossed the ball's path without looking, and the robot's reflex is what protecte
 ## Part 8 - Where each program will run (planned)
 
 **Why.** In this guide everything runs on one computer. In a session, the programs will be spread over a few
-devices, and what leaves the room matters as much as what the robot does. This part is a plan (planned): only the
-simulator has run.
+devices, and what leaves the room matters as much as what the robot does. Only the simulator has run: everything
+in this part is planned.
 
 ![Planned deployment in a session: Open WebUI with Feurisson on the facilitator's laptop; the link and the stack on a Raspberry Pi in the room; the robot with its STeaMi board and OpenMV N6 camera, reached by lines of text over a USB cable today, a radio later; the two models at providers on the Internet, over HTTPS.](images/12-deployment-planned.svg)
 
-**On the robot**, a STeaMi board runs the same `firmware.py` and `reflex.py` as the simulator, and an OpenMV N6
-camera gives it card names and angles, never an image. **In the room**, a Raspberry Pi (planned) runs the stack and
-the link; today the stack reaches the robot through its USB cable, and a radio link is TO BE COMPLETED in
-[stack/link.py](stack/link.py). **On the facilitator's laptop**, Open WebUI runs Feurisson and its filter, and reaches
+**On the robot**, a STeaMi board will run the same `firmware.py` and `reflex.py` as the simulator, and an OpenMV N6
+camera will give it card names and angles, never an image. **In the room**, a Raspberry Pi will run the stack and the
+link. Today the code can open a USB cable to the robot (never tried: there is no robot yet), and a radio link is TO
+BE COMPLETED in [stack/link.py](stack/link.py). **On the facilitator's laptop**, Open WebUI runs Feurisson and its filter, and reaches
 the link over the room's network (planned). **On the Internet**, the two models run at a provider (OpenRouter or
-Albert API, as today; a local model later, planned), called over HTTPS.
+Albert API, as today), called over HTTPS. The Strategist already accepts a local model through Ollama
+(`--model ollama:<model>`); it has not been tried in a session.
 
-**What leaves the room is text only**: the Strategist's conversation, and Feurisson's. But the group's words go to the
-provider of Feurisson's model: the filter of part 6 masks names and details first, as a help, not a guarantee.
+**What leaves the room is text only**: the Strategist's conversation, Feurisson's, and the group's messages sent to
+the small model that names their language. So the group's words go to a provider: the filter of part 6 masks names and details first, as a help, not a guarantee.
 
 **The facilitator does the set-up.** The young people talk only to Feurisson and watch the robot; the facilitator
 starts the programs, holds the keys, writes the rules with the other adults, presses Resume, and erases the traces at
 the end (`robot-session stop`, part 6).
+
+**Checkpoint.** You can point, on the diagram, to every place where the group's words leave the room, and say which
+programs never see them.
 
 **Think about it.** Which of these devices would you most want to keep off the Internet, and what would the session
 lose?
@@ -724,7 +736,7 @@ lose?
 /opt/workshop/venv/bin/python -I ci/check_sim.py
 ```
 
-About eight minutes, no model and no key. It plays each scenario of parts 2 and 3 through MCP, as an agent would,
+No model and no key. It plays each scenario of parts 2 and 3 through MCP, as an agent would,
 then gives missions to the Strategist with no model or a scripted one, then through the Interpreter's link over HTTP,
 as Open WebUI would, and reads in the simulator what really happened: 262 checks, all passed in the image 2026.11.5
 on 17 November 2026 (a local dev container, no network; the checks call nothing outside it). A real Open WebUI

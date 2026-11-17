@@ -9,7 +9,7 @@ reflex: "Reflex, on the robot (or the simulator)" {class: tier; width: 460}
 trace: ".robot-sim/context.jsonl\nexactly what entered the agent's context" {class: part}
 
 agent -> drive: "a tool call"
-drive -> agent: "a short text answer" {style.stroke-dash: 4}
+drive -> agent: "a short text answer"
 drive -> stack: "one move at a time"
 stack -> reflex: "allowed commands"
 drive -> trace: "written"

@@ -5,12 +5,12 @@ direction: down
 
 group: "The group (and the facilitator)" {class: person}
 
-human: "human · about a minute" {
+human: "human · at the group's pace" {
   class: layer
   interpreter: "Interpreter: Feurisson\nturns the group's words into a mission,\nwaits for their yes, tells what happened" {class: tier; width: 520}
 }
 
-deliberative: "deliberative · about a minute" {
+deliberative: "deliberative · seconds per call, minutes per mission" {
   class: layer
   strategist: "Strategist\na loop and a model:\nwhich tool next, for this mission" {class: tier; width: 520}
 }
@@ -44,7 +44,7 @@ deliberative.strategist <- executive.pilot: "result"
 executive.referee -> reactive.reflex: "MOVE R 2 (a line of text)"
 executive.referee <- reactive.reflex: "events"
 
-human.interpreter -> provider: "the group's words" {style: {stroke: "#dc2626"; stroke-dash: 3}}
-deliberative.strategist -> provider: "the mission's fields,\nnever the group's words" {style: {stroke: "#dc2626"; stroke-dash: 3}}
+human.interpreter -> provider: "the group's words: to Feurisson's model,\nand to a small model that names their language" {style.stroke: "#dc2626"}
+deliberative.strategist -> provider: "the mission's fields,\nnever the group's words" {style.stroke: "#dc2626"}
 rules -> executive.referee: "read"
 adult -> reactive.reflex: "Resume button"
