@@ -14,7 +14,7 @@ permissions:
 jobs:
   check:
     runs-on: ubuntu-24.04
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
@@ -26,5 +26,5 @@ jobs:
         run: devcontainer up --workspace-folder . < /dev/null > up.log 2>&1 || { tail -50 up.log; exit 1; }
 
       - name: Scenarios, with no model
-        timeout-minutes: 15
+        timeout-minutes: 25
         run: devcontainer exec --workspace-folder . bash -lc 'cd "$PWD" && /opt/workshop/venv/bin/python -I ci/check_sim.py'

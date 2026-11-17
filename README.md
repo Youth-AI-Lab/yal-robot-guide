@@ -736,7 +736,7 @@ lose?
 /opt/workshop/venv/bin/python -I ci/check_sim.py
 ```
 
-No model and no key. It plays each scenario of parts 2 and 3 through MCP, as an agent would,
+No model and no key; on a GitHub runner, 14 minutes (17 November 2026). It plays each scenario of parts 2 and 3 through MCP, as an agent would,
 then gives missions to the Strategist with no model or a scripted one, then through the Interpreter's link over HTTP,
 as Open WebUI would, and reads in the simulator what really happened: 262 checks, all passed in the image 2026.11.5
 on 17 November 2026 (a local dev container, no network; the checks call nothing outside it). A real Open WebUI
