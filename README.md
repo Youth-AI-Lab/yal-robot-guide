@@ -584,10 +584,16 @@ code instead, and what would the group lose?
 
 ---
 
-## Part 7 - Connect an agent of your own (not tested with a real model)
+## Part 7 - An agent of your own (not tested with a real model in this stack)
 
-[stack/drive.py](stack/drive.py) is an MCP server: the Pilot's nine step tools, which go down the
-whole stack, for an agent of your own instead of the Strategist:
+**Why.** Feurisson and the Strategist are one way to drive the robot. You can also connect an agent you already use
+(Claude Code, Hermes Agent, OpenCode…) and watch what it does with the same rules. It is the best way to see that the
+safety does not come from the model.
+
+![An agent of your own calls the nine step tools of stack/drive.py, an MCP server; the tools go down through the Pilot, the Cartographer and the Referee to the robot, one move at a time. Every answer is written to .robot-sim/context.jsonl.](images/11-own-agent.svg)
+
+**One door for your agent.** [stack/drive.py](stack/drive.py) is an MCP server: the Pilot's nine step tools, which
+go down the whole stack, for an agent of your own instead of the Strategist:
 
 | Tool | What it does | Read only |
 |---|---|---|
@@ -601,113 +607,114 @@ whole stack, for an agent of your own instead of the Strategist:
 | `wait_for_event(seconds)` | watch the robot for 1 to 30 seconds; answers as soon as something happens to it | yes |
 | `seen_cards()` | the cards the camera recognised, with the cell of each, where it was seen from, and when; the cells the camera has not looked at yet | yes |
 
-`look_around` and `face` count as one move each, so that an agent spends its moves on going
-somewhere, not on counting quarter turns. Tried on 5 November 2026 with Hermes: with these two
-tools, the models that wandered most found the card more often.
+`look_around` and `face` count as one move each, so that an agent spends its moves on going somewhere, not on
+counting quarter turns.
 
-**`move`: several cells, and conditions.** The robot has mecanum wheels: it slides forwards,
-backwards or to a side without turning, and its camera keeps looking the way it faces. One `move`
-counts as one move, however many cells (1 to 4). The robot itself checks the conditions, on each
-cell it reaches, and stops there: the agent answers seconds later (6 s between two calls, median of
-the bench of 5 November), when a ball has already rolled more than a cell. The robot never drives onto
-a card it knows: forwards it always stops in front of one; every slide stops before a cell where the
-Cartographer has placed a card for sure, and a slide sideways or backwards before any card the camera has
-placed, even from far; `step_forward` and a slide forwards refuse a cell with a card, and a cell where a
-ball was seen in the last 10 seconds (or next to one that was coming closer). Its distance sensor and
-camera only look forwards: backwards or sideways, the Referee lets it slide only into cells the
-sensor saw free in the last two minutes (`face` that way once, or `look_around`; the cells it has just
-been through count too), never into the lane of a ball (the row or column where one was seen
-rolling; seen from far, a lane may cover two), never near a ball seen in the last 10 seconds, and
-the robot goes slower there. The sensor's
-beam is narrower than the robot (TO BE COMPLETED on the real one): a small thing near the side of a
-cell can be missed, and then the bumper stops the robot. How true a sideways slide is on the real
-wheels is TO BE COMPLETED (mecanum wheels slip more sideways). Tried on 6 November with Hermes and
-three cheap models: 27 missions out of 30, against 20 without `move`; the rules about cards, lanes
-and waiting came after that bench.
+**One move at a time.** A move sent while another one runs is refused ("send one move at a time"): a model that sends
+several moves at once would otherwise see them run in an order nobody chose.
 
-**What the camera saw.** The camera names cards from a short list, never sends an image, and sees
-in a cone in front of the robot (30 degrees each side, up to 120 cm: the simulator's values, TO BE
-COMPLETED on the OpenMV N6), wider when farther; a box hides what is behind it. For each card it
-gives an angle and a distance, which it guesses less well when the card is far (**Camera distance
-error**). The robot only believes it while it stands still. Each card that comes into view becomes an
-event (in `since_last_call`), and the Cartographer turns it into a cell, with the other cells it could be
-in: "probably F3 (could also be F2, G3)". Seen again from closer, the estimate gets better.
-`seen_cards` keeps that record, so it does not depend on the agent's memory; a card moved by hand
-leaves it when the robot sees it gone. It also keeps which cells the camera has looked at
-(`camera_coverage`): a cell counts once the robot stood still with it in the camera's cone, unless the
-line to it crosses a cell where the distance sensor met something, and a cell the robot stood on
-counts too. A cell where the sensor met something at two moments 10 s apart is set apart: something
-stands there (a box; a ball rolls on). When no cell is left, the agent hears it once: the cards on the
-mat are the ones the camera saw. The Cartographer knows boxes only through the distance sensor: a box it
-never met can still hide a cell, which the agent is not told to guess about. The camera also sees the ball: twice a second, the robot
-compares two sightings and tells when it starts coming closer, going away, or leaves its sight, and
-the Cartographer says where it is and which way it goes ("probably E3, moving south, getting closer to
-the robot"); `robot_state` gives the last sighting. On the page, the shaded fan is what the camera can see, the
-dots are where it thinks the cards are, and the dashed circles are what the Cartographer believes (what
-the agent is told). The robot's own cell comes from counting moves: with **Wheels slip** on, it can
-be wrong.
+### `move`: several cells, and conditions
 
-**What happened between two calls.** MCP works by questions and answers: an agent learns nothing
-while it thinks. So every answer of the stack carries `since_last_call`: what happened to the robot
-since that caller's last call (something touched the bumper, came close in front, a move stopped, the
-emergency button, Resume), with how many seconds ago. The robot itself remembers its last 16 events
-(`EVENTS` in the protocol), so nothing is lost when nobody listens; an agent, a terminal and the page
-each have their own count. `wait_for_event` lets an agent watch; it never makes it fast enough to
-protect the robot: the reflexes do that.
+The robot has mecanum wheels: it slides forwards, backwards or to a side without turning, and its camera keeps
+looking the way it faces. One `move` counts as one move, however many cells (1 to 4). **The robot itself checks the
+conditions**, on each cell it reaches, and stops there: an agent answers seconds later, when a ball has already
+rolled more than a cell.
 
-**Events pushed to Claude Code.** With `ROBOT_CHANNEL=1` in the `env` of the
-server in `.mcp.json`, drive.py also pushes each event as it happens, as a Claude Code *channel*:
-Claude Code's own research preview, in interactive sessions only, started with
+The robot never drives onto a card it knows: forwards, it always stops in front of one; every slide stops before a
+cell where the Cartographer has placed a card for sure, and a slide sideways or backwards before any card the camera
+has placed, even from far. `step_forward` and a slide forwards refuse a cell with a card, and a cell where a ball was
+seen in the last 10 seconds (or next to one that was coming closer). Backwards or sideways, the Referee lets the robot
+slide only into cells the sensor saw free in the last two minutes (`face` that way once, or `look_around`; the cells
+it has just been through count too), never into the lane of a ball (the row or column where one was seen rolling;
+seen from far, a lane may cover two), never near a ball seen in the last 10 seconds, and the robot goes slower there.
+
+The sensor's beam is narrower than the robot (TO BE COMPLETED on the real one): a small thing near the side of a cell
+can be missed, and then the bumper stops the robot. How true a sideways slide is on the real wheels is TO BE
+COMPLETED (mecanum wheels slip more sideways).
+
+### What the agent knows about the mat
+
+**`seen_cards` keeps the record**, so it does not depend on the agent's memory (part 3 says how the camera sees). A
+card moved by hand leaves it when the robot sees it gone. It also keeps which cells the camera has looked at
+(`camera_coverage`): a cell counts once the robot stood still with it in the camera's cone, unless the line to it
+crosses a cell where the distance sensor met something, and a cell the robot stood on counts too. A cell where the
+sensor met something at two moments 10 s apart is set apart: something stands there (a box; a ball rolls on). When no
+cell is left, the agent hears it once: the cards on the mat are the ones the camera saw. The Cartographer knows boxes
+only through the distance sensor: a box it never met can still hide a cell, which the agent is not told to guess
+about.
+
+**The ball.** The camera also sees the ball: twice a second, the robot compares two sightings and tells when it
+starts coming closer, going away, or leaves its sight, and the Cartographer says where it is and which way it goes
+("probably E3, moving south, getting closer to the robot"); `robot_state` gives the last sighting.
+
+**What happened between two calls.** MCP works by questions and answers: an agent learns nothing while it thinks. So
+every answer of the stack carries `since_last_call`: what happened to the robot since that caller's last call
+(something touched the bumper, came close in front, a move stopped, the emergency button, Resume), with how many
+seconds ago. The robot itself remembers its last 16 events (`EVENTS` in the protocol), so nothing is lost when nobody
+listens; an agent, a terminal and the page each have their own count. `wait_for_event` lets an agent watch; it never
+makes it fast enough to protect the robot: the reflexes do that.
+
+### Connect your agent
+
+- **Claude Code**: [.mcp.json](.mcp.json) declares the server. Claude Code asks you before each call; that question
+  is the human in the loop.
+- **Hermes Agent v0.22.5**: add [agents/hermes-robot.yaml](agents/hermes-robot.yaml) to its configuration. With
+  `trust: untrusted`, Hermes asks a person before each move, and refuses every move where nobody can answer. Use
+  `trust: full` (no approval) in the simulator only.
+- **Any agent**: the result of each call is written to `.robot-sim/context.jsonl`, and the page shows it. This is
+  exactly what entered the agent's context.
+- **Rules for the agent**: [agents/AGENTS.example.md](agents/AGENTS.example.md) is an example of what a group could
+  write (look around before moving, cross the ball's path only when it moves away, wait when the robot asks for an
+  adult). Name it `AGENTS.md` in the folder where you start the agent.
+
+**Events pushed to Claude Code.** With `ROBOT_CHANNEL=1` in the `env` of the server in `.mcp.json`, drive.py also
+pushes each event as it happens, as a Claude Code *channel*: Claude Code's own research preview, in interactive
+sessions only, started with
 `MCP_PROTOCOL_NEGOTIATION=legacy ENABLE_TOOL_SEARCH=false claude --dangerously-load-development-channels server:robot`
-([channels](https://code.claude.com/docs/en/channels)). Tried on 3 November 2026 with Claude Code 2.1.291 then 2.1.317, signed in with claude.ai: each event
-started a turn with nobody typing, the line `← robot: Robot event, … s ago: …` on screen and an answer
-from the model. Add `ENABLE_TOOL_SEARCH=false` to the command: by default Claude Code loads MCP tools
-only on demand, and at the first event Haiku and Sonnet both answered they had no tool for the robot.
-With it, Sonnet called `robot_state` at once, described the robot and moved nothing. Without network, Claude Code
-only says "Channels are not currently available". Not tried with 2.1.303 nor with an API key. OpenCode 2.1.4 and Hermes v0.22.5 have no
-such way: they read `since_last_call`.
+([channels](https://code.claude.com/docs/en/channels)). Keep `ENABLE_TOOL_SEARCH=false`: by default Claude Code
+loads MCP tools only on demand, and the model then answers that it has no tool for the robot. OpenCode and Hermes have
+no such way: they read `since_last_call`.
 
-- **Claude Code**: [.mcp.json](.mcp.json) declares the server. Claude Code asks you before each
-  call; that question is the human in the loop.
-- **Hermes Agent v0.22.5**: add [agents/hermes-robot.yaml](agents/hermes-robot.yaml) to its
-  configuration. With `trust: untrusted`, Hermes asks a person before each move, and refuses every
-  move where nobody can answer. Tried with a fake model, then with DeepSeek v4 Flash through
-  OpenRouter (4 sessions, 0.0117 dollars): the model finds the robot's tools through Hermes's
-  `tool_search`, calls `robot_state`, says so when a move is refused, and watches with
-  `wait_for_event`. With `trust: full` (no approval, in the simulator only), it drove the robot
-  by itself around a tree and a rock to a card, in 13 moves and 3 minutes. Hermes keeps
-  drive.py running between two commands; it follows the simulator if it restarts. These trials ran
-  with the gateway that the stack replaced (the same tools, the same rules, in one program).
-- **Any agent**: the result of each call is written to `.robot-sim/context.jsonl`, and the page
-  shows it. This is exactly what entered the agent's context.
-- **Rules for the agent**: [agents/AGENTS.example.md](agents/AGENTS.example.md) is an example of what
-  a group could write (look around before moving, cross the ball's path only when it moves away,
-  wait when the robot asks for an adult). Name it `AGENTS.md` in the folder where you start the
-  agent. Tried on 5 November 2026 with Hermes: with DeepSeek v4 Flash, the robot found the card and
-  stopped in front of it, looked around, let the ball go by, no collision; with `qwen2.5:7b` on the
-  laptop (Ollama, 6 GB card), it gave up after 7 calls. With OpenCode and the same small local models
-  (`qwen2.5:7b`, `qwen3:1.7b`), the robot moved but did not find the card; nor with
-  `qwen3:30b-a3b-instruct-2507` (18 GB) through OpenCode or Hermes, on the same laptop. The same task with
-  three coding agents that had only the robot's tools: Claude Code (Sonnet 5.5), Codex (gpt-6.1-sol) and
-  agy all found the card. Only Codex waited to see the ball move away before it crossed. The other two
-  crossed without looking, the robot's own reflex stopped them, and their reports said they had waited.
-  Read `.robot-sim/context.jsonl`, not only the agent's answer. Five runs of each engine (Claude Code,
-  OpenCode, Hermes) with each model showed that the model makes the main difference. Sonnet 5.5 found the
-  card in 4, 2 and 4 runs out of 5. DeepSeek v4 Flash never found it, in any engine. On the laptop,
-  `qwen3:8b` was too slow for a robot that moves in real time, and Hermes refuses a model with less than
-  64,000 tokens of context. With Hermes and nine models (three runs each, then five runs of four
-  ways to help the agent), Gemini 4 Argon found the card 3 times out of 3 and Qwen3.8 Flash in most
-  runs, for about 2 US cents a run. Two extra tools, one to look all around and one to face north,
-  east, south or west, helped the models that wandered most. Clearer rules did not help.
-  GPT-6.1 Sol was the only model that crossed the ball's path only after it saw the ball moving
-  away; this is also why it often ran out of turns. The other models crossed without looking:
-  the robot's reflex is what protected it.
-- **One move at a time.** A move sent while another one runs is refused ("send one move at a time"):
-  a model that sends several moves at once would otherwise see them run in an order nobody chose.
+**What the trials showed.** The model makes the main difference, more than the agent around it. Agents said they had
+waited for the ball when they had not: read `.robot-sim/context.jsonl`, not only the agent's answer. Most models
+crossed the ball's path without looking, and the robot's reflex is what protected it. Two extra tools (`look_around`,
+`face`) helped the models that wandered most; clearer rules did not. The models, the runs and the numbers are in
+[TRIALS.md](TRIALS.md#agents-of-your-own-drive-the-robot-5-and-6-november-2026); they ran before this stack.
 
-> [!WARNING]
-> Each call sends the robot's state to the company that runs the model. Nothing about a person
-> must go there.
+> 🚫 **Warning.** Each call sends the robot's state to the company that runs the model. Nothing about a person must
+> go there.
+
+**Checkpoint.** Your agent called `robot_state`, a move was refused at least once with the Referee's reason, and
+`.robot-sim/context.jsonl` shows what it received.
+
+**Think about it.** Your agent's answer and `.robot-sim/context.jsonl` disagree. Which one do you believe, and why?
+
+---
+
+## Part 8 - Where each program will run (planned)
+
+**Why.** In this guide everything runs on one computer. In a session, the programs will be spread over a few
+devices, and what leaves the room matters as much as what the robot does. This part is a plan (planned): only the
+simulator has run.
+
+![Planned deployment in a session: Open WebUI with Feurisson on the facilitator's laptop; the link and the stack on a Raspberry Pi in the room; the robot with its STeaMi board and OpenMV N6 camera, reached by lines of text over a USB cable today, a radio later; the two models at providers on the Internet, over HTTPS.](images/12-deployment-planned.svg)
+
+**On the robot**, a STeaMi board runs the same `firmware.py` and `reflex.py` as the simulator, and an OpenMV N6
+camera gives it card names and angles, never an image. **In the room**, a Raspberry Pi (planned) runs the stack and
+the link; today the stack reaches the robot through its USB cable, and a radio link is TO BE COMPLETED in
+[stack/link.py](stack/link.py). **On the facilitator's laptop**, Open WebUI runs Feurisson and its filter, and reaches
+the link over the room's network (planned). **On the Internet**, the two models run at a provider (OpenRouter or
+Albert API, as today; a local model later, planned), called over HTTPS.
+
+**What leaves the room is text only**: the Strategist's conversation, and Feurisson's. But the group's words go to the
+provider of Feurisson's model: the filter of part 6 masks names and details first, as a help, not a guarantee.
+
+**The facilitator does the set-up.** The young people talk only to Feurisson and watch the robot; the facilitator
+starts the programs, holds the keys, writes the rules with the other adults, presses Resume, and erases the traces at
+the end (`robot-session stop`, part 6).
+
+**Think about it.** Which of these devices would you most want to keep off the Internet, and what would the session
+lose?
 
 ---
 
@@ -717,27 +724,27 @@ such way: they read `since_last_call`.
 /opt/workshop/venv/bin/python -I ci/check_sim.py
 ```
 
-About eight minutes, no model and no key. It plays each scenario of part 2 through MCP, as an agent
-would, then gives missions to the Strategist with no model or a scripted one, then through the
-Interpreter's link over HTTP, as Open WebUI would, and reads in the simulator what really happened:
-219 checks, all passed in the image 2026.11.5 on 7 November 2026 (a local dev container; the
-checks call nothing outside it). A real Open WebUI (0.12.4) with a fake model, then with Albert's `gemma-4-31b-it` as the
-Interpreter, was tried apart, not in these checks.
+About eight minutes, no model and no key. It plays each scenario of parts 2 and 3 through MCP, as an agent would,
+then gives missions to the Strategist with no model or a scripted one, then through the Interpreter's link over HTTP,
+as Open WebUI would, and reads in the simulator what really happened: 262 checks, all passed in the image 2026.11.5
+on 17 November 2026 (a local dev container, no network; the checks call nothing outside it). A real Open WebUI
+(0.12.4) with a fake model, then with Albert's `gemma-4-31b-it` as the Interpreter, was tried apart, not in these
+checks.
 
-In this guide's Codespace, `python3 -I ci/check_session.py` checks part 6 all at once
-(`robot-session`), with a fake model in the Codespace and no cost: Open WebUI, Feurisson and its seven
-tools, a mission down to the robot, a second start refused, what stop erases, and what is left after
-a Codespace restart. About five minutes once Open WebUI is downloaded: 30 checks, all passed three
-times in a local dev container of the image 2026.11.5 on 7 November 2026. The public ports are
-checked only in a real Codespace, not by it.
+In this guide's Codespace, `python3 -I ci/check_session.py` checks part 6 all at once (`robot-session`), with a fake
+model in the Codespace and no cost: Open WebUI, Feurisson and its seven tools, a mission down to the robot, a second
+start refused, what stop erases, and what is left after a Codespace restart. About five minutes once Open WebUI is
+downloaded: 30 checks, all passed three times in a local dev container of the image 2026.11.5 on 7 November 2026. The
+public ports are checked only in a real Codespace, not by it.
 
-[ci/probe_tiers.py](ci/probe_tiers.py) goes further, one tier at a time (`--tier reflex`, `referee`,
-`cartographer`, `pilot`, `strategist`, `interpreter`; for the Interpreter, a model plays it with
-[interpreter/feurisson.md](interpreter/feurisson.md), and the group is a bank of sentences, a small model, or both): a generator that only knows the tier's language (random, or a small local
-model through Ollama, with `--examples` for good and bad examples) writes its inputs, many times over, while fakes
-below it draw the world (touches, delays, sensor failures, refusals, a robot driven by hand); rules are checked after
-every call, and a run that breaks one is kept, to replay without the model. `--mutants` checks the probe itself:
-copies of the tier, each without one rule, must all be caught.
+[ci/probe_tiers.py](ci/probe_tiers.py) goes further, one tier at a time (`--tier reflex`, `referee`, `cartographer`,
+`pilot`, `strategist`, `interpreter`; for the Interpreter, a model plays it with
+[interpreter/feurisson.md](interpreter/feurisson.md), and the group is a bank of sentences, a small model, or both).
+A generator that only knows the tier's language (random, or a small local model through Ollama, with `--examples`
+for good and bad examples) writes its inputs, many times over, while fakes below it draw the world (touches, delays,
+sensor failures, refusals, a robot driven by hand). Rules are checked after every call, and a run that breaks one is
+kept, to replay without the model. `--mutants` checks the probe itself: copies of the tier, each without one rule,
+must all be caught.
 
 ```bash
 python3 -I ci/probe_tiers.py --generator random --runs 200
@@ -748,38 +755,33 @@ python3 -I ci/probe_tiers.py --mutants --runs 600
 
 ## The protocol between the Referee and the robot
 
-One line of text per command, one line per answer; the head of
-[robot/firmware.py](robot/firmware.py) lists them all. The robot moves forwards, or slides backwards
-or sideways without turning (more slowly: its distance sensor and camera look forwards only), four
-cells at most per command, and always stops on a cell. After a move interrupted between two cells it
-waits for an adult: the computer cannot release it.
+One line of text per command, one line per answer; the head of [robot/firmware.py](robot/firmware.py) lists them
+all. The robot moves forwards, or slides backwards or sideways without turning (more slowly: its distance sensor and
+camera look forwards only), four cells at most per command, and always stops on a cell. After a move interrupted
+between two cells it waits for an adult: the computer cannot release it.
 
-The robot's program is one loop, every 10 ms, that reads all its sensors at the start of each turn
-and then decides. What is brief (a touch on the bumper, a press on a button) is counted by the board
-itself, which also cuts the motors at once on a touch: a touch shorter than a turn of the loop is never
-missed. The distance and the camera come with the time they were measured: the robot does not believe
-a distance older than 300 ms, nor an image taken before it stopped (the real camera answers late). The camera
-also names the boxes it sees (`box`), so that a cell a box hides to one side is not counted as looked at. Any
-error in the program stops the wheels, and so does a loop that ran late while they turned. The head
-of [robot/firmware.py](robot/firmware.py) says what the board must give the program.
+The camera also names the boxes it sees (`box`), so that a cell a box hides to one side is not counted as looked at.
+The head of [robot/firmware.py](robot/firmware.py) says what the board must give the program (part 2 explains its
+loop).
 
 ---
 
 ## Limits to know
 
-- **Simulator values.** Cells of 30 cm, 10 cm/s, a one-second watchdog, a sensor that sees a fence
-  10 cm outside the mat (any closer, and the robot could not enter the cells of the edge), a distance
-  every 30 ms, an image every 50 ms with no delay (the real camera answers 1 to 2 s late, to be
-  measured), a loop every 10 ms: the real numbers are TO BE COMPLETED on the robot.
-- **What the simulator cannot tell you**: how the real motors, wheels and sensors behave, the
-  battery, the camera's real mistakes, the radio range, and whether children are safe around the
-  robot.
-- **The real robot**: the small file that gives `firmware.py` the board's sensors and motors is TO
-  BE COMPLETED once the robot is built.
-- **No real model has driven it**, and no group has used it.
+- **Simulator values.** Cells of 30 cm, 10 cm/s, a one-second watchdog, a sensor that sees a fence 10 cm outside the
+  mat (any closer, and the robot could not enter the cells of the edge), a distance every 30 ms, an image every 50 ms
+  with no delay (the real camera answers 1 to 2 s late, to be measured), a loop every 10 ms: the real numbers are TO
+  BE COMPLETED on the robot.
+- **What the simulator cannot tell you**: how the real motors, wheels and sensors behave, the battery, the camera's
+  real mistakes, the radio range, and whether children are safe around the robot.
+- **The real robot**: the small file that gives `firmware.py` the board's sensors and motors is TO BE COMPLETED once
+  the robot is built.
+- **No real robot, and no group.** Real models have driven the simulator only in the trials of
+  [TRIALS.md](TRIALS.md); no group has used it.
 
 ---
 
 ## About
 
-Texts: CC BY-SA 4.0. Code and configuration: EUPL-1.2. See [REUSE.toml](REUSE.toml).
+Texts and diagrams: CC BY-SA 4.0. Code and configuration: EUPL-1.2. See [REUSE.toml](REUSE.toml). The diagrams are
+written in D2 in [images/](images/) and rendered with [images/render.sh](images/render.sh).
