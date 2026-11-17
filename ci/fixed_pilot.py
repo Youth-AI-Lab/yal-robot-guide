@@ -1,5 +1,5 @@
 """The Pilot alone (stack/pilot.py), in fixed scenarios: the cases P1 to P23 of
-facilitator/robot-langages/5-pilote.md that the probe (ci/probe_pilot.py) reaches by chance or never.
+the Pilot's language (the head of stack/pilot.py) that the probe (ci/probe_pilot.py) reaches by chance or never.
 
 Each scenario sets a world by hand on the probe's fake Cartographer, made calm: nothing is drawn at random any more
 (no pause, no stop, no ball, no place lost, no move refused, no adult), and the camera sees every card in its cone.
@@ -48,7 +48,7 @@ import probe_pilot as pp  # noqa: E402  (first: it sets ROBOT_STATE_DIR before s
 from cartographer import REASONS  # noqa: E402  (the Cartographer's words, stack/cartographer.py)
 
 
-SCENARIOS = {}   # name -> (function, cases of 5-pilote.md, invariants of ROBOT-PILOTE.md)
+SCENARIOS = {}   # name -> (function, cases of the Pilot's language, invariants of its design)
 MUTANTS = {}     # name -> (patch(pilot), scenarios that must fail)
 HARNESSES = []   # those of the scenario being played: the probe's checks inside the fake must not break
 
@@ -943,7 +943,7 @@ def m_cross_ignored(m):
 
 
 # --- F7: go_to_card, the surest place first (P5) ----------------------------------------------------------------------
-# The cells ruled out live in go_to_card, for one call (ROBOT-PILOTE.md, E4): they are seen only through what the
+# The cells ruled out live in go_to_card, for one call: they are seen only through what the
 # robot does, the next attempt of the same call and a second call that tries them again.
 @scenario("F7a", "P5", "I15 I20")
 def f7a_surest_first():
@@ -974,7 +974,7 @@ def f7a_surest_first():
 def f7b_failed_face_rules_out():
     # The card is on C2, sure enough to try first; D2 is blocked, so is every way to C2 but C3. The robot reaches C3
     # facing east; the quarter turn north is refused once, without a state. The reading after it shows the robot on C3
-    # facing east: C2 was not faced, so it is not ruled out (ROBOT-PILOTE.md, E4), and the next attempt turns again.
+    # facing east: C2 was not faced, so it is not ruled out, and the next attempt turns again.
     h = Harness(at="A3", facing="east", truth={"C2": "barbecue"}, toolset="goal")
     h.fake.seen = [record("barbecue", "C2", 120, ["D2"])]
     block(h, "B2", "C1", "D2")
@@ -1156,7 +1156,7 @@ def f8b_short_no_explore():
                                                          "mat_covered": False, "moves_left": 2}),
                        ("go_to_card", [[], {"card": "barbecue"}], answer)], "pilot.jsonl: explore, then go_to_card",
           lines(h))
-    # Two moves left, the card never seen: no exploration, and the reason is the moves (ROBOT-PILOTE.md, E6).
+    # Two moves left, the card never seen: no exploration, and the reason is the moves.
     h = Harness(at="C5", facing="north", limit=2, toolset="goal")
     answer = h.tool("go_to_card", card="barbecue")
     check(answer == {"result": "gave up", "why": "no moves left", "cards_seen": {}, "moves_left": 2},
@@ -1230,7 +1230,7 @@ def m_explore_gave_up_lost(m):
 
 
 # --- F9: go_to_card, 8 attempts and their two end messages (P17) ------------------------------------------------------
-# The reason is kept during the attempts (ROBOT-PILOTE.md, E6): "no way ... now" as soon as one place had no way to it,
+# The reason is kept during the attempts: "no way ... now" as soon as one place had no way to it,
 # whatever the count of places and whatever the 8th attempt did.
 @scenario("F9a", "P17", "I12 I16")
 def f9a_one_place_no_way():
@@ -1472,7 +1472,7 @@ def f11b_more_than_six():
           "two look_arounds: more than 6 counts as the same number each round", h.calls())
     raise Known("with more than 6 places the Cartographer sends no could_be, so localize counts 99 places each round "
                 "and gives up at the second round even when places were ruled out (40, then 8), not only when none was "
-                "as 5-pilote.md P10 says: stack/pilot.py:318-319, stack/cartographer.py:1019-1022")
+                "as P10 of the Pilot's language says: stack/pilot.py:318-319, stack/cartographer.py:1019-1022")
 
 
 @scenario("F11c", "P9 P10", "I7 I16")
@@ -1742,7 +1742,7 @@ def m_forget_late(m):
 @scenario("F15", "-", "I16")
 def f15_explore_limit():
     # Every command that acts refused for good (a commands limit, no moves limit: short() never sees it). A refusal
-    # that says a limit of the adults ends the tool at once, with its own words (ROBOT-PILOTE.md, E2 (a)). Before, the
+    # that says a limit of the adults ends the tool at once, with its own words. Before, the
     # refused look added nothing to covered, the robot's own cell stayed the best vantage, and explore never ended.
     h = Harness(at="C5", facing="north", toolset="goal")
     for name in ACTS:
@@ -1774,7 +1774,7 @@ def f15_explore_limit():
 def f15b_explore_bounded():
     # Every look_around refused for a reason that is neither a limit of the adults nor the battery (the robot still
     # moving): the robot's own cell C5 stays the best vantage, travel there is True at once and a refused look adds
-    # nothing to covered. The loop ends after VANTAGES rounds (ROBOT-PILOTE.md, E2 (b)): done, the mat not covered.
+    # nothing to covered. The loop ends after VANTAGES rounds: done, the mat not covered.
     h = Harness(at="C5", facing="north", toolset="goal")
     for name in ACTS:
         h.fake.script[name] = lambda **_: dict(STILL_MOVING)
@@ -1836,7 +1836,7 @@ def m_refused_look_no_read(m):
 # --- F16, F17: two legs that go wrong (P2) ----------------------------------------------------------------------------
 @scenario("F16", "P2", "I17")
 def f16_busy_blocks():
-    # A refusal blocks the next cell only when it says a thing in front (ROBOT-PILOTE.md, E9): "another move is still
+    # A refusal blocks the next cell only when it says a thing in front: "another move is still
     # running" blocks nothing, and the same slide goes again.
     h = Harness(at="C5", facing="north")
     refused = []
@@ -1880,7 +1880,7 @@ def f17_face_shows_blocked():
     h.fake.script["move"] = note
     answer = h.tool("go_to_cell", cell="C3")
     # Facing east, the Pilot knows nothing of C4: north 2 (6) is the cheapest. The face north reads 29 cm: C4 blocked,
-    # and the leg ends there, without a slide (ROBOT-PILOTE.md, E9). The new plan goes by column D, whose D5 the first
+    # and the leg ends there, without a slide. The new plan goes by column D, whose D5 the first
     # reading saw free (10).
     check(sent[:1] == [(slide("east", 1)[1], True)], "no slide north from C5: the first slide goes east, C4 blocked",
           sent)
@@ -1952,7 +1952,7 @@ def m_sensor_no_free(m):
 def f18_done_place_lost():
     # The card on C3, sure; the robot slides to C4 and faces it. The reading in front of the card says the place is
     # lost (the real Cartographer still gives card_ahead then, stack/cartographer.py:995-999). go_to_card finds its
-    # place first (one look_around, which finds it), then tries again: done names C4 (ROBOT-PILOTE.md, E3).
+    # place first (one look_around, which finds it), then tries again: done names C4.
     h = Harness(at="C5", facing="north", truth={"C3": "barbecue"}, toolset="goal")
     h.fake.seen = [record("barbecue", "C3", 60)]
     lost_once = []
@@ -2008,7 +2008,7 @@ def f19b_face_while_waiting():
     check(answer == {"result": "not done", "state": h.P.state, "moves_left": None}, "not done, with the state", answer)
     check(h.P.state.get("waiting_for_adult") is True and h.P.state.get("position_known") is False,
           "the state says the robot waits for an adult, and is kept", h.P.state)
-    # Decided (ROBOT-PILOTE.md, E8): not done with the state, not gave up; the Strategist's loop sees waiting_for_adult.
+    # Decided: not done with the state, not gave up; the Strategist's loop sees waiting_for_adult.
 
 
 @scenario("F19c", "P9", "I7")
@@ -2159,7 +2159,7 @@ def m_forget_balls(m):
 
 # --- F22: a stop or a pause during the Pilot's own waits (P12, P3, P11) ----------------------------------------------
 # Before each wait of its own (a lane's watch, a ball coming closer, go_to_card's 10 s), the Pilot heeds the mission
-# (ROBOT-PILOTE.md, E1): a stop ends the tool before the next wait, a pause is acknowledged before it.
+# A stop ends the tool before the next wait, a pause is acknowledged before it.
 @scenario("F22", "P12", "I21")
 def f22_stop_in_lane_watch():
     # (0) Without a stop: LANE_WATCHES watches of LANE_WATCH_S, each followed by a reading, then the leg crosses.
@@ -2354,7 +2354,7 @@ def m_ball_wait_not_heeded(m):
 def f23_limit_in_goal_tool():
     # go_to_card to a card sure on C2: the slide north 2 towards C3 is refused for a limit of the adults (cells, or
     # moves while the Pilot read no limit). The tool gives up at once with the Cartographer's words, and C4 is not
-    # blocked: a limit says nothing of the mat (ROBOT-PILOTE.md, E2 (a), E9).
+    # blocked: a limit says nothing of the mat.
     for refusal in (NO_CELLS, NO_MOVES):
         what = refusal["why"].split(":")[0]
         h = Harness(at="C5", facing="north", truth={"C2": "barbecue"}, toolset="goal")

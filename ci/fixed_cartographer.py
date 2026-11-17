@@ -1,5 +1,5 @@
 """The Cartographer alone (stack/cartographer.py), in fixed scenarios: the invariants of
-facilitator/ROBOT-CARTOGRAPHE.md that the probe (ci/probe_cartographer.py) and check_sim reach by chance or never.
+its design that the probe (ci/probe_cartographer.py) and check_sim reach by chance or never.
 
 Each scenario sets a world by hand: a fake Referee below that answers exactly what the scenario says (nothing drawn at
 random), the probe's fake clock (waits cost no time, what gets old gets old), and a Cartographer loaded fresh from
@@ -20,9 +20,9 @@ The scenarios:
           Referee (E1)
     FC8   an argument outside the language is refused in words, nothing sent (E10)
     FC9   counts in robot_state: the Referee's counters only (E5)
-    FC10  possible_places: how many places are left, at every size (E7 of ROBOT-PILOTE.md)
-    FC11  cells_seen_free in seen_cards: the cells seen free less than 120 s ago, none while relative (E5 of
-          ROBOT-PILOTE.md)
+    FC10  possible_places: how many places are left, at every size (E7)
+    FC11  cells_seen_free in seen_cards: the cells seen free less than 120 s ago, none while relative
+          (E5)
     FC12  the adult is never sent onto a sure box (E11)
     FC13  a reading no place of the mat can give is ignored: the place kept, no cell free through it (found by the
           probe, seed 32)
@@ -53,7 +53,7 @@ import probe_cartographer as pc  # noqa: E402  (first: it sets ROBOT_STATE_DIR b
 import probe_tiers  # noqa: E402
 
 SOURCE = pc.GUIDE / "stack" / "cartographer.py"
-SCENARIOS = {}   # name -> (function, invariants of ROBOT-CARTOGRAPHE.md)
+SCENARIOS = {}   # name -> (function, invariants of its design)
 MUTANTS = {}     # name -> (patch(module), scenarios that must fail)
 
 
@@ -652,7 +652,7 @@ def m_counts_cost(m):
     rewrite(m, "counts", ('for k in ("commands", "cells", "moves")', 'for k in ("commands", "cells", "moves", "model_usd")'))
 
 
-@scenario("FC10", "E7 of ROBOT-PILOTE.md")
+@scenario("FC10", "E7")
 def fc10():
     """possible_places counts the places left while the place is counted from the start: 192 on the 8 x 6 mat with the
     start unknown (no could_be beyond 6); 4 with the start cell alone (could_be lists them); none on the mat."""
@@ -673,7 +673,7 @@ def m_no_possible_places(m):
     rewrite(m, "robot_state", ('state["possible_places"] = len(places)', "pass"))
 
 
-@scenario("FC11", "E5 of ROBOT-PILOTE.md, I11")
+@scenario("FC11", "E5, I11")
 def fc11():
     """cells_seen_free: from C5 facing north, a reading of 100 cm says C4, C3, C2 free (each up to its far side plus
     8 cm); given with their age while it is under 120 s (the Referee's rule), then no more; none while the place is

@@ -449,8 +449,8 @@ def api_model(model, messages, tools, key, usage, flush, took=None):
 
 
 # --- the router ------------------------------------------------------------------------------------------------
-# A router may play a call without an argument in the model's place, when it is sure enough (ROBOT-STRATEGE.md,
-# section 10): router(mission, messages, progress) gives the name of the call, or None to ask the model. None by
+# A router may play a call without an argument in the model's place, when it is sure enough (an
+# experiment of November 2026): router(mission, messages, progress) gives the name of the call, or None to ask the model. None by
 # default: no router, and the loop is exactly as without this hook. Set by whoever runs the experiment.
 router = None
 ROUTED = ("robot_state", "seen_cards", "look_around")

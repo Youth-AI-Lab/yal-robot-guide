@@ -7,7 +7,7 @@ version: 2
 # An Open WebUI filter (Functions), installed on the chatbot "Feurisson robot" by bin/robot-session. On 7 and
 # 8 November 2026, DeepSeek v4 Flash as Feurisson answered in French to groups writing in English (about 13 % of the
 # turns), stopped a mission without asking the group (4 turns in 198), and once told an old state of the mission:
-# rewording its instructions did not help (facilitator/workshops/measures/2026-11-08-robot-feurisson-gaps/). Here the
+# rewording its instructions did not help. Here the
 # filter does it, outside the model, before each message of the group:
 #   - the state of the mission, read now from the link (POST /turn), goes into the instructions;
 #   - the link learns that a new turn starts: it then refuses a stop_mission that follows a pause_mission in the same
@@ -18,7 +18,7 @@ version: 2
 #     messages is replaced by [name], [age], [place], [school] or [contact], with patterns, without any model: the
 #     detail never leaves the Codespace (Open WebUI keeps the message as typed, in its own base). Asked to say that it
 #     does not keep such details, or to refuse what is off its topic, DeepSeek greeted the young person by the name
-#     5 or 6 times out of 13 (facilitator/workshops/measures/2026-11-08-robot-feurisson-tweaks/). The patterns miss
+#     5 or 6 times out of 13 (8 November 2026). The patterns miss
 #     what they do not know (a name given without "my name is", a nickname): a help, not a guarantee.
 # Nothing is kept on disk; the languages and the names found stay in memory, per conversation, while Open WebUI runs.
 # The group's message, once the details are taken out, goes to the small model (the same provider and the same rules

@@ -1,5 +1,5 @@
 {
-  "_about": "The library of bricks a group composes its robot's personality from. Two kinds, marked as such: \"pilot\" bricks are settings of the Pilot, held by its code and always applied; \"strategist\" bricks are instructions in the Strategist's system message, which the model follows often but can forget. A group finds out at the simulator which ones always hold. No brick can loosen the Referee's rules. The texts come from the cards of the bench of 6 November 2026 (facilitator/workshops/measures/2026-11-06-robot-architectures/personas/).",
+  "_about": "The library of bricks a group composes its robot's personality from. Two kinds, marked as such: \"pilot\" bricks are settings of the Pilot, held by its code and always applied; \"strategist\" bricks are instructions in the Strategist's system message, which the model follows often but can forget. A group finds out at the simulator which ones always hold. No brick can loosen the Referee's rules. The texts come from the cards of the bench of 6 November 2026.",
   "bricks": {
     "long_legs": {"kind": "pilot", "settings": {"max_leg": 4}, "means": "the Pilot goes up to 4 cells in one move"},
     "short_legs": {"kind": "pilot", "settings": {"max_leg": 2}, "means": "the Pilot goes 2 cells at most in one move"},

@@ -203,7 +203,7 @@ def on_mat(c, r):
 
 
 class Cartographer:
-    """A Cartographer written by hand, in its closed language (facilitator/robot-langages/4-cartographe.md): the methods
+    """A Cartographer written by hand, in its closed language (the head of stack/cartographer.py): the methods
     the Pilot calls through call() and wait_for(), the attributes hold_still() reads (sure, frame, col, row, facing),
     and hold_wanted, set by the Pilot. The world is drawn from a seeded generator: the same seed, the same world."""
 
@@ -752,7 +752,7 @@ FACING_STEP = common.FACING_STEP
 
 
 def cart_language(name, args):
-    """Why a call is outside the Cartographer's language (facilitator/robot-langages/4-cartographe.md), or None."""
+    """Why a call is outside the Cartographer's language (the head of stack/cartographer.py), or None."""
     def whole(v, low, high):
         return isinstance(v, int) and not isinstance(v, bool) and low <= v <= high
     if name in ("move", "face") and args.get("direction") not in FACING:
@@ -793,7 +793,7 @@ def schema_says(props, required, args):
     return None
 
 
-# The Pilot's language, written from facilitator/robot-langages/5-pilote.md, not from TOOLSETS: tool -> (arguments,
+# The Pilot's language, written from the head of stack/pilot.py, not from TOOLSETS: tool -> (arguments,
 # required). The values are closed: a card of mat.json, a cell of the mat, a direction, a colour, 1 to 30 seconds.
 SPEC = {
     "goal": {"go_to_card": ({"card"}, {"card"}), "explore": ({"look_for"}, set()), "robot_state": (set(), set()),
@@ -993,7 +993,7 @@ def check_call(toolset, name, args, fn, result, error, op, counted, log, fake, m
         why = str(result.get("why", ""))
         if not why.startswith(GIVE_UP) or set(result) - {"result", "why", "cards_seen", "moves_left"}:
             broke("gave up: a reason of the closed list, and cards_seen", result)
-        # leg says it with 1 move left; go_to_card with 2 only for a card it never saw (ROBOT-PILOTE.md, E6)
+        # leg says it with 1 move left; go_to_card with 2 only for a card it never saw
         if why == "no moves left" and not (isinstance(fake.read_moves_left, int)
                                            and fake.read_moves_left <= (2 if name == "go_to_card" else 1)):
             broke("no moves left only under a limit of the adults", [why, fake.read_moves_left])

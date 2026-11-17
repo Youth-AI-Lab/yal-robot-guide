@@ -280,7 +280,7 @@ def tool_answers(tmp, name):
 
 
 def router_data():
-    """What the router's data need (ROBOT-STRATEGE.md, section 10): a run played again from its records gives the same
+    """What the router's data need: a run played again from its records gives the same
     transcript; a router plays calls without an argument, two at most in a row, counted apart; the time of a call is
     the try that answered; the nudge is in the transcript."""
     find = {"steps": [{"do": "find_card", "card": "barbecue"}]}
@@ -1803,7 +1803,7 @@ async def scenarios(sim, env):
     sim.act(do="noise", camera_miss=0.0)
 
     # A box the distance sensor does not see (to one side, in B3): the camera names it, and the cell behind it (B2) is
-    # not counted looked at (facilitator/workshops/measures/2026-11-07-robot-diagonal/).
+    # not counted looked at (measured on 7 November 2026).
     sim.fresh(boxes=[{"x": 40, "y": 62, "w": 18, "h": 18, "name": "box"}], cards=[{"cell": "B2", "label": "barbecue"}])
     await asyncio.sleep(0.6)
     async with agent(env) as a:
@@ -2242,7 +2242,7 @@ def stack_scenarios(sim, env):
           and r["collisions"] == 0, (record, reply, r, done.stderr[-400:]))
 
     # The second quarter turn of a face refused (the adults allow one command): the Pilot gives up with the adults'
-    # words (ROBOT-PILOTE.md, E2) and forgets the state, the robot facing east after the first quarter turn.
+    # words and forgets the state, the robot facing east after the first quarter turn.
     one = with_rules("one-command", limits={"commands": 1})
     sim.act(do="load_world", mat=big, world={"cards": [], "boxes": [], "balls": []})
     script = ("import json, sys; sys.path.insert(0, 'stack'); import common, pilot; common.mission_begins(); "

@@ -1,4 +1,4 @@
-"""The worlds of the router's data (facilitator/ROBOT-STRATEGE.md, section 10): five worlds, four kinds of mission,
+"""The worlds of the router's data (an experiment of November 2026): five worlds, four kinds of mission,
 twenty variants in sim/worlds/router/, each with its mat, its mission and its truth.
 
 The five worlds: forest (the guide's), balls, wall and recess (worlds of earlier benches, copied unchanged), crates

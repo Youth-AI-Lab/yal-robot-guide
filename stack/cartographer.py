@@ -93,7 +93,7 @@ BOX_POINT_DEG = 4
 # behind it), once BOX_VIEWS different points of view (cell and facing) put a point there. With one view, the camera's
 # error put points on free cells next to the box: replayed on the 36 runs of the absent card with the simulator's error
 # (10 %, 2 degrees), 2 free cells never seen were set apart and "every cell looked at" came too early in 5 runs; with
-# three views, none, and every cell done in 17 runs (facilitator/workshops/measures/2026-11-07-robot-camera-boxes/).
+# three views, none, and every cell done in 17 runs (measured on 7 November 2026).
 BOX_DEPTH_CM = 10
 BOX_MARK_MAX_CM = 90
 BOX_VIEWS = 3
@@ -692,8 +692,8 @@ class Cartographer:
         it; asking every crossed cell to have been seen free instead left 38 cells to look at that the camera had seen,
         against 21 with this rule, and also counted one hidden cell. Tried on 2026-11-06 and 2026-11-07: a cell counted
         only when every cell on the line is known free; the notice "every cell" then never came, the absent card 0 out of
-        9 (facilitator/workshops/measures/2026-11-07-robot-absent-strict/); back to this rule, decision of Sébastien on
-        2026-11-07."""
+        9 runs (measured on 7 November 2026); back to this rule,
+        decided on 2026-11-07."""
         now = clock.now()
         cell_cm = self.mat["cell_cm"]
         # The cell the robot stands on is not looked at: the camera does not see under the robot. A cell it moved onto
@@ -800,7 +800,7 @@ class Cartographer:
         in front of a card by itself), and the cells of sure cards that left the camera's view in the last LANE_FOR_S
         (hidden by a box, they are still there). caution: every cell each card could be on, its could_also_be included
         (for a slide sideways or backwards, which no camera watches: "a cell that could hold a card counts as holding
-        one", decision E1 of ROBOT-CARTOGRAPHE.md, 8 November 2026; before, the probable cell only)."""
+        one", decided on 8 November 2026; before, the probable cell only)."""
         now = clock.now()
         if caution:
             cells = {c for s in self.seen for c in [s["cell"]] + list(s.get("could_also_be") or [])}
@@ -1015,8 +1015,8 @@ class Cartographer:
     def counts(self):
         """The Referee's counters (commands sent that act, cells gone through, moves of its rule), since the mission
         began (or the session, without a mission), and the adults' limits. Not the Strategist's nor the Pilot's
-        (calls to the model, their cost, operations): a tier speaks of its neighbours only (decision E5 of
-        ROBOT-CARTOGRAPHE.md, 8 November 2026)."""
+        (calls to the model, their cost, operations): a tier speaks of its neighbours only (decided on
+        8 November 2026)."""
         both = common.counts()
         part = both["this_mission"] or both["session"]
         out = {"since": "the mission began" if both["this_mission"] is not None else "the session began"}
@@ -1143,7 +1143,7 @@ class Cartographer:
             state["program_error"] = f"{FAULTS.get(fields['fault'], fields['fault'])}: {FAULT_TO_DO}"
         if self.frame and self.sure:
             state["position"] = "probable" if len(places) <= 6 else "unknown"
-            # How many places are still possible, at every size (decision E7 of ROBOT-PILOTE.md): a look that rules
+            # How many places are still possible, at every size: a look that rules
             # none out shows, beyond the 6 that could_be lists.
             state["possible_places"] = len(places)
             state["since_start"] = self.pose_text(self.col, self.row, self.facing)
@@ -1169,8 +1169,8 @@ class Cartographer:
             cards = [dict(c, cell=None, could_also_be=[], where="not known yet: the Cartographer does not know yet where "
                                                               "the robot is on the mat") for c in cards]
         # The cells the distance sensor saw free, and how many seconds ago, as long as the Referee trusts such a
-        # reading (blind_only_into_cells_seen_free_for_s): what the Pilot plans its way with (decision E5 of
-        # ROBOT-PILOTE.md). None while the place is counted from the start (they would be cells of that frame).
+        # reading (blind_only_into_cells_seen_free_for_s): what the Pilot plans its way with.
+        # None while the place is counted from the start (they would be cells of that frame).
         now, trusted = clock.now(), self.rules.get("blind_only_into_cells_seen_free_for_s", 120)
         free = {} if self.frame else {c: int(now - t) for c, t in sorted(self.free.items()) if now - t < trusted}
         return {"cards_seen": cards, "camera_coverage": self.coverage(), "cells_seen_free": free,
@@ -1220,8 +1220,8 @@ class Cartographer:
         return self.say(answer, step=True)
 
     def wrong(self, **args):
-        """An argument outside the Cartographer's language, said in words, nothing sent to the robot (decision E10 of
-        ROBOT-CARTOGRAPHE.md, 8 November 2026; before, it raised inside the call and was taken for an answer of the robot
+        """An argument outside the Cartographer's language, said in words, nothing sent to the robot (decided on
+        8 November 2026; before, it raised inside the call and was taken for an answer of the robot
         that could not be read, and the cable was closed). None when all are fine. Given to call() as its check, it runs
         before anything is read too; each command checks again, for a caller that does not."""
         most = self.rules.get("max_cells_per_move", 4)

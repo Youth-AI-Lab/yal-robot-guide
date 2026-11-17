@@ -98,8 +98,8 @@ def heed():
 
 def wait(seconds):
     """A wait of the Pilot's own, in a goal or route tool. No command that acts follows a wait for a ball: without
-    heed() first, a stop was seen only minutes later, and a pause acknowledged at the end of the tool (ROBOT-PILOTE.md,
-    E1)."""
+    heed() first, a stop was seen only minutes later, and a pause acknowledged at the end
+    of the tool."""
     heed()
     return command("wait_for_event", seconds)
 
@@ -171,7 +171,7 @@ class Pilot:
             raise Stuck("the battery is too low")
         if answer.get("result") == "refused" and "the adults allow" in str(answer.get("why", "")):
             # A limit of the adults (moves, commands, cells): nothing more of that kind this mission. Before, a look
-            # refused for good left explore looping on the same cell (ROBOT-PILOTE.md, E2).
+            # refused for good left explore looping on the same cell.
             self.state = {}  # a first quarter turn may be done: the next tool reads where the robot is
             raise Stuck(answer["why"])
         state = answer.get("state") if isinstance(answer.get("state"), dict) else answer
@@ -384,8 +384,8 @@ class Pilot:
                 return 0  # plan again: finding its place or an adult's help may move the robot first
             c0, r0 = cell_xy(start)
             if self.is_blocked((c0 + dc, r0 + dr)) or (self.state.get("card_ahead") or {}).get("card"):
-                # The state read after the face shows the first cell taken, by a thing or a card: plan again
-                # (ROBOT-PILOTE.md, E9). The plan already went round the cards the Pilot knew.
+                # The state read after the face shows the first cell taken, by a thing or a card: plan again.
+                # The plan already went round the cards the Pilot knew.
                 return 0
             ball = self.state.get("ball_last_seen") or {}
             if self.settings["careful_balls"] and self.ball_recent() and "closer" in ball.get("how", ""):
@@ -658,8 +658,8 @@ def go_to_card(card):
     seen this card yet, explore the mat first. Answers where the robot stopped, or why it could not."""
     # A card seen from far may be on a neighbour of its probable cell (could_also_be): the cells are tried from the
     # surest, and a cell faced from next to it without that card is ruled out, for this call only: the Pilot forgets
-    # the goal once reached or given up (ROBOT-HERMES.md, section 3). Before, a cell stayed ruled out for the whole
-    # process, even when the turn towards it had failed (ROBOT-PILOTE.md, E4).
+    # the goal once reached or given up. Before, a cell stayed ruled out for the whole process, even
+    # when the turn towards it had failed.
     # A place with no way to it now (a ball keeps its lane) is not ruled out: before (8 November 2026, seeds 10 and
     # 18 of the forest), the barbecue on F3 was ruled out with its two neighbours because the ball kept column E, and
     # the robot gave up. The ways are tried again once the ball has had time to pass.

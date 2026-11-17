@@ -58,7 +58,7 @@ MAX_AGE = min(getattr(REFLEX, "DISTANCE_MAX_AGE_MS", FIRMWARE.HARD_DISTANCE_MAX_
               FIRMWARE.HARD_DISTANCE_MAX_AGE_MS)
 
 # Examples added to the language with --examples, built from the commonest mistakes of the small models
-# (facilitator/workshops/measures/2026-11-07-robot-probe-reflex/): each wrong line with what to write instead.
+# (measured on 7 November 2026): each wrong line with what to write instead.
 EXAMPLES = """Examples of commands (each is one whole line you send):
     HELLO
     STATE

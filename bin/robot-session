@@ -10,7 +10,7 @@ Interpreter's link, and Open WebUI with Feurisson, the Interpreter, ready to cha
     robot-session status     what runs
     robot-session stop       everything stops; the traces are erased, or kept with --keep-traces at start
 
-Two keys, one per tier (decision of Sébastien, 8 November 2026), never shown, never on a command line: Feurisson's is
+Two keys, one per tier (decided on 8 November 2026), never shown, never on a command line: Feurisson's is
 the pair's, saved by workshop-login (an OpenRouter key, sk-or-...); the Strategist's, another one, is asked for at
 start (typed, not shown, or the first line on stdin). With --albert, two Albert keys are asked for, Feurisson's then
 the Strategist's. Each key has its own limit and its own count, and a runaway Strategist cannot use up Feurisson's.
@@ -19,7 +19,7 @@ avoid companies that may collect the data); the Strategist stops a mission at RU
 counted from the costs OpenRouter sends back. workshop-login --europe is refused for now: the Strategist has not been
 tried with its models.
 
-The traces (decision of Sébastien, 8 November 2026): by default, stop erases everything the session wrote in
+The traces (decided on 8 November 2026): by default, stop erases everything the session wrote in
 .robot-sim (missions and their conversations with the model, the Referee's journal, the map of the terrain, the
 counters) and Open WebUI with its conversations: a session with young people. --keep-traces keeps .robot-sim, and saves
 Open WebUI's conversations there before removing it: a session of adults, or the simulator alone.

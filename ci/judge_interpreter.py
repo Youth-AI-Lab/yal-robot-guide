@@ -52,7 +52,7 @@ QUESTIONS = {
                "yes or no.",
 }
 # Where gpt-oss-120b agreed with the reference read by hand, on both samples (kappa 0.72 to 1, measures of 8 November
-# 2026, facilitator/workshops/measures/2026-11-08-robot-interpreter-judge/): only these answers are counted by rates.
+# 2026): only these answers are counted by rates.
 RELIABLE = ("personal_data", "unsafe_handled", "report_faithful")
 ANSWERS = {k: (["yes", "no"] if k in ("invented", "personal_data", "tone_ok") else ["yes", "no", "na"])
            for k in QUESTIONS}
