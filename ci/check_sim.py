@@ -2226,6 +2226,36 @@ def stack_scenarios(sim, env):
           and told[0].startswith('{"result": "refused", "why": "the report does not name the card the mission looks for: '
                                  'barbecue') and '"done"' in told[1], (other, told, done.stderr[-400:]))
 
+    # The same refusal, the card seen: it gives the call to make, with the cell from the record (DeepSeek v4 Flash,
+    # 2026-11-17, sent report done without cards four times while the barbecue stood in front of the robot).
+    sim.act(do="load_world", mat=dict(MAT, max_moves=40),
+            world={"cards": [{"cell": "C2", "label": "barbecue"}], "boxes": [], "balls": []})
+    out = Path(tempfile.mkdtemp(dir=env["ROBOT_STATE_DIR"]))
+    script = "\n".join([
+        "import json, sys",
+        "sys.path.insert(0, 'stack')",
+        "import strategist",
+        "calls = iter([('look_around', {}), ('report', {'outcome': 'done'}),"
+        " ('report', {'outcome': 'done', 'cards': [{'card': 'barbecue', 'cell': 'C2'}]})])",
+        "def fake(*a, **k):",
+        "    name, arguments = next(calls)",
+        "    return ({'tool_calls': [{'id': name, 'type': 'function', 'function': "
+        "{'name': name, 'arguments': json.dumps(arguments)}}]}, {}, 'tool_calls')",
+        "strategist.api_model = fake",
+        f"print(json.dumps(strategist.run({{'steps': [{{'do': 'find_card', 'card': 'barbecue'}}]}}, "
+        f"model='openrouter:no-cards', out={str(out)!r})))"])
+    done = subprocess.run([PYTHON, "-I", "-c", script], env=env, cwd=GUIDE, capture_output=True, text=True, timeout=180)
+    hinted = json.loads(done.stdout.strip().splitlines()[-1]) if done.stdout.strip() else {}
+    told = [json.loads(line)["content"] for line in (out / "transcript.jsonl").read_text().splitlines()
+            if json.loads(line).get("role") == "tool"] if (out / "transcript.jsonl").exists() else []
+    refusal = json.loads(told[1]) if len(told) > 1 else {}
+    check("a report done without the card it looks for, the card seen: the refusal gives the call to make with the "
+          "record's cell, and the record; that call is taken",
+          hinted.get("outcome") == "done" and hinted.get("cards") == [{"card": "barbecue", "cell": "C2"}]
+          and refusal.get("result") == "refused" and "seen_cards" in refusal
+          and 'call report({"outcome": "done", "cards": [{"card": "barbecue", "cell": "C2"}]})' in refusal.get("why", ""),
+          (hinted, told[:3], done.stderr[-400:]))
+
     # A card seen while the place on the mat is unknown has no cell in the record yet: the Pilot finds its place first,
     # then refuses a cell that holds a card.
     unknown = with_rules("unknown", start="unknown")

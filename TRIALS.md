@@ -58,6 +58,18 @@ without every step going through the model.
 **What changed after.** The stack now refuses a report with a card the camera never placed there, and ends a mission
 whose model sends the same refused call four times.
 
+## A report without its card (17 November 2026)
+
+**How.** One try, with `robot-session` in a local dev container: Feurisson and the Strategist on DeepSeek v4 Flash
+through OpenRouter, the mission "find the barbecue", 0.0034 US dollars for the Strategist.
+
+The Strategist's model drove the robot to F2, facing the barbecue on F3. Then it sent `report` with `outcome` done but
+without the card, four times in a row, although each refusal said that a report done names the card with its cell.
+At the fourth same refusal, the stack ended the mission, and Feurisson told the group that the barbecue was not found.
+
+**What changed after.** When the record places the card, the refusal now gives the call to make, with the cell, and
+the record itself. Not yet tried again with a real model.
+
 ## Interpreter: what the filter changed (48 conversations)
 
 Rewording Feurisson's instructions did not stop it from answering in the wrong language, nor from stopping a mission

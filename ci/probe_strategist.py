@@ -1059,7 +1059,18 @@ def check_response(ctx, messages):
         early = name == "report" and not why and not unnamed and not ctx.questioned and early_report(ctx.mission,
                                                                                                      arguments)
         if unnamed:
-            expected = NOT_NAMED  # refused before the record is read
+            expected = NOT_NAMED  # refused; the record is read to give the call to make (name_hint)
+            for _ in range(3):
+                if not ctx.records_given:
+                    break
+                shown = ctx.records_given.pop(0)
+                if shown.get("rule") not in BUSY:
+                    break
+            placed = isinstance(shown, dict) and all(
+                any(r.get("card") == card and r.get("cell") for r in shown.get("cards_seen") or []) for card in unnamed)
+            if placed and said.get("result") == "refused" and "call report(" not in (said.get("why") or ""):
+                ctx.broke("a report done that does not name a card the record places is refused with the call to make",
+                          [arguments, shown, said])
         elif name == "report" and not why and (arguments.get("cards") or early):
             if not ctx.records_given:  # the fake robot always answers: a report with cards is always compared
                 ctx.broke("a report with cards, or giving up on a card, is compared with the record (seen_cards)",

@@ -260,6 +260,30 @@ def missing_card(mission, arguments):
             "from seen_cards; if one was not found, report impossible")
 
 
+def name_hint(why, mission, arguments, tool="report", step=None):
+    """A refusal for a card not named, made concrete when the record places every card missing: the call to make, with
+    the record's cells; and the record, given back with the refusal. DeepSeek v4 Flash (OpenRouter, 2026-11-17) sent
+    report done without cards four times while the barbecue stood in front of the robot, and the mission ended."""
+    record = read_record()
+    if not record or "cards_seen" not in record:
+        return why, record
+    named = [c for c in arguments.get("cards") or [] if isinstance(c, dict)]
+    have = {c.get("card") for c in named}
+    missing = [s["card"] for s in mission.get("steps", []) if s.get("do") in ("reach_card", "find_card")
+               and s.get("card") not in have]
+    cells = {}
+    for seen in record["cards_seen"]:
+        if seen.get("card") in missing and seen.get("cell"):
+            cells.setdefault(seen["card"], seen["cell"])
+    if not missing or any(card not in cells for card in missing):
+        return why, record
+    call = {"outcome": "done", "cards": named + [{"card": card, "cell": cells[card]} for card in missing]}
+    if step is not None:
+        call = {"step": step, **call}
+    placed = ", ".join(f"{card} on {cells[card]}" for card in missing)
+    return f"{why}. The record places {placed}: call {tool}({json.dumps(call)})", record
+
+
 def read_record():
     """The Cartographer's record (seen_cards), three tries if the stack is busy; None if the robot cannot be reached."""
     for attempt in range(3):
@@ -750,6 +774,8 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
                                "mission is not done; report impossible, or close the other steps with step_done")
                     else:
                         why, record = missing_card(mission, arguments), None
+                        if why:
+                            why, record = name_hint(why, mission, arguments)
                     if not why:
                         why, record = record_check(arguments.get("cards") or [])
                     if not why and not questioned and early_report(mission, arguments):
@@ -767,6 +793,8 @@ def run(mission, model="fake", key="", tools="route", out=None, cap_usd=RUN_CAP_
                         why = "a light step closes by itself when set_light sets its colour: call set_light"
                     else:
                         why = missing_card({"steps": [step]}, arguments)
+                        if why:
+                            why, record = name_hint(why, {"steps": [step]}, arguments, "step_done", k)
                         if not why:
                             why, record = record_check(arguments.get("cards") or [])
                         if not why and k not in step_questioned and early_report({"steps": [step]}, arguments):
