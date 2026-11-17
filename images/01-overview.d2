@@ -1,0 +1,50 @@
+# 1. The whole stack: six tiers, from the group down to the robot.
+# Left arrows go down (commands), right arrows go up (information). Each tier talks only to its neighbours.
+
+direction: down
+
+group: "The group (and the facilitator)" {class: person}
+
+human: "human · about a minute" {
+  class: layer
+  interpreter: "Interpreter: Feurisson\nturns the group's words into a mission,\nwaits for their yes, tells what happened" {class: tier; width: 520}
+}
+
+deliberative: "deliberative · about a minute" {
+  class: layer
+  strategist: "Strategist\na loop and a model:\nwhich tool next, for this mission" {class: tier; width: 520}
+}
+
+executive: "executive · seconds" {
+  class: layer
+  pilot: "Pilot\ncode, no model:\nthe way to the goal" {class: tier; width: 520}
+  cartographer: "Cartographer\nthe map of the mat: where the robot\nprobably is, the cards, the balls" {class: tier; width: 520}
+  referee: "Referee\nthe only door to the robot:\nchecks each command against the rules" {class: tier; width: 520}
+  pilot -> cartographer: "go 2 cells east"
+  pilot <- cartographer: "where, what was seen"
+  cartographer -> referee: "slide right 2"
+  cartographer <- referee: "events, refusals"
+}
+
+reactive: "reactive · fastest" {
+  class: layer
+  reflex: "Reflex, on the robot\nstops by itself, moves, keeps its events" {class: tier; width: 520}
+}
+
+provider: "Model provider\n(on the Internet)" {class: never}
+rules: "Rules\nwritten by the adults" {class: part}
+adult: "An adult\npresses Resume" {class: person}
+
+group -> human.interpreter: "a request, a yes"
+group <- human.interpreter: "the report, in words"
+human.interpreter -> deliberative.strategist: "closed mission"
+human.interpreter <- deliberative.strategist: "closed report"
+deliberative.strategist -> executive.pilot: "tool: go to a cell"
+deliberative.strategist <- executive.pilot: "result"
+executive.referee -> reactive.reflex: "MOVE R 2 (a line of text)"
+executive.referee <- reactive.reflex: "events"
+
+human.interpreter -> provider: "the group's words" {style: {stroke: "#dc2626"; stroke-dash: 3}}
+deliberative.strategist -> provider: "the mission's fields,\nnever the group's words" {style: {stroke: "#dc2626"; stroke-dash: 3}}
+rules -> executive.referee: "read"
+adult -> reactive.reflex: "Resume button"

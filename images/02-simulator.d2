@@ -1,0 +1,22 @@
+# 2. What the simulator replaces: only the physical part. The robot's program and the stack are the same.
+
+direction: right
+
+real: "With the robot (planned)" {
+  class: zone-robot
+  program: "Robot's program\nfirmware.py + reflex.py\n(MicroPython)" {class: part}
+  hardware: "Board, wheels, sensors,\ncamera, buttons, light" {class: planned}
+  program <-> hardware
+}
+
+sim: "With the simulator (this guide)" {
+  class: zone-sim
+  program: "Robot's program\nthe same files, unchanged" {class: key}
+  world: "Simulated world\nthe mat, cards, boxes, a ball\n(the page, port 8780)" {class: part}
+  program <-> world
+}
+
+stack: "The stack (stack/)\nReferee, Cartographer, Pilot, Strategist\nthe same code in both cases" {class: tier}
+
+stack <-> real.program: "USB cable\n(radio: planned)" {style.stroke-dash: 4}
+stack <-> sim.program: "pseudo-terminal\n(stands in for the cable)"

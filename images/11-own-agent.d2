@@ -1,0 +1,15 @@
+# 11. An agent of your own (Claude Code, Hermes, OpenCode...) in place of Feurisson and the Strategist.
+
+direction: down
+
+agent: "Your agent and its model\n(asks you before each move, if you set it so)" {class: key; width: 460}
+drive: "stack/drive.py: an MCP server\nnine step tools (robot_state, move, turn, look_around, ...)\nevery answer carries since_last_call" {class: part; width: 460}
+stack: "Pilot, Cartographer, Referee\nthe same rules as for the Strategist" {class: tier; width: 460}
+reflex: "Reflex, on the robot (or the simulator)" {class: tier; width: 460}
+trace: ".robot-sim/context.jsonl\nexactly what entered the agent's context" {class: part}
+
+agent -> drive: "a tool call"
+drive -> agent: "a short text answer" {style.stroke-dash: 4}
+drive -> stack: "one move at a time"
+stack -> reflex: "allowed commands"
+drive -> trace: "written"

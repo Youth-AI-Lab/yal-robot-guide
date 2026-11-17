@@ -1,0 +1,15 @@
+# 8. A personality is made of bricks of two kinds (stack/personality/bricks.json).
+
+direction: down
+
+personality: "A personality\n(cautious, adventurous, ...)" {class: tier}
+
+code: "Settings of the Pilot\ncode: always applied\ne.g. 2 cells at most in one move" {class: key; width: 330}
+text: "Instructions to the Strategist's model\ntext: often followed, sometimes forgotten\ne.g. look around before every move" {class: part; width: 330}
+
+rules: "The Referee's rules, underneath:\nno brick can loosen them" {class: never; width: 330}
+
+personality -> code
+personality -> text
+code -> rules
+text -> rules

@@ -1,0 +1,22 @@
+# 5. The Referee's rules (stack/rules.json): what the robot never does, whatever the Strategist or a personality asks.
+# Written by the adults before the session; values of the simulator.
+
+direction: right
+
+command: "A command\nfrom the Cartographer" {class: part}
+
+rules: "The Referee checks every command" {
+  class: layer
+  grid-columns: 1
+  mat: "On the mat\n· never off the mat, never onto a card\n· 4 cells at most per move\n· one command at a time" {class: part; width: 430}
+  blind: "Where the robot does not see (sideways, backwards)\n· only into cells the sensor saw free\n  in the last 2 minutes\n· never into the lane of a rolling ball" {class: part; width: 430}
+  ball: "Near the ball\n· never onto a cell where a ball was seen\n  in the last 10 s, nor next to one coming closer\n· where it does not see: never near one" {class: part; width: 430}
+  limits: "Limits per mission, if the adults set them\nmoves, commands, cells (none by default)" {class: part; width: 430}
+}
+
+allowed: "Allowed:\nsent to the robot" {class: key}
+refused: "Refused:\nwith the rule, in the journal" {class: never}
+
+command -> rules
+rules -> allowed
+rules -> refused

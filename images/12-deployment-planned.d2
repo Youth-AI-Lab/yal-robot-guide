@@ -1,0 +1,32 @@
+# 12. Where each program will run in a session (planned: only the simulator has run).
+
+direction: down
+
+laptop: "Facilitator's laptop" {
+  class: zone-laptop
+  feurisson: "Open WebUI\nFeurisson + its filter" {class: planned}
+}
+
+pi: "Raspberry Pi, in the room (planned)" {
+  class: zone-pi
+  mcp: "interpreter_link.py\n(MCP over HTTP, with a token)" {class: planned}
+  stack: "Strategist, Pilot,\nCartographer, Referee" {class: planned}
+  mcp -> stack
+}
+
+robot: "The robot" {
+  class: zone-robot
+  board: "STeaMi board\nfirmware.py + reflex.py" {class: planned}
+  camera: "OpenMV N6 camera\ncard names and angles,\nnever an image" {class: planned}
+  camera -> board
+}
+
+internet: "The Internet" {
+  class: zone-internet
+  provider: "Model providers\n(OpenRouter, Albert API)" {class: part}
+}
+
+laptop.feurisson -> pi.mcp: "the room's network"
+pi.stack -> robot.board: "lines of text\nUSB cable today,\nradio planned"
+laptop.feurisson -> internet.provider: "the group's words (HTTPS)" {style: {stroke: "#dc2626"; stroke-dash: 3}}
+pi.stack -> internet.provider: "the Strategist's\nconversation\n(HTTPS)" {style: {stroke: "#dc2626"; stroke-dash: 3}}

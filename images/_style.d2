@@ -1,0 +1,93 @@
+# Shared style of the guide's diagrams, put in front of each source by render.sh
+# (Kroki receives one text: D2 imports are not resolved there).
+
+vars: {
+  d2-config: {
+    layout-engine: elk
+    theme-id: 0
+    pad: 30
+  }
+}
+
+classes: {
+  # a part of the system
+  part: {
+    style: {
+      border-radius: 8
+      fill: "#ffffff"
+      stroke: "#475569"
+      font-size: 15
+    }
+  }
+  # the part the diagram is about
+  key: {
+    style: {
+      border-radius: 8
+      fill: "#ffffff"
+      stroke: "#1d4ed8"
+      stroke-width: 3
+      font-size: 15
+      bold: true
+    }
+  }
+  # planned, not built yet (dashed)
+  planned: {
+    style: {
+      border-radius: 8
+      fill: "#ffffff"
+      stroke: "#94a3b8"
+      stroke-dash: 4
+      font-size: 15
+    }
+  }
+  # a layer (reactive, executive, deliberative, human)
+  layer: {
+    label.near: bottom-right
+    style: {fill: "#fbfbfd"; stroke: "#94a3b8"; stroke-dash: 3; border-radius: 14; font-size: 15; italic: true; font-color: "#475569"}
+  }
+  # a tier of the stack
+  tier: {
+    style: {fill: "#f8fafc"; stroke: "#334155"; stroke-width: 2; border-radius: 12; font-size: 18; bold: true}
+  }
+  # places: the robot, the facilitator's laptop, the Internet, the simulator
+  zone-robot: {
+    style: {fill: "#fff7ed"; stroke: "#ea8a3a"; border-radius: 12; font-size: 18}
+  }
+  zone-laptop: {
+    style: {fill: "#eff6ff"; stroke: "#3b82f6"; border-radius: 12; font-size: 18}
+  }
+  zone-internet: {
+    style: {fill: "#f8fafc"; stroke: "#94a3b8"; stroke-dash: 4; border-radius: 12; font-size: 18}
+  }
+  zone-sim: {
+    style: {fill: "#f0fdf4"; stroke: "#22c55e"; border-radius: 12; font-size: 18}
+  }
+  # the room: a Raspberry Pi
+  zone-pi: {
+    style: {fill: "#f5f3ff"; stroke: "#8b5cf6"; border-radius: 12; font-size: 18}
+  }
+  # a column without a frame, to group boxes in a grid
+  column: {
+    label: ""
+    style: {fill: "#ffffff"; stroke: "#ffffff"}
+  }
+  # invisible spacer, to align two boxes of neighbouring columns
+  spacer: {
+    label: ""
+    style: {opacity: 0}
+  }
+  # what never happens, or never leaves
+  never: {
+    style: {border-radius: 8; fill: "#fef2f2"; stroke: "#dc2626"; font-size: 15}
+  }
+  person: {
+    shape: person
+    width: 50
+    height: 70
+    style.font-size: 15
+  }
+  note: {
+    shape: text
+    style: {font-size: 14; italic: true; font-color: "#475569"}
+  }
+}

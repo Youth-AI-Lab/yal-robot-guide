@@ -1,0 +1,27 @@
+# 7. What enters the Strategist's model's context, and what never does.
+
+direction: right
+
+inputs: "What the Strategist writes into the conversation" {
+  class: layer
+  label.near: top-left
+  grid-columns: 1
+  mission: "The closed mission\nsteps and cards from short lists,\nturned into sentences by code" {class: part; width: 330}
+  personality: "The personality's text bricks\n(e.g. look around before every move)" {class: part; width: 330}
+  results: "The answers of the tools\ncard names and cells (\"probably F3\"),\nwhat happened since the last call, refusals" {class: part; width: 330}
+}
+
+strategist: "Strategist\nthe loop; stops at 100 turns\nor 0.25 US dollars a mission" {class: tier}
+provider: "Model provider\n(over HTTPS)" {class: part}
+
+never: "Never sent" {
+  class: layer
+  label.near: top-left
+  grid-columns: 1
+  images: "an image" {class: never; width: 230}
+  words: "the group's words" {class: never; width: 230}
+}
+
+inputs -> strategist
+strategist -> provider: "the conversation"
+provider -> strategist: "the next tool,\nor the report"

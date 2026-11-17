@@ -1,0 +1,23 @@
+# 9. The life of a mission (mission_status, stack/interpreter_link.py).
+# Solid boxes and arrows: held by code. Dashed: held only by Feurisson's instructions (its model may forget).
+
+direction: down
+
+proposed: "proposed\nFeurisson says the mission back;\nthe group may correct it" {class: planned}
+running: "running\nthe robot moves" {class: key}
+pausing: "pausing\nfinishing its cell" {class: part}
+paused: "paused\nstands on a cell" {class: part}
+waiting: "waiting for an adult\na move stopped on the way" {class: part}
+ended: "ended\ndone, or cannot be done" {class: part}
+stopped: "stopped" {class: part}
+failed: "failed\nan error in the stack" {class: never}
+
+proposed -> running: "the group says yes:\nstart_mission" {style.stroke-dash: 4}
+running -> pausing: "pause_mission"
+pausing -> paused: "on the next cell"
+paused -> running: "resume_mission\n(steps may be added first)"
+running -> waiting: "touched"
+waiting -> running: "Resume"
+running -> ended: "the report"
+paused -> stopped: "stop_mission\n(refused unless the group\nasked to stop, or answered\nafter a pause)"
+running -> failed

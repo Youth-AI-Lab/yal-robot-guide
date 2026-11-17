@@ -1,0 +1,57 @@
+# 10. One mission from end to end: "go and see if there is a barbecue, but gently".
+# Route tools (the default). Time goes down. An illustration of the design, not a recorded run.
+
+shape: sequence_diagram
+
+group: "Group"
+feurisson: "Feurisson\n(Interpreter)"
+strategist: "Strategist\n+ its model"
+pilot: "Pilot"
+below: "Cartographer\nand Referee"
+reflex: "Reflex\n(robot)"
+adult: "Adult"
+
+agree: "1. Agree on the mission" {
+  group -> feurisson: "go and see if there is a barbecue, but gently"
+  feurisson -> group: "I look for the barbecue, carefully,\nand stop in front of it. OK?"
+  group -> feurisson: "yes"
+  feurisson -> strategist: "start_mission:\nreach_card barbecue, cautious"
+}
+
+look: "2. Look around" {
+  strategist -> pilot: "the model chooses look_around"
+  pilot -> below: "look around"
+  below -> reflex: "TURN R (four times)"
+  reflex -> below: "EVT SEEN barbecue ..."
+  below -> pilot: "barbecue: probably F3"
+  pilot -> strategist: "result"
+}
+
+add: "3. The group adds something" {
+  group -> feurisson: "and dry grass too?"
+  feurisson -> strategist: "pause_mission"
+  strategist -> pilot: "pause"
+  pilot -> below: "hold"
+  below -> reflex: "HOLD: stop on the next cell"
+  feurisson -> group: "then dry grass after the barbecue. OK?"
+  group -> feurisson: "yes"
+  feurisson -> strategist: "add_to_mission: find_card dry-grass,\nthen resume_mission"
+}
+
+bump: "4. A ball touches the robot" {
+  strategist -> pilot: "go_to_cell ..."
+  pilot -> below: "..."
+  below -> reflex: "MOVE ..."
+  reflex -> below: "EVT BUMP, EVT STOP: between two cells"
+  below -> pilot: "position unknown"
+  pilot -> strategist: "waiting for an adult\n(the model is not called)"
+  adult -> reflex: "puts it back, presses Resume"
+  reflex -> below: "EVT RESUMED"
+  below -> pilot: "back on its cell"
+  pilot -> strategist: "wake up:\nthe model is called again"
+}
+
+report: "5. Report" {
+  strategist -> feurisson: "closed report: cards and cells"
+  feurisson -> group: "the barbecue is on F3,\ndry grass on C2 and D2"
+}

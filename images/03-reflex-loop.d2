@@ -1,0 +1,23 @@
+# 3. The robot's own loop, every 10 ms, on the robot. Nobody above is asked.
+
+direction: down
+
+sensors: "Sensors\nbumper and buttons (counted by the board),\ndistance (with its time), camera (card names)" {class: part}
+
+loop: "One turn of the loop, every 10 ms" {
+  class: layer
+  label.near: top-left
+  read: "1. Read every sensor" {class: part; width: 380}
+  decide: "2. Decide\nmoving: must_stop()? · standing still: warn()\n(reflex.py, the file you may change)" {class: key; width: 380}
+  limits: "3. The program's own limits\nmax speed, min distance, bumper\n(firmware.py: reflex.py cannot loosen them)" {class: part; width: 380}
+  read -> decide -> limits
+}
+
+act: "Motors stop or move;\nthe light changes colour" {class: part}
+events: "Events kept on the robot\n(the last 16), read by the Referee" {class: part}
+fault: "A mistake in reflex.py, or a late loop:\nwheels stop, then wait for an adult" {class: never}
+
+sensors -> loop.read
+loop.limits -> act
+loop.limits -> events
+loop.decide -> fault: "if it fails" {style.stroke-dash: 3}

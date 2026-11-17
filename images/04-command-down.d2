@@ -1,0 +1,16 @@
+# 4. One command going down: each tier speaks its own language and translates for the one below.
+# Example: the robot faces north on D3; the Strategist wants F3.
+
+direction: down
+
+strategist: "Strategist" {class: tier; width: 460}
+pilot: "Pilot" {class: tier; width: 460}
+cartographer: "Cartographer" {class: tier; width: 460}
+referee: "Referee" {class: tier; width: 460}
+reflex: "Reflex (robot)" {class: tier; width: 460}
+
+strategist -> pilot: "a tool:\ngo_to_cell(F3)"
+pilot -> cartographer: "on the mat:\n2 cells east"
+cartographer -> referee: "for the robot, which faces north:\nslide right 2 cells"
+referee -> reflex: "allowed:\nMOVE R 2"
+reflex -> referee: "EVT CELL …\nEVT DONE R 2 …" {style.stroke-dash: 4}
